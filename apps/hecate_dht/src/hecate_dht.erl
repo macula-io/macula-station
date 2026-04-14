@@ -49,6 +49,7 @@
     find_local_record/2,
     list_records/1,
     record_count/1,
+    delete_record/2,
     handle_frame/3,
     version/0
 ]).
@@ -187,6 +188,10 @@ list_records(Dht) ->
 -spec record_count(dht()) -> non_neg_integer().
 record_count(Dht) ->
     hecate_dht_server:record_count(Dht).
+
+-spec delete_record(dht(), macula_record:record()) -> ok.
+delete_record(Dht, Record) ->
+    hecate_dht_server:delete_record(Dht, Record).
 
 -spec find_value(dht(), hecate_dht_xor:id(), macula_identity:pubkey()) ->
         find_value_result().

@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.9 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.10 green.
 
 ---
 
@@ -78,6 +78,50 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.10 (shipped — SDK `macula-io/macula@9ca1e9f`)
+
+**Scope:** owner republish (tRepublish, 24h) + custodian expiry
+reaper (tExpire) — Part 3 §5.1, §5.5, §11.
+
+**SDK side:**
+- `macula_record:refresh/2` — given an existing record + identity,
+  rebuild the envelope with a fresh UUIDv7 version and new
+  `created_at` / `expires_at` (preserving the original TTL), then
+  re-sign. +5 eunit (74 total in macula_record).
+
+**Station side:**
+
+1. `hecate_dht_republish` — gen_server. Default interval 24h.
+   - Each tick: `list_records/1`, filter to records where
+     `envelope.key == self_id` (i.e. records we own), call
+     `macula_record:refresh/2`, `put_record/2` locally, then
+     `hecate_dht:store/3` to fan out to k-closest custodians.
+   - Outcome: `records_seen / owned / republished / quorum_not_met
+     / no_candidates`.
+
+2. `hecate_dht_expire` — gen_server. Default interval 1h reap
+   cadence (T_EXPIRE_MS = 48h is the TTL, not the reap interval —
+   any cadence ≪ TTL works).
+   - Each tick: `list_records/1`, for each record with
+     `expires_at =< now()` call `delete_record/2`. Tombstone
+     publication is the owner's job, not the custodian's, so
+     reaper just evicts.
+
+3. New server op `delete_record/2` — removes one record by
+   `(storage_key, envelope_key)` tuple, preserving any other
+   records at the same storage key (multi-advertiser case).
+
+Acceptance: +10 eunit (total 225). Tests:
+- republish: empty store no-op, non-owned skipped, owned record's
+  version bumped on tick, propagation to remote custodian, no-
+  candidates path counted.
+- expire: empty store no-op, fresh record retained, past-TTL record
+  reaped, mixed pool separation, auto-firing on tight interval.
+
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.1, §5.5, §11.
 
 ## Session 3.9 (shipped)
 

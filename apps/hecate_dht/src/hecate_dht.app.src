@@ -17,6 +17,8 @@
         hecate_dht_placement,
         hecate_dht_store,
         hecate_dht_replicate,
+        hecate_dht_republish,
+        hecate_dht_expire,
         hecate_dht_server,
         hecate_dht_sup
     ]},

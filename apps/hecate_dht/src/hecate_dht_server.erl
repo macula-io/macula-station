@@ -61,6 +61,7 @@
     find_local_record/2,
     list_records/1,
     record_count/1,
+    delete_record/2,
     handle_frame/3
 ]).
 
@@ -274,6 +275,10 @@ list_records(Pid) ->
 record_count(Pid) ->
     gen_server:call(Pid, record_count).
 
+-spec delete_record(pid(), macula_record:record()) -> ok.
+delete_record(Pid, Record) when is_map(Record) ->
+    gen_server:call(Pid, {delete_record, Record}).
+
 %%=====================================================================
 %% gen_server callbacks
 %%=====================================================================
@@ -351,6 +356,10 @@ handle_call(list_records, _From, #state{record_store = Ets} = S) ->
 
 handle_call(record_count, _From, #state{record_store = Ets} = S) ->
     {reply, ets:info(Ets, size), S};
+
+handle_call({delete_record, Record}, _From, #state{record_store = Ets} = S) ->
+    store_delete(Ets, Record),
+    {reply, ok, S};
 
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -582,6 +591,19 @@ store_put(Ets, Record) ->
           [macula_record:record()].
 store_lookup(Ets, StorageKey) ->
     [R || {_, R} <- ets:lookup(Ets, StorageKey)].
+
+%% @doc Remove a single record (identified by storage key + envelope
+%% owner) while preserving other records from other owners that
+%% share the same storage key.
+-spec store_delete(ets:tid(), macula_record:record()) -> ok.
+store_delete(Ets, Record) ->
+    StorageKey  = macula_record:storage_key(Record),
+    EnvelopeKey = macula_record:key(Record),
+    Keep = [Tup || {_, R} = Tup <- ets:lookup(Ets, StorageKey),
+                   macula_record:key(R) =/= EnvelopeKey],
+    ets:delete(Ets, StorageKey),
+    ets:insert(Ets, Keep),
+    ok.
 
 %%=====================================================================
 %% Wire op: STORE outgoing + STORE_ACK correlation
