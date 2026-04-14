@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Session 4.1 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 + 4.2 shipped.
 
 ---
 
@@ -52,6 +52,38 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.2 (shipped — SDK `macula-io/macula@b90f1fb`)
+
+**Scope:** SDK source-route header codec.
+
+`macula_source_route` — Part 6 §11 wire format. Fixed 27-byte
+overhead (1 version + 1 total_hops + 1 current_hop + 8 deadline
++ 16 path_hash) plus N × 16 bytes of truncated NodeId hops.
+path_hash is the first 16 bytes of `SHA-256(concat(hops))`,
+computed once at the origin and reverified on every hop.
+
+API:
+- `new/2,3` builds a header from full NodeIds (auto-truncates to
+  16 bytes) plus a deadline. Validates hop count 1..8 and
+  current_hop ≤ total_hops.
+- `encode/1` and `decode/1` for the wire format. `decode/1` runs
+  the path_hash check inline so callers can trust the structure.
+- Decode error taxonomy: `bad_version | bad_total_hops |
+  bad_current_hop | path_hash_mismatch | truncated`.
+- `verify/1`, `advance/1`, `current_hop_id/1`, `next_hop_id/1`,
+  `is_complete/1`, `is_final_hop/1`, `truncate_hop/1` cover the
+  per-hop processing flow from Part 3 §6.6.
+
+Acceptance: +25 SDK eunit (108 in macula_frame, 226 repo-wide).
+Tests cover round-trip including after advance, structural
+guards, tampering detection (mutate one hop byte → path_hash
+mismatch), and a 3-hop traversal exercising the position helpers.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §11;
+      plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.6.
 
 ## Session 4.1 (shipped — SDK `macula-io/macula@5707180`)
 
