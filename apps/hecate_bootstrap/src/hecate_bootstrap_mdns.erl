@@ -31,10 +31,20 @@
     multicast_port/0,
     build_query/0, build_query/1, build_query/2,
     parse_response/1,
-    extract_candidates/1
+    extract_candidates/1,
+    build_advertisement/2
 ]).
 
--export_type([candidate/0, extract_error/0, parse_error/0, query_id/0]).
+-export_type([
+    candidate/0, extract_error/0, parse_error/0, query_id/0,
+    node_info/0
+]).
+
+-type node_info() :: #{
+    node_id := macula_identity:pubkey(),
+    port    := 1..65535,
+    tier    := 0..4
+}.
 
 -define(SERVICE_NAME,    "_macula._udp.local").
 -define(MULTICAST_GROUP, {16#FF02, 0, 0, 0, 0, 0, 0, 16#FB}).
@@ -205,3 +215,81 @@ chain([Step | Rest]) -> chain(Step(), Rest).
 chain({error, _} = E, _Rest)         -> E;
 chain({ok, V},        [])            -> {ok, V};
 chain({ok, V},        [Step | Rest]) -> chain(Step(V), Rest).
+
+%%==================================================================
+%% Advertisement builder (responder side)
+%%
+%% Given an incoming mDNS query packet and our local node info, return
+%% the bytes of a response packet answering the query. Returns
+%% `ignore' when the query is not for our service, is not a real
+%% query (QR=1), or fails to decode — letting the caller drop the
+%% packet.
+%%==================================================================
+
+-spec build_advertisement(QueryBin :: binary(), node_info()) ->
+          {ok, binary()} | ignore.
+build_advertisement(QueryBin, NodeInfo) when is_binary(QueryBin) ->
+    decide(inet_dns:decode(QueryBin), NodeInfo).
+
+decide({ok, {dns_rec, Header, Qs, _, _, _}}, NodeInfo) ->
+    consider(Header, Qs, NodeInfo);
+decide({error, _}, _NodeInfo) ->
+    ignore.
+
+consider({dns_header, _, true, _, _, _, _, _, _, _}, _Qs, _NodeInfo) ->
+    %% QR=true — this is a response packet, not a query. Do not echo.
+    ignore;
+consider({dns_header, Id, _, _, _, _, _, _, _, _}, Qs, NodeInfo) ->
+    respond_if_served(Id, Qs, NodeInfo).
+
+respond_if_served(Id, Qs, NodeInfo) ->
+    case lists:any(fun serves_us/1, Qs) of
+        true  -> {ok, response_packet(Id, NodeInfo)};
+        false -> ignore
+    end.
+
+serves_us({dns_query, Name, Type, in, _Flag}) ->
+    is_service_name(Name) andalso supports(Type);
+serves_us(_) ->
+    false.
+
+is_service_name(Name) ->
+    string:equal(Name, ?SERVICE_NAME, true).
+
+supports(any) -> true;
+supports(txt) -> true;
+supports(ptr) -> true;
+supports(_)   -> false.
+
+response_packet(Id, NodeInfo) ->
+    RR = txt_answer(NodeInfo),
+    Msg = inet_dns:make_msg([
+        {header, inet_dns:make_header(
+                    [{id, Id}, {qr, true}, {opcode, query},
+                     {aa, true}, {rd, false}, {ra, false},
+                     {rcode, 0}])},
+        {qdlist, []},
+        {anlist, [RR]}
+    ]),
+    iolist_to_binary(inet_dns:encode(Msg)).
+
+txt_answer(#{node_id := NodeId, port := Port, tier := Tier})
+  when is_binary(NodeId), byte_size(NodeId) =:= 32,
+       is_integer(Port), Port >= 1, Port =< 65535,
+       is_integer(Tier), Tier >= 0, Tier =< 4 ->
+    inet_dns:make_rr([
+        {domain, ?SERVICE_NAME},
+        {type, txt}, {class, in}, {ttl, 60},
+        {data, txt_fields(NodeId, Port, Tier)}
+    ]).
+
+txt_fields(NodeId, Port, Tier) ->
+    [txt_pair("node_id", hex_lower(NodeId)),
+     txt_pair("port",    integer_to_list(Port)),
+     txt_pair("tier",    integer_to_list(Tier))].
+
+txt_pair(Key, ValueStr) ->
+    Key ++ "=" ++ ValueStr.
+
+hex_lower(Bin) ->
+    string:lowercase(binary_to_list(binary:encode_hex(Bin))).
