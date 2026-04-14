@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 + 4.2 + 4.3 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.4 shipped.
 
 ---
 
@@ -52,6 +52,48 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.4 (shipped)
+
+**Scope:** path cache with TTL + SWIM-event invalidation
+(Part 3 §6.3).
+
+`hecate_routing_cache` — gen_server keyed on destination NodeId.
+- Each entry stores `paths`, `inserted_at` (monotonic ms), and a
+  pre-computed `hops :: sets:set(vertex())` that is the union of
+  every vertex across every cached path. The hop set is the
+  index that lets `invalidate_via_hop/2` answer in O(log n) per
+  entry instead of re-scanning paths.
+- `lookup/2` checks TTL inline and drops the entry on expiry —
+  callers only ever see live data. A background timer
+  (`sweep_interval_ms`, default 60 s) sweeps stale entries so
+  unaccessed destinations don't accumulate.
+- Three eviction triggers — TTL, `invalidate/2` (per-destination),
+  `invalidate_via_hop/2` (per-failed-hop). The latter is the
+  SWIM integration point: when SWIM signals a peer
+  `suspect | confirmed_failed`, the SWIM adapter calls
+  `invalidate_via_hop/2` to drop every cached entry whose paths
+  traverse that peer. The cache module itself does not subscribe
+  to SWIM — that wiring lands in a later session when SWIM has
+  a stable membership API.
+- Defaults: `ttl_ms = 300_000` (5 min per spec),
+  `sweep_interval_ms = 60_000`.
+- API: `start_link/0,1`, `stop/1`, `lookup/2`, `store/3`,
+  `invalidate/2`, `invalidate_via_hop/2` (returns evicted
+  destinations), `evict_expired/1`, `size/1`,
+  `all_destinations/1`, `stats/1`.
+
+Acceptance: +15 eunit (total 270 across the station).
+Tests cover empty-cache miss, store + lookup, overwrite,
+TTL drop on lookup, bulk `evict_expired`, `invalidate`
+single + unknown, `invalidate_via_hop` with both single-path and
+disjoint-path cached entries (whole entry evicted if any path
+uses the failed hop), destination-itself-as-hop eviction, and
+the auto-sweep timer.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.3.
 
 ## Session 4.3 (shipped)
 
