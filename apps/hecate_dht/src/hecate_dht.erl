@@ -41,6 +41,7 @@
     stats/1,
     ping_peer/2, ping_peer/3,
     find_node/3, find_node/4,
+    lookup_nodes/2, lookup_nodes/3,
     handle_frame/3,
     version/0
 ]).
@@ -146,6 +147,15 @@ find_node(Dht, Key, PeerId) ->
                 pos_integer()) -> find_node_result().
 find_node(Dht, Key, PeerId, Timeout) ->
     hecate_dht_server:find_node(Dht, Key, PeerId, Timeout).
+
+-spec lookup_nodes(dht(), hecate_dht_xor:id()) -> hecate_dht_lookup:result().
+lookup_nodes(Dht, Key) ->
+    hecate_dht_lookup:lookup_nodes(Dht, Key).
+
+-spec lookup_nodes(dht(), hecate_dht_xor:id(), hecate_dht_lookup:opts()) ->
+        hecate_dht_lookup:result().
+lookup_nodes(Dht, Key, Opts) ->
+    hecate_dht_lookup:lookup_nodes(Dht, Key, Opts).
 
 -spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Dht, FromNodeId, Frame) ->

@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.5 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.6 green.
 
 ---
 
@@ -78,6 +78,40 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.6 (shipped)
+
+**Scope:** S/Kademlia iterative FIND_NODE lookup with d=3 disjoint
+paths.
+
+1. `hecate_dht_lookup` — blocking orchestrator in the caller's
+   process. Maintains a `state()` map with `d` paths, each path a
+   `#{id, shortlist, queried, in_flight}`. `claimed` set sits at the
+   state level and enforces peer-level disjointness: a peer
+   admitted to one path's shortlist cannot enter another's. Workers
+   are short-lived unlinked procs that block on `hecate_dht:find_node/4`
+   and send `{lookup_result, PathId, PeerId, Result}' back to the
+   orchestrator. Termination fires when every path has `in_flight = ∅`
+   AND every shortlist member has been queried, or when the overall
+   deadline expires. Final result is top-N across all shortlists,
+   deduped by NodeId and sorted by ascending XOR distance.
+2. `hecate_dht` facade — `lookup_nodes/2,3` delegates.
+
+Acceptance: +7 eunit (total 172). Tests include:
+- Empty-RT → `{ok, []}`.
+- Single-hop — A knows B with 3 peers; lookup returns those peers.
+- Multi-hop chain A→B→C→D with only one-peer-per-hop — lookup
+  from A for D's NodeId reaches D and returns D as the closest
+  (distance 0).
+- Target-count capping.
+- Dedup + distance-sort ordering when paths overlap.
+- Overall-timeout clean termination with partial result.
+- Disjointness — with two paths and both B+C knowing D, D is
+  queried exactly once (counted at a stat-tracking router).
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §4.5.
 
 ## Session 3.5 (shipped)
 
