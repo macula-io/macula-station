@@ -3,7 +3,59 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §10
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` §7 (intra-realm overlay),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §6 (PubSub frames).
-**Status:** Phase 5 started 2026-04-14 — Session 5.1 shipped.
+**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 + 5.2 shipped.
+
+## Session 5.2 (shipped — SDK `macula-io/macula@a67d721`)
+
+**Scope:** HyParView wire frames (SDK) + protocol orchestration
+(station).
+
+**SDK side** — six new realm-scoped frames in `macula_frame`:
+`hyparview_join` (realm + new_member), `hyparview_forward_join`
+(realm + new_member + ttl + arwl + prwl),
+`hyparview_neighbor` (realm + priority high|low),
+`hyparview_disconnect` (realm),
+`hyparview_shuffle` (realm + origin + ttl + peer_sample),
+`hyparview_shuffle_reply` (realm + peer_sample).
+
+Every frame validated for size guards on the 32-byte realm and
+peer_sample entries; `priority` constrained to `high | low`.
++16 SDK eunit (242 total).
+
+**Station side** — `hecate_overlay_proto`. Pure orchestration
+on top of `hecate_overlay_view`. Single dispatch entry point
+`process(View, FromId, Frame, Ctx) -> {NewView, Actions}` with
+handlers per Part 3 §7.1:
+
+- JOIN: add_active(joiner) + NEIGHBOR(high) reply +
+  FORWARD_JOIN(ttl=ARWL) to other actives. Active-view
+  eviction emits DISCONNECT to the demoted peer.
+- FORWARD_JOIN: ttl=0 OR active empty → accept locally;
+  else if ttl == PRWL also add to passive, decrement ttl,
+  forward to a random non-sender active.
+- NEIGHBOR(high): always add_active.
+- NEIGHBOR(low): add_active iff there's room; else add_passive.
+- DISCONNECT: demote sender (active → passive).
+- SHUFFLE: ttl > 0 → forward to random active not sender / not
+  origin; else build SHUFFLE_REPLY against our own sample,
+  send to origin, merge incoming sample into passive.
+- SHUFFLE_REPLY: merge incoming sample into passive.
+
+`build_join/1` + `build_shuffle/1` builders for events the local
+process initiates. Defaults: ARWL=6, PRWL=3, shuffle TTL=4,
+shuffle sample 3 active + 4 passive.
+
++13 station eunit (346 total). Tests cover every handler with
+explicit view-state + actions assertions: JOIN admits sender +
+forwards to other actives; FORWARD_JOIN accepts at ttl=0,
+adds-to-passive at ttl=PRWL, forwards at higher ttl;
+NEIGHBOR(high) evicts to admit, NEIGHBOR(low) demotes when
+full; DISCONNECT demotes; SHUFFLE forwards or replies; reply
+merges into passive.
+
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §7.1.
 
 ## Session 5.1 (shipped)
 
