@@ -78,16 +78,72 @@ the corroboration logic without DoH endpoints.
 **State of green** (2026-04-14, post-6.2):
 - 437 station eunit / 25 station CT / xref / dialyzer all clean.
 
-## Session 6.3 — Real DoH resolver + IPv6 anycast probe (planned)
+## Session 6.3 — DoH codec + concrete resolver (shipped 2026-04-15)
 
-- `hecate_bootstrap_doh_httpc` — `inets:httpc` backed implementation
-  of `hecate_bootstrap_resolver`. Issues `application/dns-message`
-  POST per RFC 8484; parses DNS response; extracts PKARR TXT/CBOR.
-- `hecate_bootstrap_anycast` probe: parallel ICMPv6/QUIC ping at the
-  foundation-published anycast prefix; surviving endpoints feed back
-  into Tier A as additional resolver targets.
-- Network-integrated CT suite (skipped without `MACULA_DOH_ENABLE=1`)
-  exercises against Cloudflare 1.1.1.1 + Quad9 9.9.9.9 + Mullvad.
+**Scope:** pure RFC 8484 codec, concrete `inets:httpc`-backed resolver
+implementing `hecate_bootstrap_resolver`, and the base32 codec needed
+to derive PKARR zone labels. Anycast probe split out to a later
+session (6.3.5) to keep this scope tight.
+
+**Files added:**
+- `hecate_bootstrap_base32` — RFC 4648 canonical base32, lowercase
+  unpadded output, case-insensitive decode. A 32-byte pubkey encodes
+  to exactly 52 chars (fits the 63-char DNS-label limit); trailing
+  sub-byte bit fragments on decode are discarded deterministically.
+- `hecate_bootstrap_doh` — pure codec + resolver core.
+  - `query_domain(Pubkey, ZoneBase)` → `"_pkarr.<52b32>.<zone>"`
+    (lowercase Erlang string, what `inet_dns' wants).
+  - `build_query/1,2` → DoH `application/dns-message` binary via
+    `inet_dns:make_msg/encode`. `build_query/2` accepts an explicit
+    transaction id for deterministic tests.
+  - `parse_response/3` → verifies id, QR flag, RCODE, collects TXT
+    answers matching the expected name (case-insensitive),
+    concatenates character-strings + RRs into a single binary. Errors
+    are typed atoms + `{rcode, N}` / `{http, Reason}`.
+  - `resolve/4` composes the codec with a caller-supplied `SendFun`
+    `(Url, Body) -> {ok, RespBody} | {error, _}`.
+- `hecate_bootstrap_doh_http` — thin concrete resolver: reads
+  `doh_zone_base` from app env (default `<<"macula.io">>`), delegates
+  to `hecate_bootstrap_doh:resolve/4` with an `httpc`-backed send fun
+  that POSTs `application/dns-message` and maps HTTP status to
+  `{ok, Body} | {error, {http_status, Code, Phrase}} | {error, _}`.
+- `inets` + `ssl` added to `hecate_bootstrap.app.src` applications.
+
+**Test coverage:**
+- `hecate_bootstrap_base32_tests` — RFC 4648 vectors, random-input
+  round-trips, 52-char fits-in-label invariant, case-insensitive
+  decode, bad-char rejection. 20 cases.
+- `hecate_bootstrap_doh_tests` — 29 cases covering query_domain
+  (zero-key, random-key round-trip, string zones), build_query
+  (encoding shape, random-id range), parse_response (single-string,
+  multi-string concat, multi-RR concat, case-insensitive name match,
+  id mismatch, QR=false, NXDOMAIN, REFUSED, no_txt_answer, wrong
+  domain, garbage bytes), and resolve/4 (happy path, http-error
+  wrapping, zone_base override, parse-error propagation).
+- `hecate_bootstrap_tier_a_doh_tests` — integration: a module that
+  implements `hecate_bootstrap_resolver` by running the real codec
+  with a canned HTTP transport, proving Tier A + DoH + foundation
+  record pipeline all compose. Exercises multi-chunk TXT splitting
+  (records split into 200-byte chars-strings).
+
+**State of green** (2026-04-15, post-6.3):
+- 487 station eunit / 25 station CT / xref / dialyzer all clean.
+
+## Session 6.3.5 — IPv6 anycast probe (planned)
+
+- `hecate_bootstrap_anycast` probe: parallel QUIC handshake against
+  the foundation-published anycast prefix `2001:...:macula:a::/48';
+  any reachable peer becomes an additional Tier A resolver target
+  (corroboration prevents BGP-hijack).
+- Requires RPKI verification of the announcing AS to be useful;
+  validation path TBD (likely defer to a Part 2 §3.5 follow-up).
+
+## Session 6.3.6 — Network-integrated gated CT (planned)
+
+- `hecate_bootstrap_doh_SUITE` skipped without `MACULA_DOH_ENABLE=1`;
+  exercises `hecate_bootstrap_doh_http' against Cloudflare 1.1.1.1,
+  Quad9 9.9.9.9, Mullvad, with a test record actually published to
+  a throwaway domain.
 
 ## Session 6.4 — Tier B mDNS (planned)
 
