@@ -3,7 +3,54 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §10
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` §7 (intra-realm overlay),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §6 (PubSub frames).
-**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 – 5.4 shipped.
+**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 – 5.5 shipped.
+
+## Session 5.5 (shipped — SDK `macula-io/macula@f4c68f0`)
+
+**Scope:** realm-scoped PubSub frames + dispatch state.
+
+**SDK side** — four realm-scoped PubSub frames in `macula_frame`
+per Part 6 §6:
+- `publish` (topic + realm + publisher + seq + payload +
+  published_at_ms + optional ttl_ms)
+- `subscribe` (topic + realm + subscriber + optional filter +
+  options)
+- `unsubscribe` (topic + realm + subscriber)
+- `event` (topic + realm + publisher + seq + payload +
+  delivered_via plumtree|dht|direct)
+
+EVENT carries the publisher's signature end-to-end so every
+subscriber can verify authenticity without trusting
+intermediaries; intermediaries do NOT re-sign per hop.
+
++9 SDK eunit (139 in macula_frame, 257 SDK-wide).
+
+**Station side** — `hecate_pubsub` pure module holding the
+topic-to-subscriber index for one realm. Cross-realm leakage is
+impossible — the realm is baked into state and every dispatch
+checks it.
+
+API: `new/1`, `subscribe/3`, `unsubscribe/3`, `is_subscribed/3`,
+`subscribers/2`, `topics/1`, `topic_count/1`,
+`subscriber_count/1`, `deliver_event/2`, `build_event/3`,
+`process/3`. Dispatch:
+- SUBSCRIBE / UNSUBSCRIBE for matching realm → state mutation.
+- EVENT → list of local subscribers for the topic.
+- Wrong-realm frames silently ignored (defensive).
+
+`build_event/3` produces a publisher-signed EVENT frame the
+wrapper feeds into `hecate_plumtree:publish/3` for fan-out.
+
+Acceptance: +15 station eunit (394 total). Coverage: subscribe
+basics + idempotence + multi-subscriber per topic; unsubscribe
+drops subscriber and removes empty-topic entries; event
+delivery returns matching subscribers + ignores wrong realm;
+build_event signs with publisher identity; process/3 dispatch
+for all four frame types including wrong-realm rejection.
+
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+Refs: plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §6.
 
 ## Session 5.4 (shipped)
 
