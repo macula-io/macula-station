@@ -39,15 +39,21 @@
     size/1,
     bucket_count/1,
     stats/1,
+    ping_peer/2, ping_peer/3,
+    find_node/3, find_node/4,
+    handle_frame/3,
     version/0
 ]).
 
--export_type([dht/0, opts/0, observe_result/0, stats/0]).
+-export_type([dht/0, opts/0, observe_result/0, stats/0,
+              ping_result/0, find_node_result/0]).
 
--type dht()            :: pid().
--type opts()           :: hecate_dht_server:opts().
--type observe_result() :: hecate_dht_server:observe_result().
--type stats()          :: hecate_dht_server:stats().
+-type dht()              :: pid().
+-type opts()             :: hecate_dht_server:opts().
+-type observe_result()   :: hecate_dht_server:observe_result().
+-type stats()            :: hecate_dht_server:stats().
+-type ping_result()      :: hecate_dht_server:ping_result().
+-type find_node_result() :: hecate_dht_server:find_node_result().
 
 %%=====================================================================
 %% Lifecycle
@@ -118,6 +124,32 @@ bucket_count(Dht) ->
 -spec stats(dht()) -> stats().
 stats(Dht) ->
     hecate_dht_server:stats(Dht).
+
+%%=====================================================================
+%% Wire operations (Session 3.5)
+%%=====================================================================
+
+-spec ping_peer(dht(), macula_identity:pubkey()) -> ping_result().
+ping_peer(Dht, TargetId) ->
+    hecate_dht_server:ping_peer(Dht, TargetId).
+
+-spec ping_peer(dht(), macula_identity:pubkey(), pos_integer()) -> ping_result().
+ping_peer(Dht, TargetId, Timeout) ->
+    hecate_dht_server:ping_peer(Dht, TargetId, Timeout).
+
+-spec find_node(dht(), hecate_dht_xor:id(), macula_identity:pubkey()) ->
+        find_node_result().
+find_node(Dht, Key, PeerId) ->
+    hecate_dht_server:find_node(Dht, Key, PeerId).
+
+-spec find_node(dht(), hecate_dht_xor:id(), macula_identity:pubkey(),
+                pos_integer()) -> find_node_result().
+find_node(Dht, Key, PeerId, Timeout) ->
+    hecate_dht_server:find_node(Dht, Key, PeerId, Timeout).
+
+-spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
+handle_frame(Dht, FromNodeId, Frame) ->
+    hecate_dht_server:handle_frame(Dht, FromNodeId, Frame).
 
 %%=====================================================================
 %% Version

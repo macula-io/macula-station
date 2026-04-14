@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 + 3.3 + 3.4 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.5 green.
 
 ---
 
@@ -78,6 +78,47 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.5 (shipped)
+
+**Scope:** first wire-level DHT op — PING/PONG + FIND_NODE/NODES
+request-response machinery inside the DHT server.
+
+1. `hecate_dht_protocol` — pure frame-builder module. `build_ping/1`
+   returns `{Frame, Nonce}`; `build_pong/2` echoes the nonce;
+   `build_find_node/4` and `build_nodes_reply/3` wrap the
+   Session-3.4 `macula_frame` constructors; `verify/2` is a thin
+   `macula_frame:verify/2` delegate; `entry_to_station_ref/1,2`
+   converts a routing-table entry to the wire payload (atom tier →
+   int, monotonic last_seen → wall-clock ms).
+2. `hecate_dht_server` extended with:
+   - `identity` (key pair for signing outgoing) and pluggable
+     `send_frame/2` callback — transport-agnostic, so the
+     Session-3.12 CT harness wires one callback and production
+     wires a `macula_peering` callback with identical behaviour.
+   - `pending_pings :: #{Nonce => {TargetId, From, TimerRef,
+     StartedMono}}` and `pending_find_nodes :: #{{PeerId, Key} =>
+     {From, TimerRef}}` — per-request correlation.
+   - `ping_peer/2,3` and `find_node/3,4` — synchronous-to-caller,
+     async internally: call, cast outgoing frame, park `From`
+     until matching response arrives (or timer fires).
+   - `handle_frame/3` — cast entry point for incoming frames;
+     signature-verifies then dispatches to the four type handlers.
+     Unsigned / tampered / wrong-peer frames drop silently.
+   - Successful PONG triggers `routing_table:touch/3` +
+     `siblings:touch/3` on the sender in addition to replying to
+     the caller with RTT in ms.
+3. `hecate_dht` facade — mirrors the new server API.
+
+Acceptance: +15 eunit (total 165 across the app). Includes a
+two-server wire harness with a dispatch-router pid that routes
+frames between gen_server instances, plus a tampering-router test
+that proves signature verification drops mutated frames.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §4.5, §10.1;
+      plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §7.1, §7.2.
 
 ## Session 3.4 (shipped — macula-io/macula commit `92729aa`)
 

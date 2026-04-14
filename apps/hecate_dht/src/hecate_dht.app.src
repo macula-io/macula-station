@@ -12,6 +12,7 @@
         hecate_dht_bucket,
         hecate_dht_routing_table,
         hecate_dht_siblings,
+        hecate_dht_protocol,
         hecate_dht_server,
         hecate_dht_sup
     ]},
