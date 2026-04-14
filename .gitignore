@@ -1,0 +1,15 @@
+_build/
+.eunit/
+rebar.lock
+*.beam
+*.o
+*.plt
+erl_crash.dump
+.rebar3/
+doc/
+ebin/
+logs/
+priv/generated/
+.DS_Store
+*.swp
+*~
