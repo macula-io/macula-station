@@ -5,12 +5,15 @@
     {applications, [kernel, stdlib, crypto, macula]},
     {env, []},
     {modules, [
+        hecate_dht,
         hecate_dht_xor,
         hecate_dht_entry,
         hecate_dht_diversity,
         hecate_dht_bucket,
         hecate_dht_routing_table,
-        hecate_dht_siblings
+        hecate_dht_siblings,
+        hecate_dht_server,
+        hecate_dht_sup
     ]},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}

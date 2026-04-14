@@ -1,0 +1,128 @@
+%% @doc Hecate DHT — public facade.
+%%
+%% Every operation is a thin delegation to `hecate_dht_server'. This
+%% module is the only one external callers should use: the server,
+%% its supervisor, and the pure primitives (`hecate_dht_xor',
+%% `hecate_dht_entry', `hecate_dht_bucket', `hecate_dht_routing_table',
+%% `hecate_dht_siblings') are implementation detail.
+%%
+%% == Usage ==
+%%
+%% ```
+%% {ok, Dht} = hecate_dht:start_link(#{self_id => Self}),
+%% admitted  = hecate_dht:observe(Dht, #{node_id => PeerId,
+%%                                       asn => 64512,
+%%                                       country => <<"BE">>,
+%%                                       tier => t1}),
+%% [Peer|_]  = hecate_dht:k_closest(Dht, Target, 3),
+%% ok        = hecate_dht:stop(Dht).
+%% '''
+%%
+%% Multiple DHT instances can run in one BEAM VM — all API calls are
+%% pid-scoped, no singleton state.
+%%
+%% Reference: plans/PLAN_PHASE_3_BREAKDOWN.md Session 3.3.
+-module(hecate_dht).
+
+-export([
+    start_link/1,
+    stop/1,
+    observe/2,
+    touch/2,
+    forget/2,
+    self_id/1,
+    find/2,
+    contains/2,
+    k_closest/3,
+    siblings/1,
+    sibling_ids/1,
+    size/1,
+    bucket_count/1,
+    stats/1,
+    version/0
+]).
+
+-export_type([dht/0, opts/0, observe_result/0, stats/0]).
+
+-type dht()            :: pid().
+-type opts()           :: hecate_dht_server:opts().
+-type observe_result() :: hecate_dht_server:observe_result().
+-type stats()          :: hecate_dht_server:stats().
+
+%%=====================================================================
+%% Lifecycle
+%%=====================================================================
+
+-spec start_link(opts()) -> {ok, dht()} | {error, term()}.
+start_link(Opts) ->
+    hecate_dht_server:start_link(Opts).
+
+-spec stop(dht()) -> ok.
+stop(Dht) ->
+    hecate_dht_server:stop(Dht).
+
+%%=====================================================================
+%% Writes
+%%=====================================================================
+
+-spec observe(dht(), hecate_dht_entry:spec()) -> observe_result().
+observe(Dht, Spec) ->
+    hecate_dht_server:observe(Dht, Spec).
+
+-spec touch(dht(), hecate_dht_xor:id()) -> ok.
+touch(Dht, Id) ->
+    hecate_dht_server:touch(Dht, Id).
+
+-spec forget(dht(), hecate_dht_xor:id()) -> ok.
+forget(Dht, Id) ->
+    hecate_dht_server:forget(Dht, Id).
+
+%%=====================================================================
+%% Reads
+%%=====================================================================
+
+-spec self_id(dht()) -> hecate_dht_xor:id().
+self_id(Dht) ->
+    hecate_dht_server:self_id(Dht).
+
+-spec find(dht(), hecate_dht_xor:id()) ->
+        {ok, hecate_dht_entry:entry()} | error.
+find(Dht, Id) ->
+    hecate_dht_server:find(Dht, Id).
+
+-spec contains(dht(), hecate_dht_xor:id()) -> boolean().
+contains(Dht, Id) ->
+    hecate_dht_server:contains(Dht, Id).
+
+-spec k_closest(dht(), hecate_dht_xor:id(), non_neg_integer()) ->
+          [hecate_dht_entry:entry()].
+k_closest(Dht, Target, K) ->
+    hecate_dht_server:k_closest(Dht, Target, K).
+
+-spec siblings(dht()) -> [hecate_dht_entry:entry()].
+siblings(Dht) ->
+    hecate_dht_server:siblings(Dht).
+
+-spec sibling_ids(dht()) -> [hecate_dht_xor:id()].
+sibling_ids(Dht) ->
+    hecate_dht_server:sibling_ids(Dht).
+
+-spec size(dht()) -> non_neg_integer().
+size(Dht) ->
+    hecate_dht_server:size(Dht).
+
+-spec bucket_count(dht()) -> non_neg_integer().
+bucket_count(Dht) ->
+    hecate_dht_server:bucket_count(Dht).
+
+-spec stats(dht()) -> stats().
+stats(Dht) ->
+    hecate_dht_server:stats(Dht).
+
+%%=====================================================================
+%% Version
+%%=====================================================================
+
+-spec version() -> binary().
+version() ->
+    <<"0.1.0-phase3">>.

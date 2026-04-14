@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 + 3.3 green.
 
 ---
 
@@ -78,6 +78,27 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.3 (shipped)
+
+**Scope:** first stateful session — pid-scoped DHT server + facade + supervisor.
+
+1. `hecate_dht_server` — `gen_server` owning a `hecate_dht_routing_table`
+   and a `hecate_dht_siblings` for a single station's `SelfId`. `observe/2`
+   offers the peer to both containers (RT admission is scored, sibling
+   admission is pure distance). Reports RT outcome as `admitted | touched |
+   {replaced, Evicted} | rejected`. `touch/2` and `forget/2` are cast-based
+   and hit both containers. `stats/1` aggregates sizes.
+2. `hecate_dht` — thin public facade delegating every call to the server.
+   Only module external callers should use. Supports multiple instances
+   per BEAM VM (pid-scoped, no registered name).
+3. `hecate_dht_sup` — supervisor with `hecate_dht_server` as its single
+   child. `start_link/1` takes the opts map and forwards it to the child;
+   `get_server/1` returns the running server pid. Room for ETS record
+   store (3.7), custodian timers (3.9/3.10), observability (3.11).
+
+Acceptance: +39 eunit tests (total 150 across app), xref + dialyzer clean.
+One supervisor-restart test exercises the child's permanent restart policy.
 
 ## Session 3.2 (shipped)
 
