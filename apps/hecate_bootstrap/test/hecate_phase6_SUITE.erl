@@ -23,23 +23,29 @@
 -export([tier_e_yields_three_peers/1,
          cascade_falls_through_to_working_tier/1,
          foundation_record_trust_boundary/1,
-         foundation_seed_list_signed_by_trusted_key/1]).
+         foundation_seed_list_signed_by_trusted_key/1,
+         tier_a_corroborated_seed_list_yields_peers/1,
+         tier_a_uncorroborated_falls_through_to_tier_e/1]).
 
 all() ->
     [tier_e_yields_three_peers,
      cascade_falls_through_to_working_tier,
      foundation_record_trust_boundary,
-     foundation_seed_list_signed_by_trusted_key].
+     foundation_seed_list_signed_by_trusted_key,
+     tier_a_corroborated_seed_list_yields_peers,
+     tier_a_uncorroborated_falls_through_to_tier_e].
 
 init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
 
 init_per_testcase(_Case, Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
+    hecate_bootstrap_tier_a_fake:init(),
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
+    hecate_bootstrap_tier_a_fake:reset(),
     ok.
 
 %%---------------------------------------------------------------------
@@ -135,6 +141,60 @@ foundation_seed_list_signed_by_trusted_key(_Cfg) ->
     ok.
 
 %%---------------------------------------------------------------------
+%% Tier A — corroborated seed list (acceptance §11.3)
+%%---------------------------------------------------------------------
+
+tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Bytes = signed_seed_list_bytes(Kp, Fk, 5),
+    Resolvers = [
+        {hecate_bootstrap_tier_a_fake, <<"r1">>},
+        {hecate_bootstrap_tier_a_fake, <<"r2">>},
+        {hecate_bootstrap_tier_a_fake, <<"r3">>}
+    ],
+    [hecate_bootstrap_tier_a_fake:set(U, Fk, {ok, Bytes})
+     || {_, U} <- Resolvers],
+    Tiers = [{hecate_bootstrap_tier_a,
+              #{resolvers     => Resolvers,
+                pubkeys       => [Fk],
+                corroboration => 2,
+                timeout_ms    => 500}}],
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 2000}),
+    5 = length(Peers),
+    [a] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    ok.
+
+tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Bytes = signed_seed_list_bytes(Kp, Fk, 3),
+    %% Only one resolver corroborates — threshold is 2, so Tier A fails.
+    hecate_bootstrap_tier_a_fake:set(<<"r1">>, Fk, {ok, Bytes}),
+    hecate_bootstrap_tier_a_fake:set(<<"r2">>, Fk, {error, dns_failure}),
+    hecate_bootstrap_tier_a_fake:set(<<"r3">>, Fk, {error, dns_failure}),
+    AResolvers = [{hecate_bootstrap_tier_a_fake, <<"r1">>},
+                  {hecate_bootstrap_tier_a_fake, <<"r2">>},
+                  {hecate_bootstrap_tier_a_fake, <<"r3">>}],
+    Urls = [signed_url() || _ <- lists:seq(1, 3)],
+    Tiers = [
+        {hecate_bootstrap_tier_a,
+         #{resolvers     => AResolvers,
+           pubkeys       => [Fk],
+           corroboration => 2,
+           timeout_ms    => 500}},
+        {hecate_bootstrap_tier_e, #{peer_urls => Urls}}
+    ],
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 2000}),
+    3 = length(Peers),
+    [e] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    ok.
+
+%%---------------------------------------------------------------------
 %% Fake tier registration (runtime-compiled)
 %%---------------------------------------------------------------------
 
@@ -174,3 +234,11 @@ signed_url() ->
                  macula_identity:public(Kp), [], 0),
                Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
+
+signed_seed_list_bytes(Kp, Fk, N) ->
+    Seeds = [#{node_id   => crypto:strong_rand_bytes(32),
+               addresses => [],
+               tier      => 4} || _ <- lists:seq(1, N)],
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(Fk, Seeds), Kp),
+    macula_record:encode(Record).
