@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 + 4.2 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 + 4.2 + 4.3 shipped.
 
 ---
 
@@ -52,6 +52,44 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.3 (shipped)
+
+**Scope:** first station-side Phase 4 module — graph + Dijkstra
++ vertex-disjoint paths (Part 3 §6).
+
+`hecate_routing` — pure functional graph + pathfinding library.
+- Graph as `#{vertices, out :: #{V => #{Neighbor => Weight}}}`.
+  Construction: `new/0`, `add_vertex/2`, `add_edge/4`,
+  `add_edges/2`. Inspection: `vertices/1`, `has_vertex/2`,
+  `out_neighbors/2`, `weight/3`.
+- Edge weight model from §6.3: `edge_weight(Tier, LatencyMs)` =
+  `LatencyMs + DEFAULT_BANDWIDTH_TERM (10) + tier_penalty(Tier)`
+  with `tier_penalty(t0..t3)` = `10 / 5 / 2 / 1` (residential
+  costliest, foundation cheapest — favours gateway-tier
+  long-haul). `LatencyMs = undefined` → 100 ms default.
+- Dijkstra single-source via `gb_sets` priority queue;
+  `shortest_path/3` extracts a path with cost.
+- `disjoint_paths/3,4` ships an iterative-greedy
+  vertex-disjoint algorithm (find shortest, remove
+  intermediate vertices, repeat). Plan-of-record names
+  Suurballe's algorithm; iterative-greedy is correct (paths
+  are vertex-disjoint, each is locally shortest) but not
+  globally cost-optimal across the K paths. A Suurballe
+  upgrade lands in Phase 7 hardening if measured path cost
+  matters at scale.
+
+Acceptance: +22 eunit (total 255 across the station). Tests
+cover construction (incl. self-loop + negative-weight
+rejection), tier_penalty ordering, weight defaults, Dijkstra
+on a diamond + indirect-cheaper-than-direct + unreachable
++ unknown-source + src=tgt cases, and disjoint_paths over
+diamond / fan-out / sparse / unreachable / cost-ordering /
+global-uniqueness scenarios.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.3.
 
 ## Session 4.2 (shipped — SDK `macula-io/macula@b90f1fb`)
 

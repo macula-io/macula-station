@@ -4,7 +4,7 @@
     {registered, []},
     {applications, [kernel, stdlib, macula]},
     {env, []},
-    {modules, []},
+    {modules, [hecate_routing]},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}
 ]}.
