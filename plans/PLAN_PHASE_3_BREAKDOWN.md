@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 + 3.3 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 + 3.3 + 3.4 green.
 
 ---
 
@@ -78,6 +78,30 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.4 (shipped — macula-io/macula commit `92729aa`)
+
+**Scope:** cross-repo — extend `macula_frame` (SDK) with Part 6 §7
+DHT frame types.
+
+1. **ping / pong** — 16-byte nonce-matched pairs.
+2. **find_node / nodes** — iterative lookup; `nodes` carries a list of
+   validated `station_ref()` entries (node_id + station_id + tier +
+   country + ASN + addresses + last_seen_at).
+3. **find_value / value** — key-by-key record retrieval; `value`
+   returns a list of signed pkarr records.
+4. **store / store_ack** — primary write path; ack carries a boolean
+   `stored` plus optional atom `reason` (`quota | invalid_sig | ...`).
+5. **replicate / replicate_ack** — custody handover (Part 3 §5.5); the
+   `new_custodian` boolean signals a join-time takeover.
+6. **station_ref/1** — validated helper for the NODES payload.
+
+All frames use the existing `base/2` header (`capabilities => 0`),
+`sign/verify` and `encode/decode` paths unchanged. +29 eunit tests
+(total 57 for macula_frame, 155 repo-wide); xref + dialyzer clean.
+
+Downstream: `hecate-station` recompiles cleanly against the new SDK
+commit; all 150 station eunit tests still green.
 
 ## Session 3.3 (shipped)
 
