@@ -3,7 +3,73 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §10
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` §7 (intra-realm overlay),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §6 (PubSub frames).
-**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 – 5.5 shipped.
+**Status:** Phase 5 COMPLETE — 2026-04-14. Sessions 5.1 – 5.6 shipped.
+
+## Session 5.6 (shipped — SDK `macula-io/macula@fd45334`)
+
+**Scope:** realm-join handshake + Phase 5 acceptance CT suite.
+
+**SDK side** — `realm_member_endorsement` record (Part 6 §9.6) in
+`macula_record`:
+- Payload: `realm`, `member_node`, `roles`, `valid_from`,
+  `valid_until`.
+- Envelope key: RealmId (admin signs).
+- Storage key: `SHA-256("member_endorsement" || RealmId || Member)`
+  — distinct from the realm_directory key so the two admin-owned
+  records cannot collide.
+- Default validity window: 30 days via `?DEFAULT_ENDORSEMENT_TTL_MS`.
+
++5 SDK eunit (46 in macula_record, 262 SDK-wide).
+
+**Station side** — two new modules.
+
+`hecate_realm_join` — pure verifier. `verify_endorsement/3` checks:
+- Record type = 0x05 (realm_member_endorsement).
+- Envelope signature valid (admin signed) and not expired.
+- `realm` field matches expected realm id.
+- `member_node` field matches the claiming peer id (prevents stealing
+  another member's endorsement).
+- Current time inside the `valid_from .. valid_until` window.
+
+Returns `{ok, Roles}` on success or `{error, Reason}` with one of
+`bad_record | signature_invalid | expired | wrong_type |
+wrong_realm | wrong_member | not_yet_valid | endorsement_expired`.
+`build_join/4` produces a signed HYPARVIEW_JOIN frame for the joiner.
+
++10 station eunit (404 total).
+
+**Phase 5 CT suite** — `hecate_phase5_SUITE` + `phase5_helper`.
+The helper spawns in-VM stations, each holding `hecate_overlay_view`
++ `hecate_plumtree` + `hecate_pubsub` per realm, wired through a
+synchronous router. Dispatches HyParView / Plumtree / PubSub frames
+into the right module; on plumtree delivery it feeds payload into
+the local pubsub state so subscribers fire.
+
+Tests (4, 10/10 stable):
+- `realm_join_admits_new_member` — seed admits joiner after admin
+  endorsement verifies; joiner appears in seed's active view.
+- `realm_join_rejects_bogus_endorsement` — seed drops a joiner
+  whose endorsement is signed by an impostor; a follow-up with a
+  real admin-signed endorsement admits.
+- `plumtree_delivers_to_all_subscribers` — 5-station chain
+  (a-b-c-d-e), all subscribe to `chat`, publish from a delivers
+  exactly once to every subscriber via GOSSIP forwarding.
+- `cross_realm_isolation` — two realms sharing identities with
+  different wiring; events published in R1 never surface on R2
+  subscribers (even on stations that belong to both realms).
+
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+**Deferred to network-integrated suite** (Part 7 §10.3):
+- 20-station realm convergence < 1 s
+- Active-view repair after single failure < 3 s
+
+These need real (or simulated-latency) transport; the in-VM router
+delivers synchronously so timing-based acceptance bars aren't
+meaningful here.
+
+Refs: plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §9.6,
+      plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §7.
 
 ## Session 5.5 (shipped — SDK `macula-io/macula@f4c68f0`)
 
@@ -273,11 +339,11 @@ supports.
 
 ## Phase 5 acceptance (from Part 7 §10.3)
 
-- [ ] 20-station realm converges on add/remove in <1 s.
-- [ ] HyParView active-view repair after single failure <3 s.
-- [ ] Plumtree delivers every message to every member at least once.
-- [ ] No cross-realm leakage: realm-A gossip never reaches realm-B station.
-- [ ] CT suite green; no flakes over 10 runs.
+- [ ] 20-station realm converges on add/remove in <1 s. *(deferred — network suite)*
+- [ ] HyParView active-view repair after single failure <3 s. *(deferred — network suite)*
+- [x] Plumtree delivers every message to every member at least once. *(CT — 5-station chain)*
+- [x] No cross-realm leakage: realm-A gossip never reaches realm-B station. *(CT)*
+- [x] CT suite green; no flakes over 10 runs. *(10/10)*
 
 ## Process discipline
 
