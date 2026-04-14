@@ -55,6 +55,10 @@
     stats/1,
     ping_peer/2, ping_peer/3,
     find_node/3, find_node/4,
+    find_value/3, find_value/4,
+    put_record/2,
+    find_local_record/2,
+    record_count/1,
     handle_frame/3
 ]).
 
@@ -62,7 +66,7 @@
          terminate/2, code_change/3]).
 
 -export_type([opts/0, observe_result/0, stats/0, send_fun/0,
-              ping_result/0, find_node_result/0]).
+              ping_result/0, find_node_result/0, find_value_result/0]).
 
 -define(DEFAULT_K, 20).
 -define(DEFAULT_S, 16).
@@ -87,6 +91,10 @@
 
 -type find_node_result() :: {ok, [macula_frame:station_ref()]}
                           | {error, timeout | no_transport | term()}.
+
+-type find_value_result() :: {value, [macula_record:record()]}
+                           | {nodes, [macula_frame:station_ref()]}
+                           | {error, timeout | no_transport | term()}.
 
 -type observe_result() ::
       admitted
@@ -122,7 +130,11 @@
     %% {{PeerNodeId, Key} => {From, TimerRef}}
     pending_find_nodes = #{} :: #{{macula_identity:pubkey(),
                                    hecate_dht_xor:id()} =>
-                                  {gen_server:from(), reference()}}
+                                  {gen_server:from(), reference()}},
+    pending_find_values = #{} :: #{{macula_identity:pubkey(),
+                                    hecate_dht_xor:id()} =>
+                                   {gen_server:from(), reference()}},
+    record_store                :: ets:tid()
 }).
 
 %%=====================================================================
@@ -211,6 +223,30 @@ find_node(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
 handle_frame(Pid, <<_:256>> = FromNodeId, Frame) when is_map(Frame) ->
     gen_server:cast(Pid, {frame, FromNodeId, Frame}).
 
+-spec find_value(pid(), hecate_dht_xor:id(), macula_identity:pubkey()) ->
+        find_value_result().
+find_value(Pid, Key, PeerId) ->
+    find_value(Pid, Key, PeerId, ?DEFAULT_FIND_NODE_TIMEOUT_MS).
+
+-spec find_value(pid(), hecate_dht_xor:id(), macula_identity:pubkey(),
+                 pos_integer()) -> find_value_result().
+find_value(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
+  when is_integer(Timeout), Timeout > 0 ->
+    gen_server:call(Pid, {find_value, Key, PeerId, Timeout}, Timeout + 1_000).
+
+-spec put_record(pid(), macula_record:record()) -> ok.
+put_record(Pid, Record) when is_map(Record) ->
+    gen_server:call(Pid, {put_record, Record}).
+
+-spec find_local_record(pid(), hecate_dht_xor:id()) ->
+        [macula_record:record()].
+find_local_record(Pid, <<_:256>> = Key) ->
+    gen_server:call(Pid, {find_local_record, Key}).
+
+-spec record_count(pid()) -> non_neg_integer().
+record_count(Pid) ->
+    gen_server:call(Pid, record_count).
+
 %%=====================================================================
 %% gen_server callbacks
 %%=====================================================================
@@ -218,6 +254,7 @@ handle_frame(Pid, <<_:256>> = FromNodeId, Frame) when is_map(Frame) ->
 init(#{self_id := Self} = Opts) ->
     K = maps:get(k, Opts, ?DEFAULT_K),
     S = maps:get(s, Opts, ?DEFAULT_S),
+    Ets = ets:new(hecate_dht_record_store, [bag, private]),
     {ok, #state{
         self_id              = Self,
         rt                   = hecate_dht_routing_table:new(Self, K),
@@ -229,7 +266,8 @@ init(#{self_id := Self} = Opts) ->
         ping_timeout_ms      = maps:get(ping_timeout_ms, Opts,
                                         ?DEFAULT_PING_TIMEOUT_MS),
         find_node_timeout_ms = maps:get(find_node_timeout_ms, Opts,
-                                        ?DEFAULT_FIND_NODE_TIMEOUT_MS)
+                                        ?DEFAULT_FIND_NODE_TIMEOUT_MS),
+        record_store         = Ets
     }}.
 
 handle_call(self_id, _From, #state{self_id = Self} = S) ->
@@ -268,6 +306,19 @@ handle_call({ping_peer, TargetId, Timeout}, From, S) ->
 handle_call({find_node, Key, PeerId, Timeout}, From, S) ->
     dispatch_find_node(Key, PeerId, Timeout, From, S);
 
+handle_call({find_value, Key, PeerId, Timeout}, From, S) ->
+    dispatch_find_value(Key, PeerId, Timeout, From, S);
+
+handle_call({put_record, Record}, _From, #state{record_store = Ets} = S) ->
+    store_put(Ets, Record),
+    {reply, ok, S};
+
+handle_call({find_local_record, Key}, _From, #state{record_store = Ets} = S) ->
+    {reply, store_lookup(Ets, Key), S};
+
+handle_call(record_count, _From, #state{record_store = Ets} = S) ->
+    {reply, ets:info(Ets, size), S};
+
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -295,6 +346,9 @@ handle_info({ping_timeout, Nonce}, S) ->
 
 handle_info({find_node_timeout, Key, PeerId}, S) ->
     {noreply, on_find_node_timeout(Key, PeerId, S)};
+
+handle_info({find_value_timeout, Key, PeerId}, S) ->
+    {noreply, on_find_value_timeout(Key, PeerId, S)};
 
 handle_info(_Msg, S) ->
     {noreply, S}.
@@ -435,6 +489,65 @@ dispatch_find_node_timeout({{From, _Timer}, NewP}, S) ->
     S#state{pending_find_nodes = NewP}.
 
 %%=====================================================================
+%% Wire op: FIND_VALUE outgoing
+%%=====================================================================
+
+-spec dispatch_find_value(hecate_dht_xor:id(), macula_identity:pubkey(),
+                          pos_integer(), gen_server:from(), #state{}) ->
+          {reply, find_value_result(), #state{}} | {noreply, #state{}}.
+dispatch_find_value(_Key, _PeerId, _Timeout, _From,
+                    #state{send_frame = undefined} = S) ->
+    {reply, {error, no_transport}, S};
+dispatch_find_value(_Key, _PeerId, _Timeout, _From,
+                    #state{identity = undefined} = S) ->
+    {reply, {error, no_identity}, S};
+dispatch_find_value(Key, PeerId, Timeout, From,
+                    #state{self_id = Self, identity = Id, send_frame = Send,
+                           pending_find_values = P} = S) ->
+    Frame = hecate_dht_protocol:build_find_value(Key, Self, Id),
+    Send(PeerId, Frame),
+    TimerRef = erlang:send_after(Timeout, self(),
+                                 {find_value_timeout, Key, PeerId}),
+    {noreply, S#state{pending_find_values =
+        P#{{PeerId, Key} => {From, TimerRef}}}}.
+
+-spec on_find_value_timeout(hecate_dht_xor:id(), macula_identity:pubkey(),
+                            #state{}) -> #state{}.
+on_find_value_timeout(Key, PeerId, #state{pending_find_values = P} = S) ->
+    dispatch_find_value_timeout(maps:take({PeerId, Key}, P), S).
+
+-spec dispatch_find_value_timeout(error | {tuple(), map()}, #state{}) ->
+          #state{}.
+dispatch_find_value_timeout(error, S) ->
+    S;
+dispatch_find_value_timeout({{From, _Timer}, NewP}, S) ->
+    gen_server:reply(From, {error, timeout}),
+    S#state{pending_find_values = NewP}.
+
+%%=====================================================================
+%% Record store (ETS bag keyed by storage key; value = record()).
+%% `put' replaces any prior record from the same envelope owner so
+%% versions don't accumulate, and preserves records from other
+%% owners that share the same storage key (e.g. multiple advertisers
+%% of the same procedure_uri).
+%%=====================================================================
+
+-spec store_put(ets:tid(), macula_record:record()) -> ok.
+store_put(Ets, Record) ->
+    StorageKey  = macula_record:storage_key(Record),
+    EnvelopeKey = macula_record:key(Record),
+    Keep = [Tup || {_, R} = Tup <- ets:lookup(Ets, StorageKey),
+                   macula_record:key(R) =/= EnvelopeKey],
+    ets:delete(Ets, StorageKey),
+    ets:insert(Ets, [{StorageKey, Record} | Keep]),
+    ok.
+
+-spec store_lookup(ets:tid(), hecate_dht_xor:id()) ->
+          [macula_record:record()].
+store_lookup(Ets, StorageKey) ->
+    [R || {_, R} <- ets:lookup(Ets, StorageKey)].
+
+%%=====================================================================
 %% Incoming frame dispatch
 %%
 %% Every frame is verified against the claimed sender NodeId before
@@ -459,11 +572,13 @@ route_verified({ok, Frame}, FromNodeId, S) ->
 
 -spec route_by_type(macula_frame:frame_type(), macula_frame:frame(),
                     macula_identity:pubkey(), #state{}) -> #state{}.
-route_by_type(ping,      F, From, S) -> on_ping(F, From, S);
-route_by_type(pong,      F, From, S) -> on_pong(F, From, S);
-route_by_type(find_node, F, From, S) -> on_find_node(F, From, S);
-route_by_type(nodes,     F, From, S) -> on_nodes(F, From, S);
-route_by_type(_,        _F, _From, S) -> S.
+route_by_type(ping,       F, From, S) -> on_ping(F, From, S);
+route_by_type(pong,       F, From, S) -> on_pong(F, From, S);
+route_by_type(find_node,  F, From, S) -> on_find_node(F, From, S);
+route_by_type(nodes,      F, From, S) -> on_nodes(F, From, S);
+route_by_type(find_value, F, From, S) -> on_find_value(F, From, S);
+route_by_type(value,      F, From, S) -> on_value(F, From, S);
+route_by_type(_,         _F, _From, S) -> S.
 
 %%---------------------------------------------------------------------
 %% Incoming PING → PONG
@@ -530,21 +645,79 @@ on_find_node(Frame, FromNodeId,
     S.
 
 %%---------------------------------------------------------------------
-%% Incoming NODES — correlate with outstanding FIND_NODE.
+%% Incoming NODES — can be a response to either FIND_NODE or a
+%% FIND_VALUE fallback (see Part 6 §7.3). Match pending_find_values
+%% first (the FIND_VALUE path), fall through to pending_find_nodes.
 %%---------------------------------------------------------------------
 
 -spec on_nodes(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
-on_nodes(Frame, FromNodeId, #state{pending_find_nodes = P} = S) ->
-    Key = maps:get(key, Frame),
+on_nodes(Frame, FromNodeId, #state{pending_find_values = PFV,
+                                    pending_find_nodes  = PFN} = S) ->
+    Key  = maps:get(key, Frame),
     Refs = maps:get(nodes, Frame),
-    resolve_nodes(maps:take({FromNodeId, Key}, P), Refs, S).
+    Lookup = {FromNodeId, Key},
+    route_nodes(maps:take(Lookup, PFV), maps:take(Lookup, PFN), Refs, S).
 
--spec resolve_nodes(error | {tuple(), map()}, [macula_frame:station_ref()],
-                    #state{}) -> #state{}.
-resolve_nodes(error, _Refs, S) ->
-    S;
-resolve_nodes({{From, TimerRef}, NewP}, Refs, S) ->
-    _ = erlang:cancel_timer(TimerRef),
+-spec route_nodes({{gen_server:from(), reference()}, map()} | error,
+                  {{gen_server:from(), reference()}, map()} | error,
+                  [macula_frame:station_ref()], #state{}) -> #state{}.
+route_nodes({{From, Timer}, NewPFV}, _PFN, Refs, S) ->
+    _ = erlang:cancel_timer(Timer),
+    gen_server:reply(From, {nodes, Refs}),
+    S#state{pending_find_values = NewPFV};
+route_nodes(error, {{From, Timer}, NewPFN}, Refs, S) ->
+    _ = erlang:cancel_timer(Timer),
     gen_server:reply(From, {ok, Refs}),
-    S#state{pending_find_nodes = NewP}.
+    S#state{pending_find_nodes = NewPFN};
+route_nodes(error, error, _Refs, S) ->
+    S.
+
+%%---------------------------------------------------------------------
+%% Incoming FIND_VALUE — local-store hit replies VALUE; miss replies
+%% NODES (k-closest from the routing table) per Part 3 §4.5.
+%%---------------------------------------------------------------------
+
+-spec on_find_value(macula_frame:frame(), macula_identity:pubkey(),
+                    #state{}) -> #state{}.
+on_find_value(_Frame, _From, #state{identity = undefined} = S) ->
+    S;
+on_find_value(_Frame, _From, #state{send_frame = undefined} = S) ->
+    S;
+on_find_value(Frame, FromNodeId, #state{record_store = Ets} = S) ->
+    Key = maps:get(key, Frame),
+    reply_find_value(store_lookup(Ets, Key), Key, FromNodeId, S).
+
+-spec reply_find_value([macula_record:record()], hecate_dht_xor:id(),
+                       macula_identity:pubkey(), #state{}) -> #state{}.
+reply_find_value([], Key, FromNodeId,
+                 #state{identity = Id, send_frame = Send, rt = Rt, k = K} = S) ->
+    Closest = hecate_dht_routing_table:k_closest(Key, K, Rt),
+    Reply   = hecate_dht_protocol:build_nodes_reply(Key, Closest, Id),
+    Send(FromNodeId, Reply),
+    S;
+reply_find_value(Records, Key, FromNodeId,
+                 #state{identity = Id, send_frame = Send} = S) ->
+    Reply = hecate_dht_protocol:build_value_reply(Key, Records, Id),
+    Send(FromNodeId, Reply),
+    S.
+
+%%---------------------------------------------------------------------
+%% Incoming VALUE — correlate with outstanding FIND_VALUE.
+%%---------------------------------------------------------------------
+
+-spec on_value(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
+          #state{}.
+on_value(Frame, FromNodeId, #state{pending_find_values = P} = S) ->
+    Key = maps:get(key, Frame),
+    Records = maps:get(records, Frame),
+    resolve_value(maps:take({FromNodeId, Key}, P), Records, S).
+
+-spec resolve_value({{gen_server:from(), reference()}, map()} | error,
+                    [macula_record:record()], #state{}) -> #state{}.
+resolve_value(error, _Records, S) ->
+    S;
+resolve_value({{From, Timer}, NewP}, Records, S) ->
+    _ = erlang:cancel_timer(Timer),
+    gen_server:reply(From, {value, Records}),
+    S#state{pending_find_values = NewP}.

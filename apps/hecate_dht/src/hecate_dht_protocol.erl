@@ -20,6 +20,8 @@
     build_pong/2,
     build_find_node/4,
     build_nodes_reply/3,
+    build_find_value/3,
+    build_value_reply/3,
     verify/2,
     entry_to_station_ref/1,
     entry_to_station_ref/2,
@@ -73,6 +75,24 @@ build_nodes_reply(<<_:256>> = Key, Entries, Identity) ->
     Refs = [entry_to_station_ref(E) || E <- Entries],
     macula_frame:sign(
       macula_frame:nodes(#{key => Key, nodes => Refs}),
+      Identity).
+
+%% @doc Build a signed FIND_VALUE request.
+-spec build_find_value(Key :: hecate_dht_xor:id(),
+                       Origin :: macula_identity:pubkey(),
+                       macula_identity:key_pair()) -> macula_frame:frame().
+build_find_value(<<_:256>> = Key, <<_:256>> = Origin, Identity) ->
+    macula_frame:sign(
+      macula_frame:find_value(#{key => Key, origin => Origin}),
+      Identity).
+
+%% @doc Build a signed VALUE response carrying one or more records.
+-spec build_value_reply(Key :: hecate_dht_xor:id(),
+                        [macula_record:record()],
+                        macula_identity:key_pair()) -> macula_frame:frame().
+build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
+    macula_frame:sign(
+      macula_frame:value(#{key => Key, records => Records}),
       Identity).
 
 %%=====================================================================

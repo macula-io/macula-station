@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.6 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.7 green.
 
 ---
 
@@ -78,6 +78,46 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.7 (shipped — SDK `macula-io/macula@1399192`)
+
+**Scope:** FIND_VALUE + record types.
+
+**SDK side:**
+1. `macula_record` gains three constructors — `realm_directory/3,4`
+   (type tag 0x03, owner = RealmId), `realm_stations/2,3` (type tag
+   0x04, owner = RealmId, stored at `SHA-256("station_set"||RealmId)`),
+   `procedure_advertisement/3,4` (type tag 0x06, owner = advertiser
+   NodeId, stored at `SHA-256(procedure_uri)`).
+2. `storage_key/1` helper — given any record, returns the 32-byte
+   DHT storage key per Part 3 §3.3 (envelope key for node_record /
+   realm_directory / tombstone; derived hash for realm_stations and
+   procedure_advertisement).
+
+**Station side:**
+1. ETS record store (`bag` keyed on storage_key, value = record())
+   owned by `hecate_dht_server`. `put` preserves records from other
+   envelope-owners at the same storage key (crucial for
+   procedure_advertisement where many advertisers share one URI
+   hash) and replaces the same-owner's prior record so versions
+   don't accumulate.
+2. New API: `put_record/2`, `find_local_record/2`, `record_count/1`,
+   `find_value/3,4` (wire RPC with `{value, Records} | {nodes, Refs}
+    | {error, timeout | no_transport | term()}` result).
+3. Protocol builders: `build_find_value/3`, `build_value_reply/3`.
+4. Incoming FIND_VALUE handler — local-store hit → VALUE reply;
+   miss → NODES reply (k-closest from RT) per Part 3 §4.5.
+5. Incoming VALUE handler — correlate against a new
+   `pending_find_values` table, reply `{value, Records}`.
+6. Rewritten incoming NODES handler — match `pending_find_values`
+   first (FIND_VALUE fallback case) then `pending_find_nodes`
+   (standard FIND_NODE RPC).
+
+Acceptance: +22 eunit (total 194 across the app + 69 in macula_record).
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+Refs: plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §9.4/§9.5/§9.7, §7.3;
+      plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §3.3/§4.5/§5.1/§5.3.
 
 ## Session 3.6 (shipped)
 

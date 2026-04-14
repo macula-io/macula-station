@@ -2,7 +2,7 @@
     {description, "Hecate Station — S/Kademlia node"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, crypto, macula]},
+    {applications, [kernel, stdlib, crypto, macula, macula_record]},
     {env, []},
     {modules, [
         hecate_dht,
