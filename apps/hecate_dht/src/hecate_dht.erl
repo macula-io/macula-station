@@ -38,6 +38,7 @@
     sibling_ids/1,
     size/1,
     bucket_count/1,
+    populated_buckets/1,
     stats/1,
     ping_peer/2, ping_peer/3,
     find_node/3, find_node/4,
@@ -132,6 +133,11 @@ size(Dht) ->
 -spec bucket_count(dht()) -> non_neg_integer().
 bucket_count(Dht) ->
     hecate_dht_server:bucket_count(Dht).
+
+-spec populated_buckets(dht()) ->
+        [{hecate_dht_xor:bucket_ix(), hecate_dht_bucket:bucket()}].
+populated_buckets(Dht) ->
+    hecate_dht_server:populated_buckets(Dht).
 
 -spec stats(dht()) -> stats().
 stats(Dht) ->

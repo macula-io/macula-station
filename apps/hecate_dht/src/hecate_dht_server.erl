@@ -52,6 +52,7 @@
     sibling_ids/1,
     size/1,
     bucket_count/1,
+    populated_buckets/1,
     stats/1,
     ping_peer/2, ping_peer/3,
     find_node/3, find_node/4,
@@ -207,6 +208,11 @@ size(Pid) ->
 bucket_count(Pid) ->
     gen_server:call(Pid, bucket_count).
 
+-spec populated_buckets(pid()) ->
+        [{hecate_dht_xor:bucket_ix(), hecate_dht_bucket:bucket()}].
+populated_buckets(Pid) ->
+    gen_server:call(Pid, populated_buckets).
+
 -spec stats(pid()) -> stats().
 stats(Pid) ->
     gen_server:call(Pid, stats).
@@ -328,6 +334,9 @@ handle_call(size, _From, #state{rt = Rt} = S) ->
 
 handle_call(bucket_count, _From, #state{rt = Rt} = S) ->
     {reply, hecate_dht_routing_table:bucket_count(Rt), S};
+
+handle_call(populated_buckets, _From, #state{rt = Rt} = S) ->
+    {reply, hecate_dht_routing_table:populated_buckets(Rt), S};
 
 handle_call(stats, _From, S) ->
     {reply, build_stats(S), S};

@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.10 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.11 green.
 
 ---
 
@@ -78,6 +78,48 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.11 (shipped)
+
+**Scope:** observability — bucket-diversity + replica-diversity
+metrics emitted via `macula_diagnostics` (Part 3 §13).
+
+1. New routing-table accessor `populated_buckets/1` returns
+   `[{bucket_ix(), bucket()}]` for every materialised bucket
+   (skipping empty/never-touched ones). Surfaced through server
+   + facade.
+
+2. `hecate_dht_monitor` — gen_server. Default 1-min interval.
+   - **bucket_report**: walks every populated bucket, runs
+     `hecate_dht_diversity:bucket_constraints_met/1`, tallies
+     `populated / diverse / asn_violations / country_violations
+     / tier_violations`.
+   - **replica_report**: walks every owned record (envelope key
+     == self_id), runs `hecate_dht_placement:place/3` against
+     the current k-closest, reports `chosen / degraded / counts`
+     per record.
+   - On each tick: emits `_hecate.dht.metrics` event via
+     `macula_diagnostics:event/2` carrying the full report, plus
+     11 gauges (rt_size, bucket_count, sibling_count,
+     record_count, buckets.{populated,diverse,asn/country/tier
+     _violations}, replicas.{owned_records,degraded}).
+   - Exposes `tick/1` (synchronous), `report/1` (compute without
+     emitting), `gauges/1` (snapshot the monitor's gauges),
+     `stats/1` (tick count + last_tick).
+
+Acceptance: +8 eunit (total 233). Tests:
+- empty DHT report all-zero,
+- concentrated bucket flags ASN/country violations,
+- under-threshold buckets exempt from tier constraint,
+- owned record yields a placement summary,
+- non-owned records skipped from replica report,
+- tick populates the gauges snapshot,
+- cumulative tick stats track,
+- auto-firing on a tight 60ms interval.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §4.3, §5.2, §13.
 
 ## Session 3.10 (shipped — SDK `macula-io/macula@9ca1e9f`)
 

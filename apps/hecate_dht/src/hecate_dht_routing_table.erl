@@ -31,6 +31,7 @@
     size/1,
     bucket_count/1,
     bucket_at/2,
+    populated_buckets/1,
     insert/2,
     insert/3,
     remove/2,
@@ -89,6 +90,15 @@ bucket_count(#{buckets := Bs}) -> map_size(Bs).
 -spec bucket_at(hecate_dht_xor:bucket_ix(), table()) -> hecate_dht_bucket:bucket().
 bucket_at(Ix, #{capacity := K, buckets := Bs}) ->
     maps:get(Ix, Bs, hecate_dht_bucket:new(K)).
+
+%% @doc Return every materialised bucket in ascending bucket-index
+%% order. Empty buckets (those that have never held an entry, or
+%% have been drained to zero) are omitted — `bucket_at/2' is the
+%% accessor for those.
+-spec populated_buckets(table()) ->
+        [{hecate_dht_xor:bucket_ix(), hecate_dht_bucket:bucket()}].
+populated_buckets(#{buckets := Bs}) ->
+    lists:keysort(1, maps:to_list(Bs)).
 
 -spec find(hecate_dht_xor:id(), table()) ->
         {ok, hecate_dht_entry:entry()} | error.
