@@ -16,6 +16,7 @@
     connect_to/2,
     peers/1,
     tombstones/1,
+    swim_members/1,
     version/0
 ]).
 
@@ -51,6 +52,10 @@ peers(Pid) ->
 -spec tombstones(pid()) -> [macula_record:record()].
 tombstones(Pid) ->
     hecate_station_server:tombstones(Pid).
+
+-spec swim_members(pid()) -> [hecate_swim:member()].
+swim_members(Pid) ->
+    hecate_station_server:swim_members(Pid).
 
 -spec version() -> binary().
 version() ->
