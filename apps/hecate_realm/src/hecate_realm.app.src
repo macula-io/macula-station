@@ -1,8 +1,8 @@
-{application, macula_transport, [
-    {description, "Macula V2 — macula_transport (skeleton, Phase 0)"},
+{application, hecate_realm, [
+    {description, "Hecate Station — realm directory cache"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

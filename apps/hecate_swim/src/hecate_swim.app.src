@@ -1,8 +1,8 @@
-{application, macula_frame, [
-    {description, "Macula V2 — macula_frame (skeleton, Phase 0)"},
+{application, hecate_swim, [
+    {description, "Hecate Station — SWIM-Lifeguard member"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

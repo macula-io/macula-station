@@ -1,8 +1,8 @@
-{application, macula_bootstrap, [
-    {description, "Macula V2 — macula_bootstrap (skeleton, Phase 0)"},
+{application, hecate_overlay, [
+    {description, "Hecate Station — HyParView + Plumtree intra-realm gossip"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

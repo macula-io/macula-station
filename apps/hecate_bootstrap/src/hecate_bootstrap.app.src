@@ -1,8 +1,8 @@
-{application, macula_swim, [
-    {description, "Macula V2 — macula_swim (skeleton, Phase 0)"},
+{application, hecate_bootstrap, [
+    {description, "Hecate Station — 5-tier bootstrap cascade orchestrator"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

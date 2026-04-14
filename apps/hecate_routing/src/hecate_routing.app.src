@@ -1,8 +1,8 @@
-{application, macula_dht, [
-    {description, "Macula V2 — macula_dht (skeleton, Phase 0)"},
+{application, hecate_routing, [
+    {description, "Hecate Station — path computation + source-route forwarding"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
