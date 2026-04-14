@@ -2,9 +2,14 @@
     {description, "Hecate Station — S/Kademlia node"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, macula]},
+    {applications, [kernel, stdlib, crypto, macula]},
     {env, []},
-    {modules, []},
+    {modules, [
+        hecate_dht_xor,
+        hecate_dht_entry,
+        hecate_dht_diversity,
+        hecate_dht_bucket
+    ]},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}
 ]}.
