@@ -22,6 +22,8 @@
     build_nodes_reply/3,
     build_find_value/3,
     build_value_reply/3,
+    build_store/2,
+    build_store_ack/4,
     verify/2,
     entry_to_station_ref/1,
     entry_to_station_ref/2,
@@ -94,6 +96,21 @@ build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
     macula_frame:sign(
       macula_frame:value(#{key => Key, records => Records}),
       Identity).
+
+%% @doc Build a signed STORE request carrying a record to persist.
+-spec build_store(macula_record:record(),
+                  macula_identity:key_pair()) -> macula_frame:frame().
+build_store(Record, Identity) when is_map(Record) ->
+    macula_frame:sign(macula_frame:store(#{record => Record}), Identity).
+
+%% @doc Build a signed STORE_ACK for a given storage key.
+-spec build_store_ack(hecate_dht_xor:id(), boolean(),
+                      atom() | undefined,
+                      macula_identity:key_pair()) -> macula_frame:frame().
+build_store_ack(<<_:256>> = Key, Stored, Reason, Identity)
+  when is_boolean(Stored) ->
+    Spec = #{key => Key, stored => Stored, reason => Reason},
+    macula_frame:sign(macula_frame:store_ack(Spec), Identity).
 
 %%=====================================================================
 %% Verification

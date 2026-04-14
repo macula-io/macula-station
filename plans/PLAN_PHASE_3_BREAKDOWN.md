@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.7 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.8 green.
 
 ---
 
@@ -78,6 +78,57 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.8 (shipped)
+
+**Scope:** STORE + quorum + diversity-constrained replica placement.
+
+1. `hecate_dht_placement` — pure algorithm (no SDK changes needed;
+   STORE/STORE_ACK frames were added in 3.4). Greedy closest-first
+   with forward-looking diversity admission: a candidate is rejected
+   only if accepting it would leave too few slots to cover the
+   maximum remaining diversity deficit. Operator cap (≤3 per ASN)
+   is a hard constraint. If Phase 1 under-fills K, Phase 2 tops up
+   with closest unchosen candidates (op-cap only) and the result is
+   returned with `degraded = true`. Default constraints match Part
+   3 §5.2: K=20, ≥8 ASN / ≥5 country / ≥3 tier / ≤3 per operator.
+
+2. `hecate_dht_store` — blocking orchestrator running in the
+   caller's process. Resolves candidates (explicit `candidates'
+   opt OR `k_closest/3` on the local routing table), calls
+   placement, spawns one unlinked worker per chosen peer. Each
+   worker calls `hecate_dht:send_store/4` and reports back. Collect
+   waits for all workers or the overall deadline — no early
+   termination (a ref-tag on messages isolates calls so eunit's
+   reused runner pid doesn't cross-contaminate tests). Returns
+   `{ok, Outcome}` on quorum (≥16 acks by default) or
+   `{error, quorum_not_met | no_candidates, Outcome}` otherwise.
+
+3. `hecate_dht_server` wire extensions:
+   - `send_store/3,4` RPC with `pending_stores` correlation
+     (keyed on `{PeerId, StorageKey}`).
+   - Incoming STORE → verify record signature, put on success,
+     always reply STORE_ACK (stored=true OR stored=false with an
+     atom reason on verify failure).
+   - Incoming STORE_ACK → correlate, reply `{ok, #{stored, reason}}`.
+
+4. `hecate_dht_protocol`: `build_store/2`, `build_store_ack/4`.
+
+5. `hecate_dht` facade: `send_store/3,4`, `store/2,3`.
+
+Acceptance: +15 eunit (total 209). Two new modules' tests:
+- `hecate_dht_placement_tests` — empty pool, K-cap, operator cap,
+  diversity satisfied, forward-looking preference for diverse
+  tail candidates, dedup, degraded when unreachable.
+- `hecate_dht_store_tests` — single-peer wire path (persist +
+  return `{ok, stored: true}`), no-transport error, timeout,
+  orchestrated multi-custodian store with quorum met, quorum-not-met
+  on silent custodian, degraded flag propagation, no-candidates
+  error.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.2, §5.6, §10.4.
 
 ## Session 3.7 (shipped — SDK `macula-io/macula@1399192`)
 

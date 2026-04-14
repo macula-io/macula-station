@@ -43,6 +43,8 @@
     find_node/3, find_node/4,
     lookup_nodes/2, lookup_nodes/3,
     find_value/3, find_value/4,
+    send_store/3, send_store/4,
+    store/2, store/3,
     put_record/2,
     find_local_record/2,
     record_count/1,
@@ -51,7 +53,8 @@
 ]).
 
 -export_type([dht/0, opts/0, observe_result/0, stats/0,
-              ping_result/0, find_node_result/0, find_value_result/0]).
+              ping_result/0, find_node_result/0, find_value_result/0,
+              send_store_result/0]).
 
 -type dht()               :: pid().
 -type opts()              :: hecate_dht_server:opts().
@@ -60,6 +63,7 @@
 -type ping_result()       :: hecate_dht_server:ping_result().
 -type find_node_result()  :: hecate_dht_server:find_node_result().
 -type find_value_result() :: hecate_dht_server:find_value_result().
+-type send_store_result() :: hecate_dht_server:send_store_result().
 
 %%=====================================================================
 %% Lifecycle
@@ -188,6 +192,25 @@ find_value(Dht, Key, PeerId) ->
                  pos_integer()) -> find_value_result().
 find_value(Dht, Key, PeerId, Timeout) ->
     hecate_dht_server:find_value(Dht, Key, PeerId, Timeout).
+
+-spec send_store(dht(), macula_identity:pubkey(),
+                 macula_record:record()) -> send_store_result().
+send_store(Dht, PeerId, Record) ->
+    hecate_dht_server:send_store(Dht, PeerId, Record).
+
+-spec send_store(dht(), macula_identity:pubkey(), macula_record:record(),
+                 pos_integer()) -> send_store_result().
+send_store(Dht, PeerId, Record, Timeout) ->
+    hecate_dht_server:send_store(Dht, PeerId, Record, Timeout).
+
+-spec store(dht(), macula_record:record()) -> hecate_dht_store:result().
+store(Dht, Record) ->
+    hecate_dht_store:store(Dht, Record).
+
+-spec store(dht(), macula_record:record(), hecate_dht_store:opts()) ->
+        hecate_dht_store:result().
+store(Dht, Record, Opts) ->
+    hecate_dht_store:store(Dht, Record, Opts).
 
 -spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Dht, FromNodeId, Frame) ->

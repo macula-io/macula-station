@@ -56,6 +56,7 @@
     ping_peer/2, ping_peer/3,
     find_node/3, find_node/4,
     find_value/3, find_value/4,
+    send_store/3, send_store/4,
     put_record/2,
     find_local_record/2,
     record_count/1,
@@ -66,12 +67,14 @@
          terminate/2, code_change/3]).
 
 -export_type([opts/0, observe_result/0, stats/0, send_fun/0,
-              ping_result/0, find_node_result/0, find_value_result/0]).
+              ping_result/0, find_node_result/0, find_value_result/0,
+              send_store_result/0]).
 
 -define(DEFAULT_K, 20).
 -define(DEFAULT_S, 16).
 -define(DEFAULT_PING_TIMEOUT_MS,      2_000).
 -define(DEFAULT_FIND_NODE_TIMEOUT_MS, 5_000).
+-define(DEFAULT_STORE_TIMEOUT_MS,     5_000).
 
 -type send_fun() :: fun((macula_identity:pubkey(), macula_frame:frame()) ->
                               ok | {error, term()}).
@@ -94,6 +97,10 @@
 
 -type find_value_result() :: {value, [macula_record:record()]}
                            | {nodes, [macula_frame:station_ref()]}
+                           | {error, timeout | no_transport | term()}.
+
+-type send_store_result() :: {ok, #{stored := boolean(),
+                                    reason := atom() | undefined}}
                            | {error, timeout | no_transport | term()}.
 
 -type observe_result() ::
@@ -134,6 +141,9 @@
     pending_find_values = #{} :: #{{macula_identity:pubkey(),
                                     hecate_dht_xor:id()} =>
                                    {gen_server:from(), reference()}},
+    pending_stores = #{}       :: #{{macula_identity:pubkey(),
+                                     hecate_dht_xor:id()} =>
+                                    {gen_server:from(), reference()}},
     record_store                :: ets:tid()
 }).
 
@@ -234,6 +244,18 @@ find_value(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
   when is_integer(Timeout), Timeout > 0 ->
     gen_server:call(Pid, {find_value, Key, PeerId, Timeout}, Timeout + 1_000).
 
+-spec send_store(pid(), macula_identity:pubkey(),
+                 macula_record:record()) -> send_store_result().
+send_store(Pid, PeerId, Record) ->
+    send_store(Pid, PeerId, Record, ?DEFAULT_STORE_TIMEOUT_MS).
+
+-spec send_store(pid(), macula_identity:pubkey(), macula_record:record(),
+                 pos_integer()) -> send_store_result().
+send_store(Pid, <<_:256>> = PeerId, Record, Timeout)
+  when is_map(Record), is_integer(Timeout), Timeout > 0 ->
+    gen_server:call(Pid, {send_store, PeerId, Record, Timeout},
+                    Timeout + 1_000).
+
 -spec put_record(pid(), macula_record:record()) -> ok.
 put_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {put_record, Record}).
@@ -309,6 +331,9 @@ handle_call({find_node, Key, PeerId, Timeout}, From, S) ->
 handle_call({find_value, Key, PeerId, Timeout}, From, S) ->
     dispatch_find_value(Key, PeerId, Timeout, From, S);
 
+handle_call({send_store, PeerId, Record, Timeout}, From, S) ->
+    dispatch_send_store(PeerId, Record, Timeout, From, S);
+
 handle_call({put_record, Record}, _From, #state{record_store = Ets} = S) ->
     store_put(Ets, Record),
     {reply, ok, S};
@@ -349,6 +374,9 @@ handle_info({find_node_timeout, Key, PeerId}, S) ->
 
 handle_info({find_value_timeout, Key, PeerId}, S) ->
     {noreply, on_find_value_timeout(Key, PeerId, S)};
+
+handle_info({send_store_timeout, Key, PeerId}, S) ->
+    {noreply, on_send_store_timeout(Key, PeerId, S)};
 
 handle_info(_Msg, S) ->
     {noreply, S}.
@@ -548,6 +576,97 @@ store_lookup(Ets, StorageKey) ->
     [R || {_, R} <- ets:lookup(Ets, StorageKey)].
 
 %%=====================================================================
+%% Wire op: STORE outgoing + STORE_ACK correlation
+%%=====================================================================
+
+-spec dispatch_send_store(macula_identity:pubkey(), macula_record:record(),
+                          pos_integer(), gen_server:from(), #state{}) ->
+          {reply, send_store_result(), #state{}} | {noreply, #state{}}.
+dispatch_send_store(_PeerId, _Record, _Timeout, _From,
+                    #state{send_frame = undefined} = S) ->
+    {reply, {error, no_transport}, S};
+dispatch_send_store(_PeerId, _Record, _Timeout, _From,
+                    #state{identity = undefined} = S) ->
+    {reply, {error, no_identity}, S};
+dispatch_send_store(PeerId, Record, Timeout, From,
+                    #state{identity = Id, send_frame = Send,
+                           pending_stores = P} = S) ->
+    Frame = hecate_dht_protocol:build_store(Record, Id),
+    Send(PeerId, Frame),
+    Key = macula_record:storage_key(Record),
+    TimerRef = erlang:send_after(Timeout, self(),
+                                 {send_store_timeout, Key, PeerId}),
+    {noreply, S#state{pending_stores =
+        P#{{PeerId, Key} => {From, TimerRef}}}}.
+
+-spec on_send_store_timeout(hecate_dht_xor:id(), macula_identity:pubkey(),
+                            #state{}) -> #state{}.
+on_send_store_timeout(Key, PeerId, #state{pending_stores = P} = S) ->
+    dispatch_store_timeout(maps:take({PeerId, Key}, P), S).
+
+-spec dispatch_store_timeout(error | {tuple(), map()}, #state{}) ->
+          #state{}.
+dispatch_store_timeout(error, S) ->
+    S;
+dispatch_store_timeout({{From, _Timer}, NewP}, S) ->
+    gen_server:reply(From, {error, timeout}),
+    S#state{pending_stores = NewP}.
+
+%%---------------------------------------------------------------------
+%% Incoming STORE — verify record, persist on success, always reply
+%% STORE_ACK so the requester learns the outcome.
+%%---------------------------------------------------------------------
+
+-spec on_store(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
+          #state{}.
+on_store(_Frame, _From, #state{identity = undefined} = S) ->
+    S;
+on_store(_Frame, _From, #state{send_frame = undefined} = S) ->
+    S;
+on_store(Frame, FromNodeId, S) ->
+    Record = maps:get(record, Frame),
+    persist_if_valid(macula_record:verify(Record), Record, FromNodeId, S).
+
+-spec persist_if_valid({ok, macula_record:record()} | {error, term()},
+                       macula_record:record(),
+                       macula_identity:pubkey(), #state{}) -> #state{}.
+persist_if_valid({ok, Record}, _Orig, FromNodeId,
+                 #state{record_store = Ets, identity = Id,
+                        send_frame = Send} = S) ->
+    store_put(Ets, Record),
+    Key   = macula_record:storage_key(Record),
+    Reply = hecate_dht_protocol:build_store_ack(Key, true, undefined, Id),
+    Send(FromNodeId, Reply),
+    S;
+persist_if_valid({error, Reason}, Record, FromNodeId,
+                 #state{identity = Id, send_frame = Send} = S) ->
+    Key   = macula_record:storage_key(Record),
+    Reply = hecate_dht_protocol:build_store_ack(Key, false, Reason, Id),
+    Send(FromNodeId, Reply),
+    S.
+
+%%---------------------------------------------------------------------
+%% Incoming STORE_ACK — correlate with outstanding STORE.
+%%---------------------------------------------------------------------
+
+-spec on_store_ack(macula_frame:frame(), macula_identity:pubkey(),
+                   #state{}) -> #state{}.
+on_store_ack(Frame, FromNodeId, #state{pending_stores = P} = S) ->
+    Key    = maps:get(key, Frame),
+    Stored = maps:get(stored, Frame),
+    Reason = maps:get(reason, Frame),
+    resolve_store_ack(maps:take({FromNodeId, Key}, P), Stored, Reason, S).
+
+-spec resolve_store_ack({{gen_server:from(), reference()}, map()} | error,
+                        boolean(), atom() | undefined, #state{}) -> #state{}.
+resolve_store_ack(error, _Stored, _Reason, S) ->
+    S;
+resolve_store_ack({{From, Timer}, NewP}, Stored, Reason, S) ->
+    _ = erlang:cancel_timer(Timer),
+    gen_server:reply(From, {ok, #{stored => Stored, reason => Reason}}),
+    S#state{pending_stores = NewP}.
+
+%%=====================================================================
 %% Incoming frame dispatch
 %%
 %% Every frame is verified against the claimed sender NodeId before
@@ -578,6 +697,8 @@ route_by_type(find_node,  F, From, S) -> on_find_node(F, From, S);
 route_by_type(nodes,      F, From, S) -> on_nodes(F, From, S);
 route_by_type(find_value, F, From, S) -> on_find_value(F, From, S);
 route_by_type(value,      F, From, S) -> on_value(F, From, S);
+route_by_type(store,      F, From, S) -> on_store(F, From, S);
+route_by_type(store_ack,  F, From, S) -> on_store_ack(F, From, S);
 route_by_type(_,         _F, _From, S) -> S.
 
 %%---------------------------------------------------------------------

@@ -14,6 +14,8 @@
         hecate_dht_siblings,
         hecate_dht_protocol,
         hecate_dht_lookup,
+        hecate_dht_placement,
+        hecate_dht_store,
         hecate_dht_server,
         hecate_dht_sup
     ]},
