@@ -143,10 +143,20 @@ verify_and_emit(Pk, Bytes, Rest) ->
 
 decode_and_verify(Pk, Bytes) ->
     chain([
-        fun() -> macula_record:decode(Bytes) end,
+        fun() -> safe_decode(Bytes) end,
         fun(R) -> check_storage_key(Pk, R) end,
         fun(R) -> macula_foundation:verify_record(R) end
     ]).
+
+%% Resolver bytes are from a remote trust boundary: CBOR crashes
+%% rather than `{error, _}' on garbage, so catch here.
+safe_decode(Bytes) ->
+    try macula_record:decode(Bytes) of
+        {ok, _} = Ok   -> Ok;
+        {error, _} = E -> E
+    catch
+        _:_ -> {error, bad_record_bytes}
+    end.
 
 %% Sequential `>>=' over `{ok, _} | {error, _}'.
 chain([Step | Rest]) -> chain(Step(), Rest).

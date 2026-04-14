@@ -138,10 +138,14 @@ collapse(Strings) ->
 nonempty(<<>>) -> {error, empty_pkarr};
 nonempty(Bin)  -> {ok, Bin}.
 
+%% DHT item bytes are from a remote trust boundary: CBOR crashes
+%% rather than `{error, _}' on garbage, so catch here.
 decode_record(Bytes) ->
-    case macula_record:decode(Bytes) of
+    try macula_record:decode(Bytes) of
         {ok, _} = Ok   -> Ok;
         {error, _} = E -> E
+    catch
+        _:_ -> {error, bad_record_bytes}
     end.
 
 peers(Record) ->

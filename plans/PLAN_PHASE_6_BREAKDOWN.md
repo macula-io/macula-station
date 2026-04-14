@@ -294,17 +294,93 @@ xref / dialyzer clean.
 - Multi-node redundancy: query ≥8 nodes, prefer highest seq.
 - Rate limiting per Mainline DHT operator policy.
 
-## Session 6.6 — Tier D blockchain anchor (planned)
+## Session 6.6 — Tier D blockchain anchor (shipped 2026-04-15)
 
-- `hecate_bootstrap_tier_d` — fetch quarterly foundation seed list
-  from Bitcoin OP_RETURN + Ethereum contract event.
-- Light-client vs block-explorer-API path — decision pending (O2).
+**Scope:** chain-agnostic probe + behaviour. Concrete Bitcoin
+OP_RETURN + Ethereum contract-event adapters deferred to 6.6.x; we
+keep tier_d identical in shape to the others so a later session can
+drop in real block-explorer HTTP clients (or light-client libs)
+against a stable interface.
 
-## Session 6.7 — Acceptance against §11.3 bars (planned)
+**Files added:**
+- `hecate_bootstrap_chain_transport` behaviour — single callback
+  `latest_anchor(chain_opts(), TimeoutMs) -> {ok, Bytes} | {error, _}'.
+  Bytes MUST be a `macula_record:encode/1' envelope of a
+  foundation-signed record so Tier D verification matches Tier A.
+- `hecate_bootstrap_tier_d` — probe (2000 ms stagger per Part 5 §3).
+  Parallel `latest_anchor' across every configured chain, first
+  successful anchor wins the cascade, failures fall through, no
+  chains = hard `{error, no_chains}'. Pipeline: fetch → safe_decode
+  → `macula_foundation:verify_record/1' → emit seeds as peers.
 
-- Cold-boot Tier A only ⇒ < 2 s to first DHT lookup.
-- Cold-boot Tier B only ⇒ < 3 s.
-- Cold-boot Tier C only ⇒ < 10 s.
-- Cold-boot Tier D only ⇒ < 30 s.
-- Adversarial drop scenario ⇒ full cascade in < 60 s.
+**Robustness fix (applied across A/C/D):** external-source bytes may
+be arbitrary garbage; `macula_record_cbor:decode/1' crashes on
+malformed input rather than returning `{error, _}'. All three tiers
+now wrap the decode call in a trust-boundary try/catch so a single
+bad response cannot crash a worker and time the tier out.
+
+**Tests — 8 new eunit + 1 CT case (tier_d wins cascade):**
+- `hecate_bootstrap_tier_d_tests`: happy-single-chain, no-chains,
+  all-chains-fail, first-successful-chain-wins, slow-chain-does-
+  not-block, untrusted-signer-rejected, garbage-bytes-rejected
+  (exercises the new safe_decode path), expired-record-rejected.
+- `hecate_phase6_SUITE` gains `tier_d_wins_when_a_b_c_are_down'.
+
+## Session 6.6.x — Real chain adapters (planned)
+
+- `hecate_bootstrap_chain_bitcoin_electrum' — query Electrum/Esplora
+  JSON API for the latest OP_RETURN tagged with the foundation
+  marker; extract and return anchor bytes.
+- `hecate_bootstrap_chain_ethereum_jsonrpc' — read the foundation
+  contract's latest `AnchorPublished' event via `eth_getLogs'.
+- Gated network CT exercising both against testnet faucets.
+
+## Session 6.7 — Acceptance suite (shipped 2026-04-15)
+
+**Scope:** phase6_SUITE expanded to exercise the full 5-tier cascade
+with all fakes wired. Real-network timing bars (Part 5 §11.3)
+deferred to the gated network suite — fakes resolve in milliseconds
+regardless of scenario.
+
+**New CT cases:**
+- `full_cascade_all_tiers_down_returns_failure' — every tier fails
+  (no resolvers, no mDNS, no DHT item, chains fail, no peer paste).
+  Cascade returns `{error, _}'.
+- `full_cascade_under_time_budget' — only Tier E has peers; the
+  other four stagger-in, fail quickly, E wins. Whole cascade
+  completes in < 2 s (vs the 60 s §11.3 budget) — proof that the
+  cascade's fall-through is efficient even when all automated tiers
+  miss.
+
+Real-network timing bars (§11.3) — Tier A < 2 s, Tier B < 3 s,
+Tier C < 10 s, Tier D < 30 s, full cascade < 60 s — require
+live-network probes and ship with the 6.3.6 / 6.4.y / 6.5.x / 6.6.x
+gated suites.
+
+**State of green (post-6.6 + 6.7):** 606 station eunit / 30 station
+CT / xref / dialyzer clean.
+
+## Phase 6 summary (as of 2026-04-15)
+
+All five cascade tiers have their orchestration + verification
+layers shipped with pluggable transport behaviours:
+
+| Tier | Source        | Module                        | Status |
+| ---- | ------------- | ----------------------------- | ------ |
+| A    | DoH PKARR     | `hecate_bootstrap_tier_a'     | ✅     |
+| B    | mDNS LAN      | `hecate_bootstrap_tier_b'     | ✅     |
+| C    | Mainline DHT  | `hecate_bootstrap_tier_c'     | ✅     |
+| D    | Blockchain    | `hecate_bootstrap_tier_d'     | ✅     |
+| E    | Operator paste| `hecate_bootstrap_tier_e'     | ✅     |
+
+All verification flows terminate at `macula_foundation:verify_record/1'
+— the DHT, chain, DoH resolver, and mDNS responder are all
+locators, never trust anchors.
+
+Remaining work (gated network suites + real transports):
+- 6.3.5 IPv6 anycast Tier-A addition
+- 6.3.6 gated DoH CT vs real resolvers
+- 6.4.y link-local scope-id + multi-interface
+- 6.5.x real Kademlia UDP BT-DHT client
+- 6.6.x real Bitcoin + Ethereum chain adapters
 

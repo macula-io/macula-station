@@ -27,7 +27,10 @@
          tier_a_corroborated_seed_list_yields_peers/1,
          tier_a_uncorroborated_falls_through_to_tier_e/1,
          tier_b_wins_cascade_when_tier_a_has_no_resolvers/1,
-         tier_c_wins_cascade_when_a_and_b_are_down/1]).
+         tier_c_wins_cascade_when_a_and_b_are_down/1,
+         tier_d_wins_when_a_b_c_are_down/1,
+         full_cascade_all_tiers_down_returns_failure/1,
+         full_cascade_under_time_budget/1]).
 
 all() ->
     [tier_e_yields_three_peers,
@@ -37,7 +40,10 @@ all() ->
      tier_a_corroborated_seed_list_yields_peers,
      tier_a_uncorroborated_falls_through_to_tier_e,
      tier_b_wins_cascade_when_tier_a_has_no_resolvers,
-     tier_c_wins_cascade_when_a_and_b_are_down].
+     tier_c_wins_cascade_when_a_and_b_are_down,
+     tier_d_wins_when_a_b_c_are_down,
+     full_cascade_all_tiers_down_returns_failure,
+     full_cascade_under_time_budget].
 
 init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
@@ -47,6 +53,7 @@ init_per_testcase(_Case, Cfg) ->
     hecate_bootstrap_tier_a_fake:init(),
     hecate_bootstrap_mdns_fake:init(),
     hecate_bootstrap_dht_fake:init(),
+    hecate_bootstrap_chain_fake:init(),
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
@@ -54,6 +61,7 @@ end_per_testcase(_Case, _Cfg) ->
     hecate_bootstrap_tier_a_fake:reset(),
     hecate_bootstrap_mdns_fake:reset(),
     hecate_bootstrap_dht_fake:reset(),
+    hecate_bootstrap_chain_fake:reset(),
     ok.
 
 %%---------------------------------------------------------------------
@@ -337,6 +345,114 @@ tier_c_chunk(Bin, Max) when byte_size(Bin) =< Max -> [Bin];
 tier_c_chunk(Bin, Max) ->
     <<Head:Max/binary, Rest/binary>> = Bin,
     [Head | tier_c_chunk(Rest, Max)].
+
+%%---------------------------------------------------------------------
+%% Tier D — blockchain anchor cascade winner
+%%---------------------------------------------------------------------
+
+tier_d_wins_when_a_b_c_are_down(_Cfg) ->
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
+                 Fk, tier_c_seeds(4)), Kp),
+    hecate_bootstrap_chain_fake:set(
+      bitcoin, macula_record:encode(Record)),
+    Tiers = full_cascade_tiers(Fk,
+                               #{tier_c_working => false,
+                                 tier_d_chains  => [{bitcoin, #{}}]}),
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 5_000}),
+    4 = length(Peers),
+    [d] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    ok.
+
+%%---------------------------------------------------------------------
+%% Total failure — no tier yields peers
+%%---------------------------------------------------------------------
+
+full_cascade_all_tiers_down_returns_failure(_Cfg) ->
+    Fk = crypto:strong_rand_bytes(32),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    hecate_bootstrap_chain_fake:fail(bitcoin,  chain_unreachable),
+    hecate_bootstrap_chain_fake:fail(ethereum, chain_unreachable),
+    Tiers = full_cascade_tiers(Fk,
+                               #{tier_c_working => false,
+                                 tier_d_chains  => [{bitcoin, #{}},
+                                                    {ethereum, #{}}]}),
+    {error, _} = hecate_bootstrap:cascade(
+                   Tiers, #{min_peers => 3, timeout_ms => 1_500}),
+    ok.
+
+%%---------------------------------------------------------------------
+%% Time budget — cascade completes under the 60s Part 5 §11.3 bar.
+%% With instantaneous fakes, every scenario should resolve in
+%% milliseconds. Staggers ensure later tiers don't starve earlier
+%% ones even when an earlier tier fails fast.
+%%---------------------------------------------------------------------
+
+full_cascade_under_time_budget(_Cfg) ->
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    %% Only Tier E has peers; cascade must fall through A+B+C+D.
+    Urls = [phase6_signed_url() || _ <- lists:seq(1, 3)],
+    Tiers = full_cascade_tiers(Fk,
+                               #{tier_c_working => false,
+                                 tier_d_chains  => [{bitcoin, #{}}],
+                                 tier_e_urls    => Urls}),
+    hecate_bootstrap_chain_fake:fail(bitcoin, chain_unreachable),
+    T0 = erlang:monotonic_time(millisecond),
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 5_000}),
+    T1 = erlang:monotonic_time(millisecond),
+    3 = length(Peers),
+    [e] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    %% Instantaneous fakes should resolve well under 2 s even under
+    %% full fall-through; real-transport bars are exercised by the
+    %% network-integrated suite (Part 7 §11 follow-up).
+    true = (T1 - T0) < 2_000,
+    ok.
+
+%%---------------------------------------------------------------------
+%% Shared cascade assembler
+%%---------------------------------------------------------------------
+
+full_cascade_tiers(Fk, Opts) ->
+    TierCWorking = maps:get(tier_c_working, Opts, false),
+    TierDChains  = maps:get(tier_d_chains,  Opts, []),
+    TierEUrls    = maps:get(tier_e_urls,    Opts, []),
+    DhtTransport = case TierCWorking of
+                       true  -> hecate_bootstrap_dht_fake;
+                       false -> hecate_bootstrap_dht_fake
+                   end,
+    [
+        {hecate_bootstrap_tier_a,
+         #{resolvers => [], pubkeys => [Fk],
+           corroboration => 2, timeout_ms => 200}},
+        {hecate_bootstrap_tier_b,
+         #{udp_transport => hecate_bootstrap_mdns_fake,
+           timeout_ms    => 200}},
+        {hecate_bootstrap_tier_c,
+         #{dht_transport => DhtTransport,
+           pubkeys       => [Fk],
+           timeout_ms    => 200}},
+        {hecate_bootstrap_tier_d,
+         #{chains     => [{hecate_bootstrap_chain_fake,
+                            CO#{label => Label}}
+                           || {Label, CO} <- TierDChains],
+           timeout_ms => 500}},
+        {hecate_bootstrap_tier_e,
+         #{peer_urls => TierEUrls}}
+    ].
+
+phase6_signed_url() ->
+    Kp = macula_identity:generate(),
+    Record = macula_record:sign(
+               macula_record:node_record(
+                 macula_identity:public(Kp), [], 0), Kp),
+    hecate_bootstrap_peer_url:encode(Record, []).
 
 %%---------------------------------------------------------------------
 %% Fake tier registration (runtime-compiled)
