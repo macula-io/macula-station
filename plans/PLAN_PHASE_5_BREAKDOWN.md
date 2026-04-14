@@ -3,7 +3,59 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §10
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` §7 (intra-realm overlay),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §6 (PubSub frames).
-**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 + 5.2 shipped.
+**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 + 5.2 + 5.3 shipped.
+
+## Session 5.3 (shipped — SDK `macula-io/macula@041fae9`)
+
+**Scope:** Plumtree push-lazy gossip layer (Part 3 §7.2).
+
+**SDK side** — four new realm-scoped frames in `macula_frame`:
+`plumtree_gossip` (realm + msg_id + round + payload),
+`plumtree_ihave` (realm + msg_id + round),
+`plumtree_graft` (realm + msg_id + round),
+`plumtree_prune` (realm). +6 SDK eunit (130 in macula_frame).
+
+**Station side** — `hecate_plumtree`. Pure functional state +
+dispatcher.
+
+State maps:
+- `eager_push :: sets:set(peer())` — peers receiving full
+  GOSSIP. The eager-push set IS the spanning tree.
+- `lazy_push :: sets:set(peer())` — peers receiving only IHAVE
+  announcements.
+- `received :: #{msg_id() => payload()}` — delivered messages
+  (used for dedup + GRAFT replies).
+- `missing :: #{msg_id() => sets:set(peer())}` — pending
+  IHAVEs awaiting payload.
+
+API: `new/2`, `add_peer/2`, `remove_peer/2`, `publish/3` (local
+publish — delivers locally, GOSSIP eager + IHAVE lazy),
+`process/3` (dispatch incoming frame). All return
+`{NewState, [{send, Peer, Frame}], [{MsgId, Payload}]}`.
+
+Handlers per §7.2:
+- GOSSIP first time → deliver, forward eager (excl. sender),
+  IHAVE lazy (excl. sender), promote sender to eager.
+- GOSSIP duplicate → PRUNE the sender + demote to lazy.
+- IHAVE for unknown → GRAFT to sender (MVP eager-grafts; real
+  deployment delays briefly).
+- IHAVE for known → silent.
+- GRAFT for known → reply with GOSSIP, promote sender to eager.
+- GRAFT for unknown → silent (sender still promoted).
+- PRUNE → demote sender to lazy.
+
+Tests: +13 station eunit (359 total). Coverage: state
+construction + view changes; publish emits GOSSIP per eager +
+IHAVE per lazy peer; first-time GOSSIP delivers + forwards
+without back-sending to sender; duplicate GOSSIP triggers
+PRUNE + demotion; IHAVE for unknown emits GRAFT + records
+missing; IHAVE for known is silent; GRAFT for known replies
+with payload + promotes sender; PRUNE demotes; end-to-end
+3-node chain delivers exactly once at each hop.
+
+rebar3 compile xref eunit dialyzer all green on both repos.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §7.2.
 
 ## Session 5.2 (shipped — SDK `macula-io/macula@a67d721`)
 
