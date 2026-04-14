@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.6 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.7 shipped.
 
 ---
 
@@ -52,6 +52,73 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.7 (shipped)
+
+**Scope:** retry budget + disjoint-path rotation (Part 4 §6.4).
+
+`hecate_call_retry` (in `hecate_routing` app) — pluggable
+orchestrator that wraps a single-attempt CALL function with
+the §6.4 retry machinery.
+
+API: `execute(opts())` where `opts()` is:
+```
+#{
+    paths               := [path(), ...],
+    try_fn              := fun((path()) -> hecate_call:outcome()),
+    retry_budget        => non_neg_integer(),  %% default 2
+    overall_timeout_ms  => pos_integer()        %% default 5_000
+}
+```
+
+Returns `#{outcome := hecate_call:outcome(), attempts := [#{path,
+outcome}]}` — a full per-attempt log so callers can inspect what
+each path did.
+
+Retry decision:
+- `{ok, _}` — return immediately.
+- `{error, Code, _}` — consult `macula_bolt4:is_retryable(Code)`.
+  Non-retryable codes (`ok`/`application`/`crypto_drop` policies)
+  return immediately. Retryable codes consume one budget point and
+  rotate to the next disjoint path. If budget = 0 OR no fresh
+  paths remain OR overall deadline exceeded, return the latest
+  outcome.
+
+Path rotation: walks the supplied list left-to-right. When paths
+exhaust before budget does, the orchestrator stops — the §6.4
+spec mandates a "different disjoint path" rather than re-trying
+the same one. Synthesised errors are emitted for two end-cases:
+`{error, expiry_too_soon, #{phase=>retry, reason=>deadline}}`
+and `{error, unknown_next_peer, #{phase=>retry,
+reason=>no_more_paths}}`.
+
+Three preset configs from §6.4:
+- `interactive_defaults/0` → 2 retries, 5 s budget.
+- `background_defaults/0`  → 5 retries, 30 s budget.
+- `bulk_defaults/0`        → 100 retries, 1 h budget
+                            (idempotent CALLs).
+
+The orchestrator does NOT itself drive a `hecate_call` state
+machine — that integration lands later when DHT lookup, QUIC
+handshake, and ack-routing are wired up. Callers supply the
+`try_fn` (a real CALL pipeline in production; a mock in tests).
+
+Acceptance: +13 eunit (total 308). Tests cover:
+- preset defaults (interactive/background/bulk).
+- first-attempt success terminates; retry counter records 1.
+- retryable failure rotates through paths until success.
+- non-retryable codes (`target_realm_refused`, `signature_invalid`,
+  `tombstoned`) never rotate.
+- `retry_budget => 0` means no retries.
+- budget exhaustion returns the last error.
+- path exhaustion (< budget) short-circuits with last error.
+- overall-deadline truncates a long sequence with the synthesised
+  `expiry_too_soon` failure.
+- attempts log records every path + outcome in order.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md §6.4.
 
 ## Session 4.6 (shipped)
 
