@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.8 green.
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 – 3.9 green.
 
 ---
 
@@ -78,6 +78,39 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.9 (shipped)
+
+**Scope:** tReplicate custodian loop (Part 3 §5.5, §11.1).
+
+1. `hecate_dht_replicate` — standalone `gen_server`. Default
+   interval `T_REPLICATE_MS = 3_600_000` (1 h), configurable for
+   tests. On each tick it:
+   - Calls `hecate_dht:list_records/1` to enumerate every record
+     held in the local store.
+   - For each record, computes `k_closest/3` against the target's
+     storage key, filters out self, and sends STORE (via
+     `hecate_dht:send_store/4`) to every remaining peer.
+   - Counts `records_seen / stores_sent / acks / nacks / timeouts`
+     per tick and maintains cumulative stats.
+
+2. New server op: `list_records/1` — enumerates every record in
+   the ETS-bag store. Facade delegate on `hecate_dht`.
+
+3. Tick can be driven manually (`hecate_dht_replicate:tick/1`
+   returns the tick's outcome) or automatically on the interval
+   timer. Tests use the manual path for determinism plus one
+   interval-based test to exercise the timer.
+
+Acceptance: +6 eunit (total 215). Tests cover empty-store no-op,
+single-peer replication end-to-end (record ends up on B's store),
+multi-record × multi-peer count arithmetic, cumulative stats across
+ticks, record with no peers in RT, and auto-firing on a tight
+interval.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.5, §11.1.
 
 ## Session 3.8 (shipped)
 

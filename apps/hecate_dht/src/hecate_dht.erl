@@ -47,6 +47,7 @@
     store/2, store/3,
     put_record/2,
     find_local_record/2,
+    list_records/1,
     record_count/1,
     handle_frame/3,
     version/0
@@ -178,6 +179,10 @@ put_record(Dht, Record) ->
         [macula_record:record()].
 find_local_record(Dht, Key) ->
     hecate_dht_server:find_local_record(Dht, Key).
+
+-spec list_records(dht()) -> [macula_record:record()].
+list_records(Dht) ->
+    hecate_dht_server:list_records(Dht).
 
 -spec record_count(dht()) -> non_neg_integer().
 record_count(Dht) ->

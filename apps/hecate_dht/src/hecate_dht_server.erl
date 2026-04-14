@@ -59,6 +59,7 @@
     send_store/3, send_store/4,
     put_record/2,
     find_local_record/2,
+    list_records/1,
     record_count/1,
     handle_frame/3
 ]).
@@ -265,6 +266,10 @@ put_record(Pid, Record) when is_map(Record) ->
 find_local_record(Pid, <<_:256>> = Key) ->
     gen_server:call(Pid, {find_local_record, Key}).
 
+-spec list_records(pid()) -> [macula_record:record()].
+list_records(Pid) ->
+    gen_server:call(Pid, list_records).
+
 -spec record_count(pid()) -> non_neg_integer().
 record_count(Pid) ->
     gen_server:call(Pid, record_count).
@@ -340,6 +345,9 @@ handle_call({put_record, Record}, _From, #state{record_store = Ets} = S) ->
 
 handle_call({find_local_record, Key}, _From, #state{record_store = Ets} = S) ->
     {reply, store_lookup(Ets, Key), S};
+
+handle_call(list_records, _From, #state{record_store = Ets} = S) ->
+    {reply, [R || {_, R} <- ets:tab2list(Ets)], S};
 
 handle_call(record_count, _From, #state{record_store = Ets} = S) ->
     {reply, ets:info(Ets, size), S};
