@@ -25,7 +25,8 @@
          foundation_record_trust_boundary/1,
          foundation_seed_list_signed_by_trusted_key/1,
          tier_a_corroborated_seed_list_yields_peers/1,
-         tier_a_uncorroborated_falls_through_to_tier_e/1]).
+         tier_a_uncorroborated_falls_through_to_tier_e/1,
+         tier_b_wins_cascade_when_tier_a_has_no_resolvers/1]).
 
 all() ->
     [tier_e_yields_three_peers,
@@ -33,7 +34,8 @@ all() ->
      foundation_record_trust_boundary,
      foundation_seed_list_signed_by_trusted_key,
      tier_a_corroborated_seed_list_yields_peers,
-     tier_a_uncorroborated_falls_through_to_tier_e].
+     tier_a_uncorroborated_falls_through_to_tier_e,
+     tier_b_wins_cascade_when_tier_a_has_no_resolvers].
 
 init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
@@ -41,11 +43,13 @@ end_per_suite(_Cfg) -> ok.
 init_per_testcase(_Case, Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:init(),
+    hecate_bootstrap_mdns_fake:init(),
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:reset(),
+    hecate_bootstrap_mdns_fake:reset(),
     ok.
 
 %%---------------------------------------------------------------------
@@ -193,6 +197,85 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     3 = length(Peers),
     [e] = lists:usort([maps:get(tier, P) || P <- Peers]),
     ok.
+
+%%---------------------------------------------------------------------
+%% Tier B — mDNS cascade winner (acceptance §11.3)
+%%---------------------------------------------------------------------
+
+tier_b_wins_cascade_when_tier_a_has_no_resolvers(_Cfg) ->
+    %% Three peers advertise themselves via mDNS; the tier_a probe
+    %% has no resolvers to consult and errors out; tier_b corroborates
+    %% each TXT via the canned handshake and yields three peers before
+    %% tier_e's peer-url paste would have been necessary.
+    Peers = [make_peer() || _ <- lists:seq(1, 3)],
+    Replies = [peer_reply(P) || P <- Peers],
+    hecate_bootstrap_mdns_fake:set_replies(Replies),
+    Handshake = registry_handshake(Peers),
+    Tiers = [
+        {hecate_bootstrap_tier_a,
+         #{resolvers     => [],
+           pubkeys       => [crypto:strong_rand_bytes(32)],
+           corroboration => 2,
+           timeout_ms    => 500}},
+        {hecate_bootstrap_tier_b,
+         #{udp_transport => hecate_bootstrap_mdns_fake,
+           handshake_fun => Handshake,
+           timeout_ms    => 500}}
+    ],
+    {ok, Got} = hecate_bootstrap:cascade(
+                  Tiers, #{min_peers => 3, timeout_ms => 2000}),
+    3 = length(Got),
+    [b] = lists:usort([maps:get(tier, P) || P <- Got]),
+    ok.
+
+make_peer() ->
+    Kp  = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
+    Rec = macula_record:sign(
+            macula_record:node_record(Pub, [], 0), Kp),
+    #{pub => Pub, signed_record => Rec, port => 7000,
+      tier => 0, addr => rand_addr_v6()}.
+
+rand_addr_v6() ->
+    {16#fe80, 0, 0, 0,
+     rand:uniform(65536) - 1, rand:uniform(65536) - 1,
+     rand:uniform(65536) - 1, rand:uniform(65536) - 1}.
+
+peer_reply(#{addr := Addr} = Peer) ->
+    {Addr, mdns_txt_response(Peer)}.
+
+mdns_txt_response(#{pub := NodeId, port := Port, tier := Tier}) ->
+    Strings = [
+        lists:flatten(io_lib:format("node_id=~s",
+                                    [hex_lower(NodeId)])),
+        lists:flatten(io_lib:format("port=~p", [Port])),
+        lists:flatten(io_lib:format("tier=~p", [Tier]))
+    ],
+    RR = inet_dns:make_rr([
+        {domain, "_macula._udp.local"}, {type, txt},
+        {class, in}, {ttl, 60}, {data, Strings}
+    ]),
+    Msg = inet_dns:make_msg([
+        {header, inet_dns:make_header(
+                    [{id, 1}, {qr, true}, {opcode, query},
+                     {rd, false}, {ra, false}, {rcode, 0}])},
+        {anlist, [RR]}
+    ]),
+    iolist_to_binary(inet_dns:encode(Msg)).
+
+hex_lower(Bin) ->
+    string:lowercase(binary_to_list(binary:encode_hex(Bin))).
+
+registry_handshake(Peers) ->
+    Index = maps:from_list(
+              [{maps:get(pub, P), maps:get(signed_record, P)}
+               || P <- Peers]),
+    fun(_Addr, _Port, NodeId) ->
+            case maps:find(NodeId, Index) of
+                {ok, R} -> {ok, R};
+                error   -> {error, not_registered}
+            end
+    end.
 
 %%---------------------------------------------------------------------
 %% Fake tier registration (runtime-compiled)

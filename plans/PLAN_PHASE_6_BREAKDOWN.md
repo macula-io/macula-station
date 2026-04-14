@@ -145,13 +145,71 @@ session (6.3.5) to keep this scope tight.
   Quad9 9.9.9.9, Mullvad, with a test record actually published to
   a throwaway domain.
 
-## Session 6.4 — Tier B mDNS (planned)
+## Session 6.4 — Tier B mDNS probe (shipped 2026-04-15)
 
-- `hecate_bootstrap_tier_b` advertises + listens on
-  `_macula._udp.local` (IPv6 mDNS `ff02::fb`).
-- TXT record carries `node_id`, `port`, `tier`; QUIC handshake then
-  corroborates via signed `node_record`.
-- Privacy switch: announce on/off (default on; O6 unresolved).
+**Scope:** query side of link-local mDNS bootstrap. Publish/announce
+side (running an mDNS responder for steady-state operation) splits
+into a separate Phase 6.4.x follow-up — the probe path is the piece
+needed for cold-boot cascade.
+
+**Files added:**
+- `hecate_bootstrap_mdns` — pure codec.
+  - `service_name/0`, `multicast_group/0`, `multicast_port/0` —
+    well-known `_macula._udp.local`, `ff02::fb`, `5353`.
+  - `build_query/0,1,2` — DNS `any` query over standard DNS wire
+    format via `inet_dns`; `/2` accepts explicit transaction id
+    for deterministic tests.
+  - `parse_response/1` → list of `#{name, type, data}` answer maps.
+  - `extract_candidates/1` → filters TXT records at the service name
+    (case-insensitive) and decodes TXT key-value pairs
+    (`node_id=<64 hex>`, `port=<1..65535>`, `tier=<0..4>`). Drops
+    malformed rows silently.
+- `hecate_bootstrap_mdns_transport` behaviour — single callback
+  `query(QueryBin, TimeoutMs) -> [{SrcAddr, PacketBin}]`.
+- `hecate_bootstrap_mdns_udp` — concrete `gen_udp` implementation:
+  inet6 socket, `multicast_ttl=1`, `multicast_loop=false`, sends to
+  `[ff02::fb]:5353`, collects unicast replies until deadline.
+  (Scope-id handling for link-local peers tracked as 6.4.x.)
+- `hecate_bootstrap_tier_b` — probe module (200 ms stagger per
+  Part 5 §3). Two pluggable dependencies:
+  - `udp_transport` (module implementing the behaviour).
+  - `handshake_fun(SrcAddr, Port, ExpectedNodeId)
+      -> {ok, SignedRecord} | {error, _}` — the QUIC corroboration
+    step (Part 5 §5.1). TXT alone is never trusted; the handshake
+    proves possession of the advertised NodeId. Default refuses
+    (`handshake_not_configured`) so a misconfigured station yields
+    zero peers rather than trusting mDNS blindly.
+  - Verify chain per candidate: handshake → `macula_record:verify/1`
+    (signature + expiry) → `macula_record:key/1` equals the TXT
+    NodeId. Dedup by NodeId (multiple advertisements of the same
+    peer collapse).
+
+**Test coverage:**
+- `hecate_bootstrap_mdns_tests` — 23 eunit cases (constants, query
+  shape, empty/garbage parse, answer map, TXT extraction,
+  case-insensitive name match, drop missing/bad fields, range checks
+  for port + tier).
+- `hecate_bootstrap_tier_b_tests` — 8 eunit cases (happy path, no
+  replies, handshake failure, identity mismatch, expired record,
+  malformed TXT skipped alongside good one, dedup, default handshake
+  rejects everything). Fake transport: ETS-backed
+  `hecate_bootstrap_mdns_fake`.
+- `hecate_phase6_SUITE` adds one CT case:
+  tier_b wins cascade when tier_a has no resolvers (Tier B's 200 ms
+  stagger does not block it; three handshake-corroborated peers
+  pass the min_peers=3 threshold).
+
+**State of green** (2026-04-15, post-6.4):
+- 518 station eunit / 26 station CT / xref / dialyzer all clean.
+
+## Session 6.4.x — mDNS responder + link-local scope-id (planned)
+
+- Advertise `_macula._udp.local` TXT + AAAA for our own NodeId so
+  other stations can find us on the LAN (steady-state, not cold
+  boot).
+- Scope-id plumbing for link-local addresses — `{multicast_if,
+  IfAddr}` + per-interface query fan-out.
+- Privacy switch (O6): default-on vs default-off mDNS advertise.
 
 ## Session 6.5 — Tier C Mainline DHT bridge (planned)
 
