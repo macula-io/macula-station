@@ -202,29 +202,103 @@ needed for cold-boot cascade.
 **State of green** (2026-04-15, post-6.4):
 - 518 station eunit / 26 station CT / xref / dialyzer all clean.
 
-## Session 6.4.x — mDNS responder + link-local scope-id (planned)
+## Session 6.4.x — mDNS responder (shipped 2026-04-15)
 
-- Advertise `_macula._udp.local` TXT + AAAA for our own NodeId so
-  other stations can find us on the LAN (steady-state, not cold
-  boot).
-- Scope-id plumbing for link-local addresses — `{multicast_if,
-  IfAddr}` + per-interface query fan-out.
-- Privacy switch (O6): default-on vs default-off mDNS advertise.
+**Scope:** advertise side of Tier B — steady-state service so peers'
+probes find us. Link-local scope-id plumbing split to 6.4.y
+(multi-interface fan-out remains on the to-do list).
 
-## Session 6.5 — Tier C Mainline DHT bridge (planned)
+**Files added:**
+- `hecate_bootstrap_mdns:build_advertisement/2` — pure fn mapping an
+  incoming query + our `node_info` to response bytes or `ignore`.
+  Filters: QR=1 (don't echo responses), non-service name, unsupported
+  qtype, garbage bytes. TXT answer carries the exact same
+  `node_id=hex/port/tier` triple that the probe side decodes.
+  Transaction id is echoed.
+- `hecate_bootstrap_mdns_responder` — gen_server owning the UDP
+  socket. Pluggable `socket_opener` opt (tests bind an ephemeral
+  loopback port; production joins `[ff02::fb]:5353`, which may
+  conflict with avahi). `silent=true` keeps the socket bound but
+  drops every query (Part 5 §5.3 privacy switch, O6). `set_silent/2`
+  toggles at runtime; `port/1` exposes the bound port.
 
-- `hecate_bootstrap_tier_c` queries Mainline DHT for foundation
-  pubkeys; verifies returned PKARR records.
-- Either: (a) embed minimal BT-DHT client in Erlang, or (b) bind to
-  `libtorrent`/`mainline-dht-go` via NIF/port. Decision pending.
+**Tests — 13 new eunit:** advertisement builder happy/response-echo/
+other-service/unsupported-type/TXT/PTR/garbage/id-echo; responder
+loopback round-trip, silent-drops, set_silent toggle, non-service
+dropped, init failure (trap_exit + drain).
+
+**State of green (post-6.4.x):** 531 station eunit / 26 station CT /
+xref / dialyzer clean.
+
+## Session 6.4.y — link-local scope-id + multi-interface (planned)
+
+- Per-interface fan-out: one responder per interface, each bound
+  with `{multicast_if, IfAddr}`.
+- Scope-id plumbing through tier_b candidate records so link-local
+  peer addresses remain reachable from the routing table.
+
+## Session 6.5 — Tier C Mainline DHT bridge (shipped 2026-04-15)
+
+**Scope:** pure codecs + Tier C probe with pluggable DHT transport.
+The actual Kademlia-over-UDP BT-DHT client lives in 6.5.x — we ship
+everything a production transport will need to plug in cleanly.
+
+**Files added:**
+- `hecate_bootstrap_bencode` — BEP 3 bencode codec. Integers, byte
+  strings, lists, dicts (binary keys, sorted on encode).
+  Deterministic: encoding two equal maps produces byte-identical
+  output regardless of insertion order.
+- `hecate_bootstrap_bep44` — mutable-item envelope.
+  - `target_id/1,2` — SHA-1 of pubkey [+ salt] per BEP 44 §2.
+  - `signed_payload/2,3` — exact BEP 44 §1 wire shape
+    `3:seqi<seq>e1:v<bencoded-value>` (and the salt-prefixed
+    variant). Wire shape verified against BEP 44's published
+    example (`Hello World!` with seq=1234 and salt=`foobar`).
+  - `sign/3,4` — convenience Ed25519 signer for tests + tooling
+    (production uses FROST threshold).
+  - `verify/1` — shape check (32-byte pubkey, 64-byte sig, seq≥0)
+    then Ed25519 verify over the BEP 44 payload.
+- `hecate_bootstrap_dht_transport` behaviour — single callback
+  `get_mutable(TargetId, TimeoutMs) -> {ok, item()} | {error, _}`.
+- `hecate_bootstrap_tier_c` — probe (500 ms stagger). For each
+  foundation pubkey in parallel: derive target id → DHT get →
+  verify item.pubkey matches → `hecate_bootstrap_bep44:verify/1` →
+  decode inner DNS packet → concatenate every TXT character-string
+  → `macula_record:decode/1` → `macula_foundation:verify_record/1`
+  → emit seeds as verified peers. First successful pubkey wins;
+  failures fall through. Missing transport is a hard error
+  (`{error, no_transport}`).
+
+**Tests — 27 new eunit + 1 CT:**
+- `hecate_bootstrap_bencode_tests` (44 cases across encode/decode/
+  round-trip/canonicalisation/error-paths).
+- `hecate_bootstrap_bep44_tests` (13 cases: target_id vectors,
+  signed_payload shape including BEP 44's published example, sign+
+  verify round-trip with and without salt, tampered value/seq/pubkey
+  rejected, salt mismatch rejected, malformed shape rejected).
+- `hecate_bootstrap_tier_c_tests` (10 cases with ETS-backed
+  `hecate_bootstrap_dht_fake`): happy path, no_transport,
+  no_pubkeys, wrong pubkey in DHT item, tampered BEP 44 signature,
+  non-DNS value, PKARR with no TXT, DHT get failure, record not
+  signed by foundation, multi-pubkey first-success wins.
+- `hecate_phase6_SUITE` gains tier_c cascade-winner case when Tiers
+  A and B are effectively down.
+
+**State of green (post-6.5):** 598 station eunit / 27 station CT /
+xref / dialyzer clean.
+
+## Session 6.5.x — Real Kademlia UDP DHT client (planned)
+
+- Either minimal Erlang BT-DHT client or Rust NIF wrapping an
+  existing Kademlia implementation.
+- Multi-node redundancy: query ≥8 nodes, prefer highest seq.
+- Rate limiting per Mainline DHT operator policy.
 
 ## Session 6.6 — Tier D blockchain anchor (planned)
 
-- `hecate_bootstrap_tier_d` reads quarterly foundation-signed seed
-  list from Bitcoin OP_RETURN and Ethereum contract event.
-- Both chains queried; either suffices.
-- Light-client libs vs block-explorer JSON APIs — decision pending
-  (O2).
+- `hecate_bootstrap_tier_d` — fetch quarterly foundation seed list
+  from Bitcoin OP_RETURN + Ethereum contract event.
+- Light-client vs block-explorer-API path — decision pending (O2).
 
 ## Session 6.7 — Acceptance against §11.3 bars (planned)
 
@@ -233,3 +307,4 @@ needed for cold-boot cascade.
 - Cold-boot Tier C only ⇒ < 10 s.
 - Cold-boot Tier D only ⇒ < 30 s.
 - Adversarial drop scenario ⇒ full cascade in < 60 s.
+

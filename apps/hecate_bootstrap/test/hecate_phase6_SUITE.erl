@@ -26,7 +26,8 @@
          foundation_seed_list_signed_by_trusted_key/1,
          tier_a_corroborated_seed_list_yields_peers/1,
          tier_a_uncorroborated_falls_through_to_tier_e/1,
-         tier_b_wins_cascade_when_tier_a_has_no_resolvers/1]).
+         tier_b_wins_cascade_when_tier_a_has_no_resolvers/1,
+         tier_c_wins_cascade_when_a_and_b_are_down/1]).
 
 all() ->
     [tier_e_yields_three_peers,
@@ -35,7 +36,8 @@ all() ->
      foundation_seed_list_signed_by_trusted_key,
      tier_a_corroborated_seed_list_yields_peers,
      tier_a_uncorroborated_falls_through_to_tier_e,
-     tier_b_wins_cascade_when_tier_a_has_no_resolvers].
+     tier_b_wins_cascade_when_tier_a_has_no_resolvers,
+     tier_c_wins_cascade_when_a_and_b_are_down].
 
 init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
@@ -44,12 +46,14 @@ init_per_testcase(_Case, Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:init(),
     hecate_bootstrap_mdns_fake:init(),
+    hecate_bootstrap_dht_fake:init(),
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:reset(),
     hecate_bootstrap_mdns_fake:reset(),
+    hecate_bootstrap_dht_fake:reset(),
     ok.
 
 %%---------------------------------------------------------------------
@@ -276,6 +280,63 @@ registry_handshake(Peers) ->
                 error   -> {error, not_registered}
             end
     end.
+
+%%---------------------------------------------------------------------
+%% Tier C — Mainline DHT cascade winner (acceptance §11.3)
+%%---------------------------------------------------------------------
+
+tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
+                 Fk, tier_c_seeds(5)), Kp),
+    DnsPacket = tier_c_pkarr_dns(macula_record:encode(Record)),
+    Item = hecate_bootstrap_bep44:sign(1, DnsPacket, Kp),
+    hecate_bootstrap_dht_fake:set(
+      hecate_bootstrap_bep44:target_id(Fk), Item),
+    Tiers = [
+        {hecate_bootstrap_tier_a,
+         #{resolvers => [], pubkeys => [Fk],
+           corroboration => 2, timeout_ms => 500}},
+        {hecate_bootstrap_tier_b,
+         #{udp_transport => hecate_bootstrap_mdns_fake,
+           timeout_ms    => 500}},
+        {hecate_bootstrap_tier_c,
+         #{dht_transport => hecate_bootstrap_dht_fake,
+           pubkeys       => [Fk],
+           timeout_ms    => 500}}
+    ],
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 2000}),
+    5 = length(Peers),
+    [c] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    ok.
+
+tier_c_seeds(N) ->
+    [#{node_id => crypto:strong_rand_bytes(32),
+       addresses => [], tier => 4} || _ <- lists:seq(1, N)].
+
+tier_c_pkarr_dns(RecordBytes) ->
+    Chunks = tier_c_chunk(RecordBytes, 200),
+    RR = inet_dns:make_rr([
+        {domain, "_macula.foundation"},
+        {type, txt}, {class, in}, {ttl, 60},
+        {data, Chunks}
+    ]),
+    Msg = inet_dns:make_msg([
+        {header, inet_dns:make_header(
+                    [{id, 0}, {qr, true}, {opcode, query},
+                     {rd, false}, {ra, false}, {rcode, 0}])},
+        {anlist, [RR]}
+    ]),
+    iolist_to_binary(inet_dns:encode(Msg)).
+
+tier_c_chunk(Bin, Max) when byte_size(Bin) =< Max -> [Bin];
+tier_c_chunk(Bin, Max) ->
+    <<Head:Max/binary, Rest/binary>> = Bin,
+    [Head | tier_c_chunk(Rest, Max)].
 
 %%---------------------------------------------------------------------
 %% Fake tier registration (runtime-compiled)
