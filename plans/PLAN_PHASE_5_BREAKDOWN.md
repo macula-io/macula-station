@@ -3,7 +3,50 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §10
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` §7 (intra-realm overlay),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §6 (PubSub frames).
-**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 + 5.2 + 5.3 shipped.
+**Status:** Phase 5 started 2026-04-14 — Sessions 5.1 – 5.4 shipped.
+
+## Session 5.4 (shipped)
+
+**Scope:** Observed-Remove Set CRDT (Part 3 §7.4).
+
+`hecate_or_set` — pure data structure for realm-shared mutable
+state (member lists, chat threads, directory metadata).
+
+State:
+- `data :: #{Element => sets:set(Tag)}` — currently-active tags
+  per element. Element "in the set" iff its tag set is non-empty.
+- `tombstones :: sets:set(Tag)` — tags removed by an observed
+  `remove/2`. Suppresses delayed re-adds of removed elements.
+
+Each `add/2` mints a fresh 16-byte random tag. `remove/2`
+tombstones every currently-observed tag for the element. The
+classical OR-Set property: concurrent add+remove of the same
+element keeps the element (the new tag wasn't observed by the
+remover).
+
+Two convergence interfaces:
+- `merge/2` — full-state union for catch-up sync. Element-wise
+  tag union, subtract merged tombstones, drop elements with no
+  live tags.
+- `apply_delta/2` — incremental per-op delta application for
+  Plumtree gossip. Idempotent. Suppresses adds whose tag is
+  already tombstoned.
+
+API: `new/0`, `add/2`, `remove/2`, `members/1`, `contains/2`,
+`size/1`, `is_empty/1`, `tags_for/2`, `tombstones/1`,
+`tombstone_count/1`, `merge/2`, `apply_delta/2`.
+
+Acceptance: +20 station eunit (379 total). Coverage: empty +
+add + remove basics; concurrent add+remove keeps element;
+later-remove-after-observed-add drops it; readd after remove;
+two-replicas-each-add then one removes keeps the other's tag;
+merge is commutative + idempotent + associative; delta
+application is idempotent; delayed re-broadcast of a removed
+add does NOT resurrect.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §7.4.
 
 ## Session 5.3 (shipped — SDK `macula-io/macula@041fae9`)
 
