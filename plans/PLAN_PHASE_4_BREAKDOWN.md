@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.5 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.6 shipped.
 
 ---
 
@@ -52,6 +52,62 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.6 (shipped)
+
+**Scope:** per-hop relay forwarding (Part 3 §6.6).
+
+`hecate_relay` (in `hecate_routing` app) — pure-function
+implementation of the per-hop CALL processing flow. Given a
+signed CALL frame plus a context (`self_id` + `identity` +
+`is_alive` predicate + optional `now_ms`), `process_call/2`
+returns one of:
+
+- `{forward, NextHop, NewFrame}` — advance the source-route
+  header, re-encode it into the CALL, hand back so the I/O
+  layer can transmit to `NextHop`.
+- `{deliver_local, Frame}` — we are the destination; pass to
+  the local CALL handler.
+- `{reply_error, ErrorFrame, OriginatorId}` — refuse with a
+  signed BOLT#4 error frame addressed to the originator.
+
+Per-hop checks in order:
+1. Source-route present + `decode/1` succeeds → else
+   `invalid_path_header`.
+2. Deadline not expired → else `expiry_too_soon`.
+3. No duplicate hops → else `loop_detected`.
+4. `current_hop_id(SR)` matches our 16-byte NodeId prefix →
+   else `invalid_path_header`.
+5. If we're the final hop, deliver locally; otherwise look up
+   the next hop's SWIM state via `is_alive(NextHop)`. Failed
+   lookup → `unknown_next_peer` with `offending_hop` carrying
+   the next-hop prefix (zero-padded to 32 bytes for SDK
+   conformance).
+
+Error frames are signed by the relay's identity so downstream
+hops can attribute "not my fault" to the right station, and
+carry `source_route_partial` so the originator can see the
+truncated path that traversed up to this hop.
+
+Module is pure — every observable side effect is encoded as a
+return value. The wrapper that actually transmits returned
+frames lands in Session 4.7+ when the orchestrator gains its
+full I/O surface.
+
+Acceptance: +11 eunit (total 295). Tests cover:
+forward at intermediate hop with SR advance, deliver_local at
+final hop, missing/corrupt source_route → invalid_path_header,
+position mismatch → invalid_path_header, expired deadline →
+expiry_too_soon, duplicate hop → loop_detected, dead next hop →
+signed unknown_next_peer with offending_hop attribution, error
+frame signed-by-self + addressed-to-caller + carries
+source_route_partial, and `now_ms` context override for
+deterministic deadline tests.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.6;
+      plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md §6.1, §6.3.
 
 ## Session 4.5 (shipped)
 
