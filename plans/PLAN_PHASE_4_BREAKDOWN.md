@@ -5,7 +5,7 @@
           `PLAN_MACULA_V2_PART4_LIFECYCLE.md` §6 (fast-fail + CALL state
           machine), `PLAN_MACULA_V2_PART6_PROTOCOL.md` §5 + §11 + §13
           (CALL frames, source-route header, BOLT#4 taxonomy).
-**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.4 shipped.
+**Status:** Phase 4 started 2026-04-14 — Sessions 4.1 – 4.5 shipped.
 
 ---
 
@@ -52,6 +52,48 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 - [ ] Failed-edge reroute p95 < 50 ms.
 - [ ] V1 blocker `dist-tunnel-blocker.md` resolved: cross-relay CALL works across > 2 hops.
 - [ ] CT suite green; no flakes over 10 runs.
+
+## Session 4.5 (shipped)
+
+**Scope:** CALL state machine — `gen_statem` with five
+transition deadlines from Part 4 §6.2.
+
+`hecate_call` (in `hecate_routing` app):
+- Five-state pipeline `idle → resolving → selected_target →
+  connecting → awaiting_ack → succeeded | failed`. Each
+  transition has a state_timeout; missing it transitions to
+  `failed` with the BOLT#4 code from §6.2.
+- Default deadlines: 100 / 500 / 200 / 200 / 5_000 ms. Every
+  per-state deadline is overridable per CALL via opts.
+- The state machine does NOT perform the underlying work
+  (resolution, path computation, QUIC handshake, frame I/O).
+  An external orchestrator (Phase 4 Sessions 4.6+) drives the
+  transitions via `resolved/3`, `selected/2`, `connected/1`,
+  `ack/2`, `ack_error/3` casts.
+- BOLT#4 wiring: `ack_error/3` accepts either an atom name
+  (`target_realm_refused`) or an integer code (`16#03`); both
+  resolve to the canonical name on the failure outcome.
+- Outcome shape: `{ok, Payload} | {error, BoltName, Detail}`.
+  Detail carries `phase => atom()` for self-timeout failures and
+  `offending_hop => pubkey()` for ack_error with hop attribution.
+- `await/2` is multi-awaiter (parked `From` tuples replied on
+  terminal entry; late awaiters get the cached outcome
+  immediately).
+- `notify_pid` opt receives `{hecate_call, Pid, Outcome}` on
+  terminal entry — the integration point for orchestrators that
+  want a one-shot mailbox notification rather than a blocking
+  call.
+
+Acceptance: +14 eunit (total 284). Tests cover happy-path
+traversal, every per-state timeout mapping to its BOLT#4 code,
+ack_error with both atom and integer code forms, notify_pid
+delivery on both success and failure, multi-awaiter
+correctness, and that stale events in the wrong state are
+silently ignored. 5 consecutive runs all green.
+
+rebar3 compile xref eunit dialyzer all green.
+
+Refs: plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md §6.2.
 
 ## Session 4.4 (shipped)
 
