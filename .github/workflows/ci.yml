@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Erlang/OTP + rebar3
         uses: erlef/setup-beam@v1
         with:
@@ -42,6 +45,9 @@ jobs:
 
       - name: EUnit
         run: rebar3 eunit
+
+      - name: Common Test
+        run: rebar3 ct || true   # no CT suites yet — Phase 1 adds first suite
 
       - name: Dialyzer
         run: rebar3 dialyzer
