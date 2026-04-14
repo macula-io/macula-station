@@ -3,7 +3,7 @@
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §8
 **Spec:** `PLAN_MACULA_V2_PART3_DISCOVERY.md` (normative)
 **Wire:** `PLAN_MACULA_V2_PART6_PROTOCOL.md` §7 (DHT frames)
-**Status:** Phase 3 started 2026-04-14 (Session 3.1 below)
+**Status:** Phase 3 started 2026-04-14 — Sessions 3.1 + 3.2 green.
 
 ---
 
@@ -68,7 +68,7 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 - [ ] All modules dialyzer clean, no `{nowarn, ...}`, no `try/catch` in hot paths
 - [ ] CT suite green; no flakes over 10 runs
 
-## Session 3.1 (this commit)
+## Session 3.1 (shipped — commit `8e9d383`)
 
 **Scope:** four pure modules — no processes, no sockets. Everything testable by eunit alone.
 
@@ -77,7 +77,23 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 3. `hecate_dht_diversity` — ASN/country/tier counting, constraint checker, novelty scorer
 4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
-Acceptance: eunit ≥ 40 tests green, xref + dialyzer clean, no module exposes mutable state.
+Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
+
+## Session 3.2 (shipped)
+
+**Scope:** two pure modules on top of 3.1 — still no processes, no sockets.
+
+1. `hecate_dht_routing_table` — 256-slot sparse map of buckets addressed by
+   `bucket_index/2`. Dispatches insert/touch/remove/find to the right bucket,
+   collapses buckets when they drain to zero entries. Self-insert rejected
+   (bucket_index = -1). `k_closest/3` flattens + keysort over all entries.
+2. `hecate_dht_siblings` — S=16 bounded sorted set of peers by ascending
+   XOR distance to self. Pure-distance admission (not scored). Self-insert
+   rejected. Closer-than-farthest replaces; farther-than-farthest rejects.
+
+Acceptance: +43 eunit tests (total 111 across app), xref + dialyzer clean.
+Both modules pure values — only construction, inspection, and immutable
+`{admitted | touched | replaced | rejected, new_state()}` transitions.
 
 ## Deferred (tracked elsewhere)
 
