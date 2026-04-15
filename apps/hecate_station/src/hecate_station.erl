@@ -32,6 +32,10 @@
     rebootstrap/0,
     admin/0,
     admin_addr/0,
+    shutdown/0,
+    shutdown/1,
+    current_identity/0,
+    tombstone_type/0,
     %% Internal — called by `hecate_station_app' during boot/teardown.
     remember_dial_opts/1,
     forget_dial_opts/0
@@ -143,6 +147,122 @@ admin_addr() ->
 admin_port_of({ok, Pid})    -> {ok, hecate_station_admin:listen_port(Pid)};
 admin_port_of(E)            -> E.
 
+%%------------------------------------------------------------------
+%% Graceful shutdown
+%%
+%% Publishes a tombstone for the station's own `node_record' into
+%% the local DHT (and, best-effort, to peer DHTs), flushes the
+%% routing-table cache to disk, and tears down the sup tree. Exits
+%% the application cleanly — a subsequent `whereis(hecate_station_sup)'
+%% returns `undefined'.
+%%
+%% Crashes (unclean exits) skip this path; the tombstone's TTL + the
+%% abandoned-record expiry in Part 4 §11 handle that case instead.
+%%------------------------------------------------------------------
+
+%% The record type tombstoned by `shutdown/0,1'. A station's
+%% `node_record' lives under type tag `0x01' (see `macula_record'
+%% docs); the tombstone carries that tag so peers mark the right
+%% record superseded.
+-define(NODE_RECORD_TYPE, 16#01).
+
+%% Key under which `hecate_station_app' caches the outbound-dial
+%% template at boot. Defined up front so graceful shutdown below +
+%% `connect_to/1' further down can both refer to it.
+-define(DIAL_KEY, {hecate_station, dial_opts}).
+
+%% @doc Graceful shutdown with the default reason `operator_stop'.
+-spec shutdown() -> ok | {error, not_started}.
+shutdown() ->
+    shutdown(operator_stop).
+
+%% @doc Graceful shutdown with an operator-specified reason.
+%% The reason is carried on the tombstone so peers can distinguish
+%% `retired' (deliberate) from `operator_stop' (routine) etc.
+-spec shutdown(atom()) -> ok | {error, not_started}.
+shutdown(Reason) when is_atom(Reason) ->
+    execute_shutdown(dht(), current_identity(), Reason).
+
+execute_shutdown({ok, Dht}, {ok, Kp}, Reason) ->
+    _ = publish_tombstone(Dht, Kp, Reason),
+    _ = flush_cache(),
+    _ = teardown_sup(),
+    ok;
+execute_shutdown(_DhtResult, _IdResult, _Reason) ->
+    {error, not_started}.
+
+publish_tombstone(Dht, Kp, Reason) ->
+    Tomb = build_tombstone(Kp, Reason),
+    ok   = hecate_dht:put_record(Dht, Tomb),
+    %% Best-effort replicate to peers in a spawned helper so the
+    %% shutdown hot path never blocks on QUIC liveness. If the
+    %% cascade seeded the DHT with unreachable endpoints (the
+    %% common case when a station goes down while its peers are
+    %% still on the same partition) the store round would
+    %% otherwise pin shutdown to its full timeout.
+    _ = spawn(fun() ->
+            hecate_dht:store(Dht, Tomb,
+                             #{overall_timeout_ms => 2_000,
+                               store_timeout_ms   => 500})
+        end),
+    ok.
+
+build_tombstone(Kp, Reason) ->
+    Pub      = macula_identity:public(Kp),
+    Unsigned = macula_record:tombstone(Pub, ?NODE_RECORD_TYPE, Reason),
+    macula_record:sign(Unsigned, Kp).
+
+flush_cache() ->
+    flush_cache_if_running(cache()).
+
+flush_cache_if_running({ok, Pid}) ->
+    _ = hecate_station_cache:flush(Pid),
+    ok;
+flush_cache_if_running(_) ->
+    ok.
+
+teardown_sup() ->
+    teardown_sup_pid(whereis(hecate_station_sup)).
+
+teardown_sup_pid(undefined) ->
+    ok;
+teardown_sup_pid(Pid) when is_pid(Pid) ->
+    Ref = monitor(process, Pid),
+    _ = forget_dial_opts(),
+    exit(Pid, shutdown),
+    await_sup_down(Pid, Ref).
+
+%% Graceful first, brutal fallback. Plan §8.7 says "5 s under normal
+%% conditions" — that is the end-to-end budget. If the cascade of
+%% children exceeds that window, fall back to `kill' so the caller
+%% never hangs longer than the operator expects. The tombstone +
+%% cache flush already happened upstream, so a late-stage kill is
+%% safe.
+await_sup_down(Pid, Ref) ->
+    receive {'DOWN', Ref, process, Pid, _} -> ok
+    after 3_000 ->
+        exit(Pid, kill),
+        receive {'DOWN', Ref, process, Pid, _} -> ok
+        after 2_000 -> timeout
+        end
+    end.
+
+%% @doc Returns the station's Ed25519 key pair if the app is
+%% booted. The identity is cached in `persistent_term' by the boot
+%% pipeline; callers outside `hecate_station_app' use this accessor
+%% rather than re-reading the file.
+-spec current_identity() -> {ok, macula_identity:key_pair()} | {error, not_started}.
+current_identity() ->
+    identity_of(persistent_term:get(?DIAL_KEY, undefined)).
+
+identity_of(#{identity := Kp}) -> {ok, Kp};
+identity_of(_)                 -> {error, not_started}.
+
+%% @doc The record type tag used for station node_records (and the
+%% tag `shutdown/0,1' tombstones publish).
+-spec tombstone_type() -> 16#01.
+tombstone_type() -> ?NODE_RECORD_TYPE.
+
 %% @doc `{Bind, Port}' the listener is bound to. Errors if the app is
 %% not booted.
 -spec listen_addr() -> hecate_station_listener:listen_addr()
@@ -166,11 +286,6 @@ dial({ok, Opts}, Target) ->
     macula_peering:connect(Opts#{target => Target});
 dial({error, _} = E, _Target) ->
     E.
-
-%% `hecate_station_app' stores the post-boot dial template
-%% (identity / realms / capabilities) here so `connect_to/1' can
-%% reconstruct peering opts without re-reading the config file.
--define(DIAL_KEY, {hecate_station, dial_opts}).
 
 dial_opts() ->
     compose_dial(observer(), persistent_term:get(?DIAL_KEY, undefined)).

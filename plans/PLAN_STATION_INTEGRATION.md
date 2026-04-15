@@ -500,12 +500,79 @@ loopback `::1`) exposing `/status`, `/metrics`,
   summary.
 - CT: start a station, hit each endpoint, assert payload shape.
 
-### 8.7 Graceful shutdown (tombstone + flush)
+### 8.7 Graceful shutdown (tombstone + flush) ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** `hecate_station:stop/1,2` publishes an owner
 tombstone for the station's own node_record, flushes caches, closes
 QUIC, exits 0. Crashes (unclean exit) skip the tombstone — Part 4
 §11's TTL handles the abandoned record.
+
+**Landed:**
+- `hecate_station:shutdown/0` + `shutdown/1(Reason)` — operator
+  entry point for the sup-driven mode (the pre-8.1
+  `stop/1,2(Pid)` API remains for the walking-skeleton path).
+  Pipeline:
+  1. Build + sign a tombstone for the station's `node_record'
+     (type tag `0x01', tombstone envelope type `0x0C') with
+     `macula_record:tombstone/3' + `sign/2'. Reason rides on
+     the tombstone payload so peers can distinguish `retired'
+     from `operator_stop'.
+  2. `hecate_dht:put_record/2' on the local DHT (synchronous).
+  3. `hecate_dht:store/3' to the k-closest peers in a SPAWNED
+     helper (fire-and-forget) so the shutdown hot path never
+     blocks on QUIC liveness — if the cascade seeded the DHT
+     with endpoints that are now unreachable, the store round
+     would otherwise pin the caller to its timeout.
+  4. Flush the cache gen_server to disk (if configured).
+  5. Tear down `hecate_station_sup' with a graceful-then-brutal
+     pattern: `exit(Pid, shutdown)' + 3 s wait; on timeout,
+     `exit(Pid, kill)' + 2 s wait. Honors the plan §8.7 "5 s
+     under normal conditions" budget while guaranteeing the
+     caller never hangs indefinitely.
+- `hecate_station:current_identity/0' — surfaces the station's
+  key pair (cached in `persistent_term' by the boot pipeline) to
+  any module that needs to sign a record at runtime. Used by
+  `shutdown/1' to build the tombstone without re-reading the
+  identity file from disk.
+- `hecate_station:tombstone_type/0' — the `0x01' node_record
+  type tag. Part of the station's stable API so downstream code
+  (and tests) can refer to the canonical constant.
+- Idempotence: calling `shutdown/0' on an already-stopped
+  station returns `{error, not_started}' rather than crashing —
+  the sup registered name is gone, so `dht/0' +
+  `current_identity/0' both report `not_started' and the pipeline
+  short-circuits.
+- Crash safety (SIGKILL path): no new code is required. The
+  identity file already uses atomic tmp + rename via
+  `macula_identity:save/2' (shipped in 8.1), and the cache
+  uses the same tmp + rename pattern
+  (shipped in 8.5). A kill between writes therefore leaves both
+  files either in their previous-good state or with a `.tmp'
+  sibling that is ignored by the next warm boot.
+- Tests: `hecate_station_shutdown_tests' (3 cases): shutdown
+  builds + publishes a tombstone + flushes the cache + tears the
+  sup down; calling shutdown on a stopped station is idempotent;
+  `put_record` + `find_local_record' round-trip confirms the
+  tombstone's envelope type is `0x0C'.
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer' all green
+(727 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:**
+- Two-station tombstone-reach CT (sender shuts down, reader's DHT
+  learns the tombstone via replicate walk) — same multi-VM
+  constraint as 8.3 / 8.4; lands in 8.8 fleet CT.
+- SWIM `leave' frame + overlay `REALM_LEAVE' broadcast — the
+  plan file list mentions these as steps in
+  `hecate_station_server:terminate/2', but they do not yet exist
+  as peering-frame types. Filed in `PLAN_DEFERRED_WORK.md' against
+  the macula-frame schema extension for Phase 7.
+- Integration with OTP application_master (`application:stop/1'
+  as the operator-facing entry point instead of calling
+  `hecate_station:shutdown/0' directly) — current API is
+  sufficient for the beam-fleet ops scripts; a `prep_stop/1'
+  callback that wires into `application:stop/1' is an
+  eight-line addition deferred to 8.8 polish.
 
 **Files:**
 - `hecate_station_server:terminate/2` — orders the shutdown:
