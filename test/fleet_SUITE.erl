@@ -101,12 +101,12 @@ cold_boot_and_meet(Config) ->
     connect_meshed(P1, P2),
     Pub1 = pub(P1),
     Pub2 = pub(P2),
-    ok = wait_for(fun() ->
-              dht_contains(P1, Pub2) andalso
-              dht_contains(P2, Pub1) andalso
-              swim_alive(P1, Pub2) andalso
-              swim_alive(P2, Pub1)
-          end, 8_000),
+    ok = fleet_chaos:wait_until(fun() ->
+             dht_contains(P1, Pub2) andalso
+             dht_contains(P2, Pub1) andalso
+             swim_alive_remote(P1, Pub2) andalso
+             swim_alive_remote(P2, Pub1)
+         end, 8_000),
     %% Tier=t0 on both sides — that is the observer's direct-peer
     %% spec from Session 8.3.
     ?assertEqual(t0, dht_tier(P1, Pub2)),
@@ -117,14 +117,15 @@ kill_detection(Config) ->
     [P1, P2] = ?config(peers, Config),
     connect_meshed(P1, P2),
     Pub2 = pub(P2),
-    ok = wait_for(fun() -> swim_alive(P1, Pub2) end, 5_000),
+    ok = fleet_chaos:wait_until(
+             fun() -> swim_alive_remote(P1, Pub2) end, 5_000),
     %% Stop peer 2's VM outright — the QUIC connection dies, SWIM
     %% pings stop being answered, and P1's failure detector should
     %% transition alive → suspect → confirmed_failed.
-    ok = peer:stop(maps:get(ctl, P2)),
-    ok = wait_for(fun() ->
-              hecate_swim_member_state(P1, Pub2) =:= confirmed_failed
-          end, 10_000),
+    ok = fleet_chaos:stop_peer(maps:get(ctl, P2)),
+    ok = fleet_chaos:wait_until(
+             fun() -> remote_member_state(P1, Pub2) =:= confirmed_failed end,
+             10_000),
     ok.
 
 %%==================================================================
@@ -202,7 +203,7 @@ ensure_loaded_on_peer(Node, Mod) ->
 
 stop_peers([]) -> ok;
 stop_peers([#{ctl := Ctl, data_dir := Dir} | Rest]) ->
-    _ = catch peer:stop(Ctl),
+    _ = fleet_chaos:stop_peer(Ctl),
     rm_rf(Dir),
     stop_peers(Rest).
 
@@ -233,17 +234,15 @@ dht_tier(#{node := Node}, NodeId) ->
     {ok, Entry} = rpc_call(Node, hecate_dht, find, [Dht, NodeId]),
     rpc_call(Node, hecate_dht_entry, tier, [Entry]).
 
-swim_alive(#{node := Node}, NodeId) ->
-    hecate_swim_member_state(#{node => Node}, NodeId) =:= alive.
+swim_alive_remote(#{node := Node}, NodeId) ->
+    remote_member_state(#{node => Node}, NodeId) =:= alive.
 
-hecate_swim_member_state(#{node := Node}, NodeId) ->
+%% Cross-node version of `fleet_chaos:member_state/2'. The chaos
+%% helper is a LOCAL call; fleet tests live across peer nodes so
+%% we wrap it in `rpc:call'.
+remote_member_state(#{node := Node}, NodeId) ->
     {ok, Swim} = rpc_call(Node, hecate_station, swim, []),
-    Members = rpc_call(Node, hecate_swim, members, [Swim]),
-    Match = [S || #{node_id := N, state := S} <- Members, N =:= NodeId],
-    case Match of
-        [State] -> State;
-        []      -> missing
-    end.
+    rpc_call(Node, fleet_chaos, member_state, [Swim, NodeId]).
 
 %%==================================================================
 %% Generic utilities
@@ -251,15 +250,6 @@ hecate_swim_member_state(#{node := Node}, NodeId) ->
 
 rpc_call(Node, M, F, A) ->
     rpc:call(Node, M, F, A, 5_000).
-
-wait_for(Pred, Ms) ->
-    wait_step(Pred(), Pred, Ms).
-
-wait_step(true,  _Pred, _Ms)             -> ok;
-wait_step(false, Pred, Ms) when Ms =< 0  -> ?assert(Pred());
-wait_step(false, Pred, Ms)               ->
-    timer:sleep(100),
-    wait_step(Pred(), Pred, Ms - 100).
 
 free_port() ->
     {ok, S} = gen_udp:open(0, [{reuseaddr, true}]),

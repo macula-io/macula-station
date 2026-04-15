@@ -88,7 +88,7 @@ Scope per `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §12.
 
 | Session | Deliverable | Gating |
 |---------|-------------|--------|
-| 7.1 | Chaos test suite — node kills, network partitions, clock skew, BGP simulation | O34 (harness tooling: PropEr native + custom) |
+| 7.1 | Chaos test suite — node kills, network partitions, clock skew, BGP simulation. ✅ Primitive harness shipped 2026-04-15 (Sprint D) — see `test/fleet_chaos.erl'. Remaining: partition / clock-skew / BGP-sim primitives need iptables + time-travel tooling at the fleet level. | O34 (harness tooling: PropEr native + custom) |
 | 7.2 | Sybil flood — 10 000 adversary NodeIds across 3 ASes, measure bucket diversity | — |
 | 7.3 | Eclipse simulation — adversary controls 50% of target's routing table, measure lookup degradation | — |
 | 7.4 | Adaptive crypto-puzzle difficulty (foundation-signed parameter bumps via Tier A/C/D re-fetch) | O1 (puzzle difficulty policy) |
@@ -246,12 +246,14 @@ is the authoritative detail.
   future realm service post-§8.4 reversal. Trigger: "Add SWIM
   leave frame".
 
-**Premature — parks until 4-node scenarios land:**
+**Shipped in Sprint D (2026-04-15):**
 
-- **`test/fleet_chaos.erl` helper module** — kill/partition
-  helpers live inline in `fleet_SUITE'; extract when the
-  4-node scenarios land. Trigger: "Extract fleet_chaos
-  helpers".
+- ✅ **`test/fleet_chaos.erl` helper module** — kill_pid/1,
+  stop_peer/1, pause/1, resume/1, wait_until/2, wait_alive/3,
+  wait_confirmed_failed/3, member_state/2. Consumed by
+  `fleet_SUITE' (both scenarios refactored to use it). 6 eunit
+  cases cover each primitive in isolation. Foundation for
+  Phase 7.2 / 7.3 scenarios to compose.
 
 ### 8.2 — admin API (Phase 7 hardening)
 
