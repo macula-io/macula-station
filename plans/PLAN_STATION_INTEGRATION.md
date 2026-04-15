@@ -54,11 +54,37 @@ Each session is sized to ship green in one sitting. Numbering is
 "Session 8.x" because this is the first concrete slice of Phase 8
 (Lab cutover) — everything before cutover needs integration.
 
-### 8.1 Persistent identity + config loader
+### 8.1 Persistent identity + config loader ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** station loads or generates an Ed25519 identity from
 disk; config loader reads `sys.config` into a typed `#station_cfg{}`
 record.
+
+**Landed:**
+- `hecate_station_identity` — `path_for/1`, `load/1`, `generate/1`,
+  `load_or_generate/1`. Atomic 0600 persist via
+  `macula_identity:save/2`.
+- `apps/hecate_station/include/hecate_station_cfg.hrl` — the
+  `#station_cfg{}` record.
+- `hecate_station_config:from_env/0` — reads `sys.config` under the
+  `hecate_station` app, applies `HECATE_STATION_*` env-var
+  overrides, loads/generates identity, returns
+  `{ok, #station_cfg{}} | {error, {bad_config, Reason}}`.
+- `hecate_station_config:to_opts/1` — projects the typed record to
+  the legacy `station_opts()` map the walking-skeleton server
+  consumes.
+- `hecate_station_sup:init/1` — starts a single
+  `hecate_station_server` child when the app env is populated;
+  tolerates empty env (walking-skeleton / chaos CT drive the server
+  directly); returns `{stop, {bad_config, Reason}}` on parse errors.
+- Tests: `hecate_station_identity_tests` (7 cases, covers cold-boot,
+  warm-boot, missing-dir recovery, mode 0600, load/generate) and
+  `hecate_station_config_tests` (10 cases, covers legacy `load/1`
+  contract, `from_env/0` happy path, missing/bad field errors,
+  env-var override, identity continuity).
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer` all green
+(685 eunit / 31 ct, 0 dialyzer warnings).
 
 **Files:**
 - `hecate_station_identity` — `load/1`, `generate/1`, `path_for/1`.
