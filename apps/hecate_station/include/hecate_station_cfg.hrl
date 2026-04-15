@@ -23,9 +23,28 @@
     port           :: inet:port_number(),
     certfile       :: file:name_all(),
     keyfile        :: file:name_all(),
-    %% Peering policy.
+    %% Peering policy — realm ids this station advertises membership
+    %% of in the CONNECT handshake. `realms_cfg' below carries the
+    %% per-realm protocol configuration (overlay caps + plumtree
+    %% fan-out).
     realms         = [] :: [macula_identity:pubkey()],
-    capabilities   = 0  :: non_neg_integer()
+    capabilities   = 0  :: non_neg_integer(),
+    %% Per-realm overlay configuration. One entry per realm the
+    %% station participates in; each spawns a
+    %% `hecate_station_realm' child under `hecate_station_realm_sup'.
+    realms_cfg     = [] :: [realm_cfg()]
 }).
+
+%% Matches the shape of `application:get_env(hecate_station, realms_cfg, [])'
+%% and the `realms' field in PLAN_STATION_INTEGRATION §4.
+-record(realm_cfg, {
+    realm_id            :: <<_:256>>,
+    roles               = [<<"member">>] :: [binary()],
+    active_view_size    = 5  :: pos_integer(),
+    passive_view_size   = 20 :: pos_integer(),
+    plumtree_fanout     = 3  :: pos_integer()
+}).
+
+-type realm_cfg() :: #realm_cfg{}.
 
 -endif.

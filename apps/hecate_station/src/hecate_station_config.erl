@@ -25,7 +25,7 @@
     enabled/0
 ]).
 
--export_type([opts/0, station_opts/0, station_cfg/0]).
+-export_type([opts/0, station_opts/0, station_cfg/0, realm_cfg/0]).
 
 -type opts() :: #{
     bind          => inet:ip_address() | string(),
@@ -125,14 +125,15 @@ continue_with_identity({error, _} = E) ->
 -spec build_cfg() -> {ok, station_cfg()} | {error, {bad_config, term()}}.
 build_cfg() ->
     promote(read_many([
-        {data_dir,      "HECATE_STATION_DATA_DIR",      str,       required},
-        {identity_file, "HECATE_STATION_IDENTITY_FILE", str,       optional},
-        {bind,          "HECATE_STATION_BIND",          str,       required},
-        {port,          "HECATE_STATION_PORT",          integer,   required},
-        {certfile,      "HECATE_STATION_CERTFILE",      str,       required},
-        {keyfile,       "HECATE_STATION_KEYFILE",       str,       required},
-        {realms,        "HECATE_STATION_REALMS",        realms,    {optional, []}},
-        {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,   {optional, 0}}
+        {data_dir,      "HECATE_STATION_DATA_DIR",      str,          required},
+        {identity_file, "HECATE_STATION_IDENTITY_FILE", str,          optional},
+        {bind,          "HECATE_STATION_BIND",          str,          required},
+        {port,          "HECATE_STATION_PORT",          integer,      required},
+        {certfile,      "HECATE_STATION_CERTFILE",      str,          required},
+        {keyfile,       "HECATE_STATION_KEYFILE",       str,          required},
+        {realms,        "HECATE_STATION_REALMS",        realms,       {optional, []}},
+        {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,      {optional, 0}},
+        {realms_cfg,    undefined,                      realm_specs,  {optional, []}}
     ])).
 
 promote({ok, Map})          -> {ok, finalise_cfg_map(Map)};
@@ -168,9 +169,14 @@ materialise_spec(absent,           _Key, _Parse, {optional, Default}) ->
     {ok, Default}.
 
 %% Env var wins; otherwise application env. Tags the source for errors.
+%% Some config fields have no `HECATE_STATION_*' override — the env-var
+%% name is `undefined' for those; we skip the `os:getenv/1' path.
 raw_value(Key, EnvVar) ->
-    choose_raw(os:getenv(EnvVar), application:get_env(hecate_station, Key),
+    choose_raw(env_value(EnvVar), application:get_env(hecate_station, Key),
                EnvVar, Key).
+
+env_value(undefined) -> false;
+env_value(Name)      -> os:getenv(Name).
 
 choose_raw(V,     _AppVal, EnvVar, _Key) when is_list(V) -> {ok, {{env, EnvVar}, V}};
 choose_raw(false, {ok, V},  _EnvVar, Key) -> {ok, {{app_env, Key}, V}};
@@ -183,6 +189,7 @@ parse_value(V, integer, Src)  when is_list(V)                 -> parse_int(V, Sr
 parse_value(V, integer, Src)  when is_binary(V)               -> parse_int(binary_to_list(V), Src);
 parse_value(V, realms,  _Src) when is_list(V)                 -> decode_realms(V);
 parse_value(V, realms,  _Src) when is_binary(V)               -> decode_realms(binary_to_list(V));
+parse_value(V, realm_specs, Src) when is_list(V)              -> decode_realm_specs(V, Src);
 parse_value(V, T,       Src)                                  -> {error, {bad_config, {parse, Src, T, V}}}.
 
 parse_int(Str, Src) ->
@@ -216,6 +223,31 @@ decode_one_realm(B) when is_binary(B), byte_size(B) =:= 32 -> {ok, B};
 decode_one_realm(L) when is_list(L), length(L) =:= 64      -> decode_hex(L, <<>>);
 decode_one_realm(V) -> {error, {bad_config, {realm, V}}}.
 
+%% Map → #realm_cfg{} — one entry per configured realm.
+decode_realm_specs(Specs, Src) ->
+    decode_realm_specs(Specs, Src, []).
+
+decode_realm_specs([], _Src, Acc) -> {ok, lists:reverse(Acc)};
+decode_realm_specs([Spec | Rest], Src, Acc) ->
+    decode_realm_specs_step(decode_realm_spec(Spec, Src), Rest, Src, Acc).
+
+decode_realm_specs_step({ok, R},           Rest, Src, Acc) ->
+    decode_realm_specs(Rest, Src, [R | Acc]);
+decode_realm_specs_step({error, _} = E,   _Rest, _Src, _Acc) ->
+    E.
+
+decode_realm_spec(#{realm_id := Id} = Spec, _Src)
+  when is_binary(Id), byte_size(Id) =:= 32 ->
+    {ok, #realm_cfg{
+        realm_id          = Id,
+        roles             = maps:get(roles,             Spec, [<<"member">>]),
+        active_view_size  = maps:get(active_view_size,  Spec, 5),
+        passive_view_size = maps:get(passive_view_size, Spec, 20),
+        plumtree_fanout   = maps:get(plumtree_fanout,   Spec, 3)
+     }};
+decode_realm_spec(Spec, Src) ->
+    {error, {bad_config, {parse, Src, realm_specs, Spec}}}.
+
 %% Pair-at-a-time hex decode. Returns {ok, <<_:256>>} | {error, _}.
 decode_hex([], Acc) when byte_size(Acc) =:= 32 -> {ok, Acc};
 decode_hex([A, B | Rest], Acc) ->
@@ -244,7 +276,8 @@ finalise_cfg_map(Map0) ->
         certfile      = maps:get(certfile, Map),
         keyfile       = maps:get(keyfile, Map),
         realms        = maps:get(realms, Map, []),
-        capabilities  = maps:get(capabilities, Map, 0)
+        capabilities  = maps:get(capabilities, Map, 0),
+        realms_cfg    = maps:get(realms_cfg, Map, [])
     }.
 
 ensure_identity_file(#{identity_file := _} = Map, _DataDir) -> Map;

@@ -25,6 +25,9 @@
     listener/0,
     listen_addr/0,
     connect_to/1,
+    realm_sup/0,
+    realms/0,
+    realm/1,
     %% Internal — called by `hecate_station_app' during boot/teardown.
     remember_dial_opts/1,
     forget_dial_opts/0
@@ -90,6 +93,31 @@ observer() -> resolve(hecate_station_peer_observer).
 %% @doc Pid of the station's QUIC listener, if the app is booted.
 -spec listener() -> {ok, pid()} | {error, not_started}.
 listener() -> resolve(hecate_station_listener).
+
+%% @doc Pid of the realm supervisor, if the app is booted.
+-spec realm_sup() -> {ok, pid()} | {error, not_started}.
+realm_sup() -> resolve(hecate_station_realm_sup).
+
+%% @doc Every supervised realm pid on this station.
+-spec realms() -> [pid()].
+realms() ->
+    enumerate_realms(realm_sup()).
+
+enumerate_realms({ok, _}) -> hecate_station_realm_sup:children();
+enumerate_realms(_)       -> [].
+
+%% @doc Resolve a realm id to the matching realm gen_server pid.
+-spec realm(<<_:256>>) -> {ok, pid()} | {error, not_started | not_found}.
+realm(RealmId) when is_binary(RealmId), byte_size(RealmId) =:= 32 ->
+    lookup_realm(observer(), RealmId).
+
+lookup_realm({ok, Obs}, RealmId) ->
+    map_lookup(hecate_station_peer_observer:realm_for(Obs, RealmId));
+lookup_realm(_, _) ->
+    {error, not_started}.
+
+map_lookup({ok, Pid})    -> {ok, Pid};
+map_lookup(error)        -> {error, not_found}.
 
 %% @doc `{Bind, Port}' the listener is bound to. Errors if the app is
 %% not booted.

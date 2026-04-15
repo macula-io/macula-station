@@ -82,14 +82,57 @@ on_observer_started(SupPid, Cfg, {ok, ObserverPid}) ->
 
 boot_listener(SupPid, Cfg, ObserverPid) ->
     Spec = listener_child(Cfg, ObserverPid),
-    on_listener_started(SupPid, Cfg,
+    on_listener_started(SupPid, Cfg, ObserverPid,
                         supervisor:start_child(SupPid, Spec)).
 
-on_listener_started(SupPid, _Cfg, {error, Reason}) ->
+on_listener_started(SupPid, _Cfg, _ObserverPid, {error, Reason}) ->
     halt_sup(SupPid, {listener_start_failed, Reason});
-on_listener_started(SupPid, Cfg, {ok, _ListenerPid}) ->
+on_listener_started(SupPid, Cfg, ObserverPid, {ok, _ListenerPid}) ->
     ok = hecate_station:remember_dial_opts(dial_template(Cfg)),
-    {ok, SupPid}.
+    boot_realm_sup(SupPid, Cfg, ObserverPid).
+
+boot_realm_sup(SupPid, Cfg, ObserverPid) ->
+    on_realm_sup_started(SupPid, Cfg, ObserverPid,
+                         supervisor:start_child(SupPid, realm_sup_child())).
+
+on_realm_sup_started(SupPid, _Cfg, _ObserverPid, {error, Reason}) ->
+    halt_sup(SupPid, {realm_sup_start_failed, Reason});
+on_realm_sup_started(SupPid, Cfg, ObserverPid, {ok, _RealmSupPid}) ->
+    spawn_configured_realms(SupPid, Cfg, ObserverPid,
+                            Cfg#station_cfg.realms_cfg).
+
+spawn_configured_realms(SupPid, _Cfg, _ObserverPid, []) ->
+    {ok, SupPid};
+spawn_configured_realms(SupPid, Cfg, ObserverPid, [RealmCfg | Rest]) ->
+    case spawn_realm(Cfg, ObserverPid, RealmCfg) of
+        {ok, _RealmPid}  -> spawn_configured_realms(SupPid, Cfg, ObserverPid, Rest);
+        {error, Reason}  -> halt_sup(SupPid, {realm_start_failed, Reason})
+    end.
+
+spawn_realm(#station_cfg{identity = Kp}, ObserverPid, RealmCfg) ->
+    RealmId = RealmCfg#realm_cfg.realm_id,
+    Opts = #{
+        realm_cfg => RealmCfg,
+        identity  => Kp,
+        send_fun  => realm_send_fun(ObserverPid)
+    },
+    on_realm_spawned(ObserverPid, RealmId,
+                     hecate_station_realm_sup:start_realm(Opts)).
+
+on_realm_spawned(ObserverPid, RealmId, {ok, RealmPid}) ->
+    ok = hecate_station_peer_observer:register_realm(ObserverPid,
+                                                     RealmId, RealmPid),
+    {ok, RealmPid};
+on_realm_spawned(_Observer, _RealmId, {error, _} = E) ->
+    E.
+
+%% The send_fun binds the observer pid; dispatcher closure routes
+%% each `{send, NodeId, Frame}` action through
+%% `hecate_station_peer_observer:send_to/3'.
+realm_send_fun(ObserverPid) ->
+    fun(NodeId, Frame) ->
+        hecate_station_peer_observer:send_to(ObserverPid, NodeId, Frame)
+    end.
 
 dial_template(#station_cfg{identity = Kp, realms = R, capabilities = C}) ->
     #{identity => Kp, realms => R, capabilities => C}.
@@ -130,6 +173,16 @@ swim_child(#station_cfg{identity = Kp}) ->
         shutdown => 5000,
         type     => worker,
         modules  => [hecate_swim]
+    }.
+
+realm_sup_child() ->
+    #{
+        id       => hecate_station_realm_sup,
+        start    => {hecate_station_realm_sup, start_link, []},
+        restart  => permanent,
+        shutdown => 10_000,
+        type     => supervisor,
+        modules  => [hecate_station_realm_sup]
     }.
 
 observer_child(DhtPid, SwimPid) ->

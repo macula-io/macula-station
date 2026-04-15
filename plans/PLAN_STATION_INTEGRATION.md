@@ -249,11 +249,67 @@ DHT routing table with observed ASN/country/tier.
   returns `touched`, not `admitted` (confirms the 6.10 bridge +
   the observer stay consistent).
 
-### 8.4 HyParView + Plumtree overlay startup per realm
+### 8.4 HyParView + Plumtree overlay startup per realm ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** for every realm the station serves (from config), a
 HyParView + Plumtree pair starts and joins the realm's intra-realm
 overlay using realm directory records from the DHT.
+
+**Landed:**
+- `hecate_station_realm` — per-realm gen_server owning the
+  `hecate_overlay_view' (HyParView active + passive), the
+  `hecate_plumtree' state, and the `hecate_pubsub' state for one
+  `RealmId'. API: `add_peer/2`, `remove_peer/2`, `handle_frame/3`,
+  `publish/3`, `active_peers/1`, `is_active/2`, `counts/1`. Outbound
+  `{send, NodeId, Frame}` actions emitted by the pure protocol
+  modules are routed through a `send_fun' callback so the gen_server
+  stays fork-free and tests can capture traffic without network I/O.
+- `hecate_station_realm_sup' — simple_one_for_one supervisor
+  registered under `?MODULE'. `start_realm/1' spawns a transient
+  child; `stop_realm/1' tears it down; `children/0' enumerates.
+- `hecate_station_peer_observer' extended with:
+  - `conn_for/2' — NodeId → ConnPid lookup (new forward map).
+  - `register_realm/3' / `unregister_realm/2' / `realm_for/2' —
+    RealmId → RealmPid registry populated at boot.
+  - `send_to/3' — resolve + delegate to
+    `macula_peering:send_frame/2'. This is the function closed over
+    in the realm's `send_fun'.
+  - Frame classifier extended: hyparview_* / plumtree_* frames are
+    routed to the matching realm via the registry.
+- Config: new `#realm_cfg{}' record (`realm_id', `roles',
+  `active_view_size', `passive_view_size', `plumtree_fanout') + new
+  `realms_cfg' field on `#station_cfg{}'. `hecate_station_config'
+  gains a `realm_specs' parse type that converts the operator-facing
+  list-of-maps shape into records.
+- `hecate_station_app:start/2' boot pipeline extended: listener →
+  realm_sup → one realm child per `realms_cfg' entry. Each spawned
+  realm is registered with the observer immediately. Halt reasons
+  added: `{realm_sup_start_failed, _}`, `{realm_start_failed, _}`.
+- `hecate_station' facade: `realm_sup/0', `realms/0', `realm/1'.
+- Tests:
+  - `hecate_station_realm_tests' (5 cases): add/remove peer,
+    publish gossips to eager peers, inbound JOIN admits sender to
+    active view, inbound signed GOSSIP delivers locally exactly
+    once.
+  - `hecate_station_app_tests' gained 2 cases: configured realms
+    spawn children addressable via `realm/1`; crashing one realm
+    does not affect sibling realms (transient restart).
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer' all green
+(708 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:**
+- Full DHT-directory-driven peer discovery (station looks up
+  realm directory records, dials endorsed peers, exchanges JOIN)
+  — needs realm admin keys + endorsement record publishing. Tracked
+  in `PLAN_DEFERRED_WORK.md` under the realm-admission line item.
+- Observer auto-unregistration of crashed realm pids — currently
+  the registry may hold a stale pid until the sup re-registers; a
+  monitor-based self-cleanup will land alongside the realm crash
+  observability in 8.6.
+- Two-station realm convergence CT — requires multi-VM or
+  per-sup-instance registered names; same constraint as 8.3.
+  Fleet CT (8.8) on beam cluster will cover this.
 
 **Files:**
 - `hecate_station_realm_sup` — simple_one_for_one, one child per
