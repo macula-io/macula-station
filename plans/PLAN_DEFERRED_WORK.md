@@ -212,24 +212,46 @@ list of items the sprint explicitly deferred, grouped by category.
 Each session's `Deferred:' block in `PLAN_STATION_INTEGRATION.md'
 is the authoritative detail.
 
-### 8.1 — station-level polish (unblocked)
+### 8.1 — station-level polish
+
+**Shipped in Sprint B (2026-04-15):**
+
+- ✅ **Exponential back-off on repeated rebootstrap failures** —
+  `hecate_station_rebootstrap' now widens its partition window as
+  `base × 2^min(N, 4)' per consecutive trigger, capping at 16×
+  base. On DHT recovery, `consecutive' resets to 0 and a
+  `{hecate_station_rebootstrap, recovered, N}' notification
+  surfaces the number of skipped retries. Status map gains
+  `consecutive' + `current_window_ms' keys.
+
+**Unblocked but not yet picked up:**
 
 - **`geo_check` + rich DHT observe spec** — replace `asn => 0,
   country => <<"??">>' defaults in
   `hecate_station_peer_observer' with live geolocation lookup.
+  Needs a GeoIP database (MaxMind GeoLite2 — free but account +
+  mmdb download) OR a free HTTP-API lookup with local cache.
+  License + operational choice is the blocker, not code.
   Trigger: "Start geo_check integration".
-- **Exponential back-off on repeated rebootstrap failures** —
-  current watchdog resets `low_since' unconditionally after a
-  trigger. Fine under the plan's §8.5 "not a tight loop" bar,
-  but adaptive back-off belongs on the next pass. Trigger:
-  "Add rebootstrap back-off".
-- **SWIM `leave` + overlay `REALM_LEAVE` frame types** — schema
-  extension in `macula_frame' so graceful shutdown can advertise
-  departure explicitly instead of relying on SWIM timeouts.
-  Trigger: "Add leave frames".
+
+**Cross-repo — blocked on SDK change:**
+
+- **SWIM `leave` frame type** — schema extension in
+  `macula_frame' (in `macula-io/macula@v2') so graceful
+  shutdown can advertise departure explicitly instead of
+  relying on SWIM suspicion + timeout. Needs a commit to the
+  SDK repo + a dep-SHA bump here. Small (~20 LOC in the SDK,
+  wire-up in `hecate_station:shutdown/1' + observer dispatch).
+  `REALM_LEAVE' is NOT included — realm concerns live in the
+  future realm service post-§8.4 reversal. Trigger: "Add SWIM
+  leave frame".
+
+**Premature — parks until 4-node scenarios land:**
+
 - **`test/fleet_chaos.erl` helper module** — kill/partition
-  helpers live inline in `fleet_SUITE'; extract when the 4-node
-  scenarios land. Trigger: "Extract fleet_chaos helpers".
+  helpers live inline in `fleet_SUITE'; extract when the
+  4-node scenarios land. Trigger: "Extract fleet_chaos
+  helpers".
 
 ### 8.2 — admin API (Phase 7 hardening)
 

@@ -1,22 +1,34 @@
 %% @doc Partition-recovery watchdog.
 %%
 %% Polls `hecate_dht:size/1' on a steady tick. When the routing table
-%% stays below `min_viable_peers' for longer than
-%% `partition_window_ms', the watchdog fires exactly one re-bootstrap
-%% (`hecate_station_bootstrap_runner:run/2') and resets its state so
-%% it will not fire again until the DHT next recovers above the
-%% threshold and then drops back below it. This rate-limits retries
-%% on a sustained partition instead of spinning a cascade every tick
-%% (the PLAN_STATION_INTEGRATION §8.5 acceptance clause: "not a
-%% tight loop").
+%% stays below `min_viable_peers' for longer than the current
+%% effective partition window, the watchdog fires exactly one
+%% re-bootstrap (`hecate_station_bootstrap_runner:run/2') and resets
+%% its low-clock so it will not fire again until at least one more
+%% window has elapsed.
+%%
+%% == Exponential back-off (Sprint B) ==
+%%
+%% Consecutive triggers under sustained partition widen the window:
+%% the Nth consecutive retry waits `base × 2^min(N, max_shift)' ms
+%% before firing. `max_shift' defaults to 4, so the window tops out
+%% at 16× the configured base. A DHT recovery (size ≥
+%% `min_viable_peers') resets the consecutive counter so the next
+%% partition starts from the base window again.
+%%
+%% Rationale: short outages still retry quickly (base window). Long
+%% outages stop hammering the cascade — after 4 consecutive retries
+%% at the 60 s default base, the watchdog probes at 60 → 120 → 240
+%% → 480 → 960 s intervals, then stays at 960 s until the DHT
+%% recovers.
 %%
 %% == Lifecycle ==
 %%
 %% The re-bootstrap itself runs in a spawned helper process so the
 %% gen_server's polling loop never blocks on the cascade. The helper
 %% result is logged but otherwise ignored — if the cascade fails the
-%% next tick will simply find the DHT still below threshold and start
-%% a new countdown.
+%% next tick will find the DHT still below threshold and start a new
+%% countdown.
 %%
 %% == Configuration ==
 %%
@@ -40,6 +52,8 @@
 
 -export_type([opts/0, status/0]).
 
+-define(MAX_BACKOFF_SHIFT, 4).
+
 -type opts() :: #{
     dht             := pid(),
     rebootstrap     := hecate_station_config:rebootstrap_cfg(),
@@ -49,7 +63,10 @@
     %% re-plumbing the watchdog.
     bootstrap_cfg   => hecate_station_bootstrap_runner:cfg() | from_app_env,
     %% Optional observer for test assertions — receives
-    %% `{hecate_station_rebootstrap, rebootstrapped, Result}'.
+    %% `{hecate_station_rebootstrap, rebootstrapped, Result}' on
+    %% each fire and `{hecate_station_rebootstrap, recovered, N}'
+    %% when the DHT returns above the floor after `N' consecutive
+    %% triggers.
     notify          => pid()
 }.
 
@@ -57,7 +74,9 @@
     size                := non_neg_integer(),
     min_viable_peers    := pos_integer(),
     low_since_ms        := integer() | undefined,
-    triggers            := non_neg_integer()
+    triggers            := non_neg_integer(),
+    consecutive         := non_neg_integer(),
+    current_window_ms   := pos_integer()
 }.
 
 -record(state, {
@@ -66,7 +85,11 @@
     bootstrap_cfg :: hecate_station_bootstrap_runner:cfg() | from_app_env,
     notify        :: pid() | undefined,
     low_since     :: integer() | undefined,
-    triggers = 0  :: non_neg_integer()
+    triggers    = 0 :: non_neg_integer(),
+    %% Consecutive triggers since the last recovery. Drives the
+    %% back-off window; reset to 0 when the DHT returns above
+    %% `min_viable_peers'.
+    consecutive = 0 :: non_neg_integer()
 }).
 
 %%==================================================================
@@ -134,22 +157,37 @@ run_tick(#state{dht = Dht} = S) ->
 
 evaluate(Size, #state{cfg = #rebootstrap_cfg{min_viable_peers = Floor}} = S)
   when Size >= Floor ->
-    %% Healthy — clear any pending partition countdown.
-    S#state{low_since = undefined};
+    on_healthy(S);
 evaluate(_Size, #state{low_since = undefined} = S) ->
     S#state{low_since = now_ms()};
-evaluate(_Size, #state{low_since = Since,
-                       cfg = #rebootstrap_cfg{partition_window_ms = Window}} = S) ->
+evaluate(_Size, #state{low_since = Since, consecutive = N,
+                       cfg = #rebootstrap_cfg{partition_window_ms = Base}} = S) ->
+    Window = effective_window(Base, N),
     maybe_trigger(now_ms() - Since >= Window, S).
+
+on_healthy(#state{consecutive = 0} = S) ->
+    %% Already healthy — just keep the clock clear.
+    S#state{low_since = undefined};
+on_healthy(#state{consecutive = N} = S) when N > 0 ->
+    notify_recovery(S, N),
+    S#state{low_since = undefined, consecutive = 0}.
 
 maybe_trigger(false, S) ->
     S;
-maybe_trigger(true,  S) ->
+maybe_trigger(true,  #state{triggers = T, consecutive = N} = S) ->
     fire_rebootstrap(S),
-    %% Reset to undefined — next trigger requires the DHT to first
-    %% recover above the floor and then fall below it again.
-    S#state{low_since = undefined,
-            triggers  = S#state.triggers + 1}.
+    S#state{low_since   = undefined,
+            triggers    = T + 1,
+            consecutive = N + 1}.
+
+%% Window growth: base × 2^min(N, MAX_BACKOFF_SHIFT).
+%% `N' is the number of consecutive triggers taken WITHOUT a
+%% recovery; the Nth +1 retry therefore waits the window named by N.
+-spec effective_window(pos_integer(), non_neg_integer()) -> pos_integer().
+effective_window(Base, N) when is_integer(Base), Base > 0,
+                                is_integer(N), N >= 0 ->
+    Shift = min(N, ?MAX_BACKOFF_SHIFT),
+    Base bsl Shift.
 
 fire_rebootstrap(#state{dht = Dht, bootstrap_cfg = Cfg, notify = Notify}) ->
     Parent = self(),
@@ -164,11 +202,19 @@ notify_result(Pid, _Parent, Result) when is_pid(Pid) ->
     Pid ! {hecate_station_rebootstrap, rebootstrapped, Result},
     ok.
 
-status(#state{dht = Dht, cfg = #rebootstrap_cfg{min_viable_peers = Floor},
-              low_since = LS, triggers = T}) ->
-    #{size             => hecate_dht:size(Dht),
-      min_viable_peers => Floor,
-      low_since_ms     => LS,
-      triggers         => T}.
+notify_recovery(#state{notify = undefined}, _N) -> ok;
+notify_recovery(#state{notify = Pid}, N) when is_pid(Pid) ->
+    Pid ! {hecate_station_rebootstrap, recovered, N},
+    ok.
+
+status(#state{dht = Dht, cfg = #rebootstrap_cfg{min_viable_peers = Floor,
+                                                 partition_window_ms = Base},
+              low_since = LS, triggers = T, consecutive = N}) ->
+    #{size              => hecate_dht:size(Dht),
+      min_viable_peers  => Floor,
+      low_since_ms      => LS,
+      triggers          => T,
+      consecutive       => N,
+      current_window_ms => effective_window(Base, N)}.
 
 now_ms() -> erlang:monotonic_time(millisecond).
