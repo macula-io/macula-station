@@ -37,51 +37,117 @@ Cross-reference:
 
 ---
 
-## 2. Fleet topology (where things run)
+## 2. Fleet topology
 
-### 2.1 Dev / attended workstations (laptops)
+### 2.1 What a station is
+
+A station is an **IPv6-reachable always-on host** — either with a
+public AAAA record, a self-owned DNS name, an internal-only
+corporate name, or (for some deployments) no DNS at all, reached
+only through the bootstrap cascade. It is **not** a laptop, not a
+workstation, not user hardware. User machines run
+`hecate-daemon', which is outbound-only and dials a station; see
+the daemon repo for that story.
+
+### 2.2 Deployment categories we design for
+
+The plan targets four operator classes. Each has a different
+network shape; the cascade + the station's optional subsystems
+(mDNS responder, admin API, cache, etc.) are scoped to serve all
+four.
+
+| Category | IPv6 | DNS | LAN siblings | Adversarial pressure |
+|----------|------|-----|--------------|---------------------|
+| **Telco** — tower / street cabinet | Carrier-allocated fixed prefix per cabinet. | AAAA varies by carrier policy; internal-only common. | Possibly — cabinets on the same backhaul segment can be link-local-adjacent. | Carrier egress filtering; occasional DoH / UDP restrictions. |
+| **Data centre** — hyperscaler to small colo | Provider block, fixed. | Almost always public AAAA. | Yes, if operator runs siblings in the same rack / VLAN. | Cloud providers filter multicast; transit generally open. |
+| **Corporate on-prem** — server room, fixed /48 or /56 | Corp-allocated block. | Often internal-only DNS; public AAAA absent. | Usually — multiple stations on a shared /64. | Egress firewalls may block DoH / chain RPC selectively. |
+| **Tech-savvy individual** — fixed public /56 or /64 from ISP | Fixed residential allocation. | Self-owned domain (if any). | Rarely — typically one station per operator. | Residential ISP filtering; DPI in some jurisdictions. |
+
+Cascade coverage against these categories:
+
+- **Tier A (DoH + PKARR)** — universal primary. Works for any
+  station with outbound HTTPS. Onboards a fresh operator with no
+  prior knowledge of peers.
+- **Tier B (mDNS)** — on-prem + small DC + telco where stations
+  are link-local-adjacent. Irrelevant to hyperscaler DC
+  (multicast filtered) and hobbyist single-station setups.
+- **Tier C (BT-DHT)** — censorship-resistance across every
+  category. Any environment that blocks DoH + DNS but not
+  BitTorrent.
+- **Tier D (chain anchors)** — deepest censorship resistance.
+  Blocking the mechanism costs a nation-state blocking public
+  chain RPC mirrors.
+- **Tier E (operator paste)** — universal manual override + the
+  only mechanism for airgapped labs.
+
+### 2.3 The simulation rig — where we run tests today
+
+The following hosts are the **test rig**. They let us exercise
+the station code against real networking without waiting for
+operators to deploy. They are not the design target; the four
+categories above are.
+
+#### 2.3.1 Attended workstations (laptops) — dev only
 
 | Box | Role | Notes |
 |-----|------|-------|
-| `work-laptop` (this one) | Dev + Tier-B mDNS sandbox (LAN discovery on office Wi-Fi) | rebar3 shell, eunit, ct, manual chaos |
+| `work-laptop` | rebar3 shell / eunit / ct harness | Not a station — a dev target that runs station code under test. |
 
-- Purpose: rapid iteration, unit/CT runs, real mDNS against office
-  LAN or home network.
-- Startup: `rebar3 shell' from the repo.
-- Data dir: `~/.hecate/station/<profile>/' (each profile = separate
-  NodeId).
+Purpose: rapid iteration, unit + CT runs, manual chaos in
+`rebar3 shell'. Data dir `~/.hecate/station-dev/<profile>/' —
+each profile is a disposable NodeId. A laptop is NEVER a
+production station.
 
-### 2.2 BEAM cluster (staging / integration)
+#### 2.3.2 BEAM cluster (staging / integration rig)
 
-| Node | Address | RAM | NVMe | Bulk | Role |
+| Node | Address | RAM | NVMe | Bulk | Role in the rig |
 |------|---------|-----|------|------|------|
-| beam00 | 192.168.1.10 | 16 GB | 224 GB | 1 × 932 GB HDD | Multi-station CT host, Tier-B mDNS, routing-table persistence |
-| beam01 | 192.168.1.11 | 32 GB | 224 GB | 2 × 932 GB HDD | Heavier per-node workloads |
-| beam02 | 192.168.1.12 | 32 GB | 224 GB | 2 × 932 GB HDD | Chaos target |
-| beam03 | 192.168.1.13 | 32 GB | 932 GB | 2 × 932 GB HDD | Archive / `/fast' at 932 GB |
+| beam00 | 192.168.1.10 | 16 GB | 224 GB | 1 × 932 GB HDD | Multi-station integration, cache persistence under real I/O |
+| beam01 | 192.168.1.11 | 32 GB | 224 GB | 2 × 932 GB HDD | Larger steady-state workloads |
+| beam02 | 192.168.1.12 | 32 GB | 224 GB | 2 × 932 GB HDD | Chaos target (kill / restart / partition) |
+| beam03 | 192.168.1.13 | 32 GB | 932 GB | 2 × 932 GB HDD | Archive target + spare NVMe |
 
-- Access: `ssh rl@beam0X.lab' (password `rl').
-- Runtime: systemd-user units + podman (no k3s).
-- Station data: `/fast/.hecate/' (NVMe). Bulk datasets: `/bulk*'.
-- OS: Ubuntu 20.04; kernel from kubic repo provides podman 3.4.2.
+These are **on-prem test hardware** behaving like a "corporate
+on-prem" deployment. Access `ssh rl@beam0X.lab'. Runtime
+systemd-user + podman. Station data `/fast/.hecate/'. They
+validate the on-prem deployment category against real hardware
+without any production consequence.
 
-### 2.3 Relay boxes (shared infra the station depends on)
+#### 2.3.3 Public-internet test stations (currently running V1 code)
 
-| Box | Region | Role | Notes |
-|-----|--------|------|-------|
-| relays-hetzner-nuremberg | DE | 100 virtual relay identities (V1 code) | Shared with hecate-daemon |
-| relays-hetzner-helsinki | FI | 100 virtual relay identities | — |
-| relays-linode-paris | FR | Realm relays (macula.io) | — |
+| Box | Region | Role |
+|-----|--------|------|
+| relays-hetzner-nuremberg | DE | DC-class test target |
+| relays-hetzner-helsinki  | FI | DC-class test target |
+| relays-linode-paris      | FR | DC-class test target |
 
-- These host the <b>V1 macula-relay</b> code (frozen at 1.4.23). V2
-  stations on the BEAM cluster run in parallel without touching
-  them.
-- Cutover at Phase 8 (see `PLAN_DEFERRED_WORK.md §4').
+These host **V1 `macula-relay' code** (frozen at 1.4.23) while
+V2 stations exist only on the BEAM cluster. They validate the
+DC deployment category against cross-region IPv6. Cutover to V2
+per `PLAN_DEFERRED_WORK.md §4'.
 
-### 2.4 Production (post-cutover)
+#### 2.3.4 Production (post-cutover)
 
-macula.io on Linode — Docker Compose. Today: V1 only. After Phase 8:
-V2 stations replace V1 relays.
+`macula.io' on Linode via Docker Compose. Today: V1 only. After
+the V2 cutover, a V2 station; still a DC-category deployment, not
+the full fleet.
+
+### 2.4 What the rig does NOT cover
+
+The simulation deliberately leaves gaps that only real operators
+can close:
+
+- **Telco street-cabinet networking** — carrier-grade NAT,
+  IPv6-only backhaul quirks, radio-link flapping.
+- **Corporate egress firewalls** — actual DoH-blocked / UDP-blocked
+  corporate networks. The beam cluster has no such filtering.
+- **Residential ISP filtering** — we have clean uplinks from
+  Hetzner / Linode / home-ISP; adversarial ISPs are not in
+  the rig.
+
+These categories will validate themselves in the field once we
+have operators in each. Until then, treat them as design targets
+to keep faithful to, not as things our CT covers.
 
 ---
 
