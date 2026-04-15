@@ -326,14 +326,63 @@ bad response cannot crash a worker and time the tier out.
   (exercises the new safe_decode path), expired-record-rejected.
 - `hecate_phase6_SUITE` gains `tier_d_wins_when_a_b_c_are_down'.
 
-## Session 6.6.x — Real chain adapters (planned)
+## Session 6.6.x — Real chain adapters (shipped 2026-04-15)
 
-- `hecate_bootstrap_chain_bitcoin_electrum' — query Electrum/Esplora
-  JSON API for the latest OP_RETURN tagged with the foundation
-  marker; extract and return anchor bytes.
-- `hecate_bootstrap_chain_ethereum_jsonrpc' — read the foundation
-  contract's latest `AnchorPublished' event via `eth_getLogs'.
-- Gated network CT exercising both against testnet faucets.
+**Scope:** Ethereum JSON-RPC and Bitcoin Esplora adapters, both
+implementing `hecate_bootstrap_chain_transport' and both using a
+new shared HTTP abstraction so unit tests plug in canned responses
+without real network I/O. Gated real-endpoint CT deferred until
+foundation has actually published testnet anchors to probe.
+
+**Files added:**
+- `hecate_bootstrap_http` behaviour — `get/2' + `post_json/3'
+  callbacks. One transport surface, shared by both chain adapters
+  (and future HTTP adapters).
+- `hecate_bootstrap_http_httpc` — concrete `inets:httpc' impl;
+  thin translator from httpc's 4-tuple result to the behaviour's
+  `{ok, Body} | {error, _}'. HTTP non-200 becomes
+  `{error, {http_status, Code, Phrase}}'.
+- `hecate_bootstrap_chain_eth_jsonrpc` — reads latest
+  `AnchorPublished(bytes)' event from a foundation contract via
+  `eth_getLogs'. Pure codec fully unit-tested: `build_request/3'
+  (JSON-RPC request shape), `parse_response/1' (picks highest
+  `blockNumber' log, ABI-decodes bytes), `decode_bytes_arg/1'
+  (32-byte offset + 32-byte length + padded payload). Ethereum has
+  effectively no log-size limit so the event carries the full
+  `macula_record:encode/1' envelope directly.
+- `hecate_bootstrap_chain_esplora` — reads latest foundation
+  anchor pointer from Blockstream/Esplora `/address/<addr>/txs'.
+  Bitcoin's 80-byte OP_RETURN limit requires a pointer scheme:
+  `"MCLA" magic (4 bytes) | SHA-256 hash (32 bytes) | URL (≤44
+  bytes)'. Adapter parses OP_RETURN (raw push OR OP_PUSHDATA1),
+  fetches the URL, verifies `SHA-256(bytes) == hash', returns
+  anchor bytes. Any mismatch or missing marker falls through.
+
+**Tests — 29 new eunit + 1 CT case:**
+- `hecate_bootstrap_chain_eth_jsonrpc_tests` (15): request shape,
+  JSON round-trip, no-logs, rpc error, bad json, happy path,
+  highest-block wins, missing data, bad hex, bad ABI
+  (zero-length, short header, claimed length exceeds payload),
+  plus full `latest_anchor/2' end-to-end with canned HTTP +
+  http-error propagation.
+- `hecate_bootstrap_chain_esplora_tests` (14): OP_RETURN raw push,
+  OP_PUSHDATA1, non-our-marker rejected, non-op-return script,
+  empty-URL rejected, trailing-null trim, vout filtering,
+  missing-vout, full end-to-end (happy, no-matching-tx,
+  hash-mismatch-rejected, URL-fetch-error, bad-esplora-json).
+- `hecate_phase6_SUITE` gains `tier_d_eth_adapter_end_to_end` —
+  Tier D wired with the real `hecate_bootstrap_chain_eth_jsonrpc'
+  adapter using `hecate_bootstrap_http_fake' for transport;
+  proves the full foundation-record pipeline (RPC → ABI decode →
+  macula_record → foundation verify → verified peers) end-to-end.
+
+**State of green (post-6.6.x):** 647 station eunit / 31 station CT
+/ xref / dialyzer clean.
+
+**Deferred to 6.6.y:** gated CT exercising the real adapters against
+public endpoints (Blockstream Esplora, Infura / Ankr / public
+Ethereum RPC). Blocked on the foundation publishing testnet
+anchors to probe — we'd otherwise be testing third-party uptime.
 
 ## Session 6.7 — Acceptance suite (shipped 2026-04-15)
 

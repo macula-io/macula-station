@@ -30,7 +30,8 @@
          tier_c_wins_cascade_when_a_and_b_are_down/1,
          tier_d_wins_when_a_b_c_are_down/1,
          full_cascade_all_tiers_down_returns_failure/1,
-         full_cascade_under_time_budget/1]).
+         full_cascade_under_time_budget/1,
+         tier_d_eth_adapter_end_to_end/1]).
 
 all() ->
     [tier_e_yields_three_peers,
@@ -43,7 +44,8 @@ all() ->
      tier_c_wins_cascade_when_a_and_b_are_down,
      tier_d_wins_when_a_b_c_are_down,
      full_cascade_all_tiers_down_returns_failure,
-     full_cascade_under_time_budget].
+     full_cascade_under_time_budget,
+     tier_d_eth_adapter_end_to_end].
 
 init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
@@ -54,6 +56,7 @@ init_per_testcase(_Case, Cfg) ->
     hecate_bootstrap_mdns_fake:init(),
     hecate_bootstrap_dht_fake:init(),
     hecate_bootstrap_chain_fake:init(),
+    hecate_bootstrap_http_fake:init(),
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
@@ -62,6 +65,7 @@ end_per_testcase(_Case, _Cfg) ->
     hecate_bootstrap_mdns_fake:reset(),
     hecate_bootstrap_dht_fake:reset(),
     hecate_bootstrap_chain_fake:reset(),
+    hecate_bootstrap_http_fake:reset(),
     ok.
 
 %%---------------------------------------------------------------------
@@ -453,6 +457,62 @@ phase6_signed_url() ->
                macula_record:node_record(
                  macula_identity:public(Kp), [], 0), Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
+
+%%---------------------------------------------------------------------
+%% Tier D via real Ethereum JSON-RPC adapter (with canned HTTP)
+%%---------------------------------------------------------------------
+
+tier_d_eth_adapter_end_to_end(_Cfg) ->
+    Endpoint = <<"https://eth.example/rpc">>,
+    Contract = <<"0x00000000000000000000000000000000000000ff">>,
+    Topic    = <<"0xaabbccddeeff00112233445566778899",
+                 "aabbccddeeff00112233445566778899">>,
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
+                 Fk, tier_c_seeds(3)), Kp),
+    RecordBytes = macula_record:encode(Record),
+    Log = eth_log(Contract, Topic, <<"0x2a">>, RecordBytes),
+    RpcBody = iolist_to_binary(
+                json:encode(
+                  #{<<"jsonrpc">> => <<"2.0">>,
+                    <<"id">>      => 1,
+                    <<"result">>  => [Log]})),
+    hecate_bootstrap_http_fake:set_post(Endpoint, {ok, RpcBody}),
+    Tiers = [
+        {hecate_bootstrap_tier_d,
+         #{chains =>
+               [{hecate_bootstrap_chain_eth_jsonrpc,
+                 #{endpoint => Endpoint,
+                   contract => Contract,
+                   topic    => Topic,
+                   http     => hecate_bootstrap_http_fake}}],
+           timeout_ms => 500}}
+    ],
+    {ok, Peers} = hecate_bootstrap:cascade(
+                    Tiers, #{min_peers => 3, timeout_ms => 3_000}),
+    3 = length(Peers),
+    [d] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    ok.
+
+eth_log(Contract, Topic, BlockNumHex, PayloadBytes) ->
+    Abi = eth_abi_bytes(PayloadBytes),
+    #{<<"blockNumber">> => BlockNumHex,
+      <<"address">>     => Contract,
+      <<"topics">>      => [Topic],
+      <<"data">>        => iolist_to_binary(
+                             [<<"0x">>,
+                              string:lowercase(binary:encode_hex(Abi))])}.
+
+eth_abi_bytes(Bin) ->
+    Len = byte_size(Bin),
+    Pad = case Len rem 32 of
+              0 -> 0;
+              R -> 32 - R
+          end,
+    <<32:256/big, Len:256/big, Bin/binary, 0:(Pad * 8)>>.
 
 %%---------------------------------------------------------------------
 %% Fake tier registration (runtime-compiled)
