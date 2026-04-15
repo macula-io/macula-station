@@ -25,9 +25,10 @@
 %% - plans/PLAN_MACULA_V2_PART7_IMPLEMENTATION.md §11 (Phase 6)
 -module(hecate_bootstrap).
 
--export([cascade/1, cascade/2]).
+-export([cascade/1, cascade/2, run/0, run/1]).
 
--export_type([tier_spec/0, cascade_opts/0, cascade_result/0]).
+-export_type([tier_spec/0, cascade_opts/0, cascade_result/0,
+              station_config/0, run_error/0]).
 
 -type tier_spec() :: {module(), hecate_bootstrap_tier:probe_opts()}.
 
@@ -40,8 +41,44 @@
         {ok, [hecate_bootstrap_tier:verified_peer()]}
       | {error, cascade_failed | timeout}.
 
+%% Config shape consumed by `run/0,1'. The same shape lives behind
+%% `application:get_all_env(hecate_bootstrap)' when `run/0' is used.
+-type station_config() :: #{
+    tiers        := [tier_spec()],
+    cascade_opts => cascade_opts()
+}.
+
+-type run_error() :: no_tiers | cascade_failed | timeout.
+
 -define(DEFAULT_MIN_PEERS,  3).
 -define(DEFAULT_TIMEOUT_MS, 60_000).
+
+%% @doc Station-level entry point. Reads the tier list and cascade
+%% options from `application:get_env(hecate_bootstrap, _)' and runs
+%% the cascade. Intended to be called once during station boot;
+%% returned peers feed `hecate_dht:observe/2'.
+-spec run() -> {ok, [hecate_bootstrap_tier:verified_peer()]}
+             | {error, run_error()}.
+run() ->
+    run(#{
+        tiers        => application:get_env(hecate_bootstrap, tiers, []),
+        cascade_opts => application:get_env(hecate_bootstrap, cascade_opts,
+                                            #{})
+    }).
+
+%% @doc Variant of `run/0' taking an explicit config map — useful when
+%% the station builds its config at runtime (different per-realm) or
+%% when tests supply deterministic tier lists.
+-spec run(station_config() | map()) ->
+          {ok, [hecate_bootstrap_tier:verified_peer()]}
+        | {error, run_error()}.
+run(#{tiers := []}) ->
+    {error, no_tiers};
+run(#{tiers := Tiers} = Cfg) when is_list(Tiers) ->
+    Opts = maps:get(cascade_opts, Cfg, #{}),
+    cascade(Tiers, Opts);
+run(_Cfg) ->
+    {error, no_tiers}.
 
 %% @doc Run the cascade with default options (min 3 peers, 60s deadline).
 -spec cascade([tier_spec()]) -> cascade_result().

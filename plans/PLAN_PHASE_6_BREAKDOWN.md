@@ -384,6 +384,50 @@ public endpoints (Blockstream Esplora, Infura / Ankr / public
 Ethereum RPC). Blocked on the foundation publishing testnet
 anchors to probe — we'd otherwise be testing third-party uptime.
 
+## Session 6.9 — Station integration (shipped 2026-04-15)
+
+**Scope:** promote `hecate_bootstrap' from a passive library app to
+an active OTP application with its own supervisor + app callback, so
+the station-level `applications' dependency transitively starts the
+subsystem. Add a config-driven `run/0,1' orchestrator so the station
+has one call to make on boot. mDNS responder becomes an optional
+supervisor child controlled by application env.
+
+**Files added:**
+- `hecate_bootstrap_sup' — `one_for_one' supervisor. Conditional
+  single child: `hecate_bootstrap_mdns_responder' spawned only when
+  `application:get_env(hecate_bootstrap, responder, disabled)' is
+  a map of responder opts. Default-disabled matters because the
+  real responder binds UDP 5353 which conflicts with `avahi-daemon'
+  on most Linux hosts.
+- `hecate_bootstrap_app' — application callback delegating
+  `start/2' to `hecate_bootstrap_sup:start_link/0'.
+- `hecate_bootstrap:run/0,1' — config-driven cascade entry point.
+  `run/0' reads `tiers' + `cascade_opts' from app env; `run/1'
+  accepts an explicit `station_config()' map (for per-realm
+  runtime config or deterministic test input). Empty / missing
+  tiers produce `{error, no_tiers}' rather than trying to cascade.
+
+**app.src updates:** `mod = {hecate_bootstrap_app, []}',
+`registered = [hecate_bootstrap_sup]', default env
+`{responder, disabled}'.
+
+**Tests — 9 new eunit:**
+- Supervisor: empty children when responder disabled or env unset;
+  responder child present when configured.
+- Application: `ensure_all_started' + `stop' round-trip registers
+  + unregisters the supervisor.
+- `run/1': `no_tiers' for empty-list and missing-key configs;
+  explicit Tier E config yields three Tier E peers.
+- `run/0': reads Tier E config from app env and runs; empty env
+  returns `no_tiers'.
+
+All under `with_trapped_exits' wrappers to survive linked-sup
+shutdowns without killing the test process.
+
+**State of green (post-6.9):** 656 station eunit / 31 station CT /
+xref / dialyzer clean.
+
 ## Session 6.7 — Acceptance suite (shipped 2026-04-15)
 
 **Scope:** phase6_SUITE expanded to exercise the full 5-tier cascade
