@@ -137,16 +137,28 @@ on_cache_started(SupPid, _Cfg, {error, Reason}) ->
 on_cache_started(SupPid, Cfg, {ok, _CachePid}) ->
     boot_rebootstrap(SupPid, Cfg).
 
-boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = undefined}) ->
-    {ok, SupPid};
-boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = RbCfg}) ->
+boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = undefined} = Cfg) ->
+    boot_admin(SupPid, Cfg);
+boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = RbCfg} = Cfg) ->
     {ok, DhtPid} = hecate_station:dht(),
     Spec = rebootstrap_child(DhtPid, RbCfg),
-    on_rebootstrap_started(SupPid, supervisor:start_child(SupPid, Spec)).
+    on_rebootstrap_started(SupPid, Cfg,
+                           supervisor:start_child(SupPid, Spec)).
 
-on_rebootstrap_started(SupPid, {error, Reason}) ->
+on_rebootstrap_started(SupPid, _Cfg, {error, Reason}) ->
     halt_sup(SupPid, {rebootstrap_start_failed, Reason});
-on_rebootstrap_started(SupPid, {ok, _RbPid}) ->
+on_rebootstrap_started(SupPid, Cfg, {ok, _RbPid}) ->
+    boot_admin(SupPid, Cfg).
+
+boot_admin(SupPid, #station_cfg{admin_cfg = undefined}) ->
+    {ok, SupPid};
+boot_admin(SupPid, #station_cfg{admin_cfg = AdminCfg}) ->
+    Spec = admin_sup_child(AdminCfg),
+    on_admin_started(SupPid, supervisor:start_child(SupPid, Spec)).
+
+on_admin_started(SupPid, {error, Reason}) ->
+    halt_sup(SupPid, {admin_start_failed, Reason});
+on_admin_started(SupPid, {ok, _AdminSupPid}) ->
     {ok, SupPid}.
 
 spawn_realm(#station_cfg{identity = Kp}, ObserverPid, RealmCfg) ->
@@ -245,6 +257,17 @@ rebootstrap_child(DhtPid, RbCfg) ->
         shutdown => 5000,
         type     => worker,
         modules  => [hecate_station_rebootstrap]
+    }.
+
+admin_sup_child(AdminCfg) ->
+    #{
+        id       => hecate_station_admin_sup,
+        start    => {hecate_station_admin_sup, start_link,
+                     [#{admin => AdminCfg}]},
+        restart  => permanent,
+        shutdown => 10_000,
+        type     => supervisor,
+        modules  => [hecate_station_admin_sup]
     }.
 
 observer_child(DhtPid, SwimPid) ->

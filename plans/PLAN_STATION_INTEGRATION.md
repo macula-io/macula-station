@@ -423,12 +423,69 @@ trigger a re-bootstrap on long partition / DHT size collapse.
 - Partition simulation (kill all peers) triggers exactly one
   re-bootstrap, not a tight loop.
 
-### 8.6 Admin HTTP API (loopback-only; TLS deferred)
+### 8.6 Admin HTTP API (loopback-only; TLS deferred) ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** a small HTTP server (plain `inets:httpd` on
 loopback `::1`) exposing `/status`, `/metrics`,
 `/bootstrap/rerun`, `/bootstrap/add-peer`,
 `/dht/stats`, `/swim/members`.
+
+**Landed:**
+- `hecate_station_admin` — gen_server owning a `gen_tcp' listen
+  socket bound to the configured `#admin_cfg{}' address. An
+  acceptor child (linked, auto-respawned if it crashes) spawns a
+  per-connection handler; handlers parse the start-line + headers
+  via `{packet, http_bin}', read the body in raw mode, dispatch by
+  `{Method, Path}', and write an HTTP/1.1 response with
+  `Connection: close'. JSON is produced via the OTP `json' module.
+- `hecate_station_admin_sup' — one_for_one sub-supervisor with a
+  single admin child; isolates HTTP restart intensity from the
+  root sup's crash budget.
+- Endpoints shipped:
+  - `GET /status' — `{healthy, node_id, listen_addr, dht: {size},
+    swim: {members}, realms, version}'.
+  - `GET /dht/stats' — `{size, self_id, bucket_count}'.
+  - `GET /swim/members' — `{members: [{node_id, state, last_seen,
+    since}, ...]}'.
+  - `POST /bootstrap/rerun' — runs
+    `hecate_station_bootstrap_runner:run/1' synchronously,
+    returns `{result, summary}' on success, `{result: "error",
+    reason}' with HTTP 409 on `no_tiers' / `bootstrap_failed'.
+  - Unknown path → 404 JSON; malformed request → 400 JSON.
+- Config: new `#admin_cfg{bind, port}' record (defaults
+  `127.0.0.1:8443'; `port = 0' asks the OS for an ephemeral port,
+  which tests use). Config loader parses the `{admin, #{...}}'
+  spec. TLS + client-cert auth deferred to Phase 7 per plan.
+- `hecate_station_app:start/2' boot pipeline extended: after
+  rebootstrap, the `admin_sup' child is started when
+  `admin_cfg' is present. Halt reason added:
+  `{admin_start_failed, _}'.
+- `hecate_station' accessors: `admin/0' + `admin_addr/0' (returns
+  the actual bound port so operators / scripts / tests can
+  discover the listener address without threading it through the
+  config file when `port = 0').
+- Tests: `hecate_station_admin_tests' (5 cases) boot the full
+  station on an ephemeral admin port and exercise every endpoint
+  with `httpc' — real socket I/O, real HTTP parsing, real JSON
+  decoding — then assert the response shape.
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer' all green
+(724 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:**
+- `POST /bootstrap/add-peer' — operator endpoint to inject a
+  peer directly into the DHT without a cascade. Rare operation
+  (debug + incident only); tracked in `PLAN_DEFERRED_WORK.md'.
+- `GET /metrics' — Prometheus text-format exporter. Would need
+  a proper counter registry; plan §8.6 shows metrics as an
+  acceptance item but the core observability surface is
+  `/status' + `/dht/stats' + `/swim/members'. Prometheus is a
+  Phase 7 hardening feature alongside the Grafana dashboard.
+- TLS + client-cert auth — Phase 7. Operators reach the admin
+  API via `ssh -L' for now.
+- Unix-socket bind (`--unix-socket /tmp/hecate-admin.sock' in
+  the runbook) — needs `gen_tcp' AF_UNIX support or a port-driver
+  bridge; loopback TCP is sufficient for first operator use.
 
 **Files:**
 - `hecate_station_admin` — HTTP handler module + JSON encoder (uses

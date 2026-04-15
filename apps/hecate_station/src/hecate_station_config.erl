@@ -26,7 +26,7 @@
 ]).
 
 -export_type([opts/0, station_opts/0, station_cfg/0, realm_cfg/0,
-              cache_cfg/0, rebootstrap_cfg/0]).
+              cache_cfg/0, rebootstrap_cfg/0, admin_cfg/0]).
 
 -type opts() :: #{
     bind          => inet:ip_address() | string(),
@@ -135,7 +135,8 @@ build_cfg() ->
         {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,           {optional, 0}},
         {realms,        undefined,                      realm_specs,       {optional, []}},
         {cache,         undefined,                      cache_spec,        optional},
-        {rebootstrap,   undefined,                      rebootstrap_spec,  optional}
+        {rebootstrap,   undefined,                      rebootstrap_spec,  optional},
+        {admin,         undefined,                      admin_spec,        optional}
     ])).
 
 promote({ok, Map})          -> {ok, finalise_cfg_map(Map)};
@@ -192,6 +193,7 @@ parse_value(V, integer, Src)  when is_binary(V)               -> parse_int(binar
 parse_value(V, realm_specs, Src) when is_list(V)              -> decode_realm_specs(V, Src);
 parse_value(V, cache_spec,  Src) when is_map(V)               -> decode_cache_spec(V, Src);
 parse_value(V, rebootstrap_spec, Src) when is_map(V)          -> decode_rebootstrap_spec(V, Src);
+parse_value(V, admin_spec,  Src) when is_map(V)               -> decode_admin_spec(V, Src);
 parse_value(V, T,       Src)                                  -> {error, {bad_config, {parse, Src, T, V}}}.
 
 parse_int(Str, Src) ->
@@ -241,6 +243,12 @@ decode_rebootstrap_spec(M, _Src) when is_map(M) ->
         partition_window_ms = maps:get(partition_window_ms, M, 60_000)
      }}.
 
+decode_admin_spec(M, _Src) when is_map(M) ->
+    {ok, #admin_cfg{
+        bind = maps:get(bind, M, "127.0.0.1"),
+        port = maps:get(port, M, 8443)
+     }}.
+
 finalise_cfg_map(Map0) ->
     DataDir    = maps:get(data_dir, Map0),
     Map        = ensure_identity_file(Map0, DataDir),
@@ -259,7 +267,8 @@ finalise_cfg_map(Map0) ->
         capabilities     = maps:get(capabilities, Map, 0),
         realms_cfg       = RealmsCfg,
         cache_cfg        = maps:get(cache, Map, undefined),
-        rebootstrap_cfg  = maps:get(rebootstrap, Map, undefined)
+        rebootstrap_cfg  = maps:get(rebootstrap, Map, undefined),
+        admin_cfg        = maps:get(admin, Map, undefined)
     }.
 
 ensure_identity_file(#{identity_file := _} = Map, _DataDir) -> Map;

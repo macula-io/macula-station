@@ -30,6 +30,8 @@
     realm/1,
     cache/0,
     rebootstrap/0,
+    admin/0,
+    admin_addr/0,
     %% Internal — called by `hecate_station_app' during boot/teardown.
     remember_dial_opts/1,
     forget_dial_opts/0
@@ -128,6 +130,18 @@ cache() -> resolve(hecate_station_cache).
 %% @doc Pid of the re-bootstrap watchdog (if configured).
 -spec rebootstrap() -> {ok, pid()} | {error, not_started}.
 rebootstrap() -> resolve(hecate_station_rebootstrap).
+
+%% @doc Pid of the admin HTTP listener (if configured).
+-spec admin() -> {ok, pid()} | {error, not_started}.
+admin() -> resolve(hecate_station_admin).
+
+%% @doc The actual port the admin listener is bound to.
+-spec admin_addr() -> {ok, inet:port_number()} | {error, not_started}.
+admin_addr() ->
+    admin_port_of(admin()).
+
+admin_port_of({ok, Pid})    -> {ok, hecate_station_admin:listen_port(Pid)};
+admin_port_of(E)            -> E.
 
 %% @doc `{Bind, Port}' the listener is bound to. Errors if the app is
 %% not booted.

@@ -39,7 +39,11 @@
     %% Partition-recovery watchdog — triggers `hecate_bootstrap:run/0'
     %% again when the DHT size stays below a floor for a sustained
     %% window.
-    rebootstrap_cfg = undefined :: rebootstrap_cfg() | undefined
+    rebootstrap_cfg = undefined :: rebootstrap_cfg() | undefined,
+    %% Admin HTTP API binding. When present, the boot pipeline
+    %% starts a loopback-only httpd exposing `/status', `/dht/stats',
+    %% `/swim/members', `/bootstrap/rerun'.
+    admin_cfg       = undefined :: admin_cfg() | undefined
 }).
 
 %% Matches the shape of `application:get_env(hecate_station, realms_cfg, [])'
@@ -70,5 +74,15 @@
 }).
 
 -type rebootstrap_cfg() :: #rebootstrap_cfg{}.
+
+-record(admin_cfg, {
+    %% Loopback-only binding; plan §8.6 defers TLS + client-cert
+    %% auth to Phase 7. A value of 0 asks the OS for an ephemeral
+    %% port (test fixtures rely on this).
+    bind = "127.0.0.1" :: inet:ip_address() | string(),
+    port = 8443        :: inet:port_number()
+}).
+
+-type admin_cfg() :: #admin_cfg{}.
 
 -endif.
