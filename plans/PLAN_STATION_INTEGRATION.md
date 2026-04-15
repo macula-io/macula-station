@@ -102,12 +102,53 @@ record.
 - Config parse errors surface as `{stop, {bad_config, Reason}}`.
 - Eunit: identity round-trip, config happy + error paths.
 
-### 8.2 Bootstrap → DHT → SWIM boot sequence
+### 8.2 Bootstrap → DHT → SWIM boot sequence ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** `hecate_station_sup` starts — in order —
 bootstrap cascade (via `hecate_bootstrap:run/0`), DHT server (with
 the station's NodeId), ingest bridge (already shipped in 6.10), and
 SWIM server (seeded from DHT).
+
+**Landed:**
+- `hecate_station_bootstrap_runner` — one-shot orchestrator
+  (`run/1,2`) composing `hecate_bootstrap:run/0,1` with
+  `hecate_station_bootstrap:ingest/2`. Returns
+  `{ok, #{peers, summary}}` on success, verbatim
+  `{error, no_tiers}` to let the caller refuse SWIM, or
+  `{error, {bootstrap_failed, Reason}}` for other cascade errors.
+- `hecate_station_sup:start_dht/1`, `start_swim/1` — name-registering
+  wrappers. Children added at boot time via
+  `supervisor:start_child/2` rather than in `init/1` so the cascade
+  runs between DHT start and SWIM start.
+- `hecate_station_app:start/2` — boot pipeline (flat pattern-matched
+  heads, no nesting):
+  1. start empty sup,
+  2. return early if env disabled,
+  3. `from_env/0` + halt sup on `{bad_config, _}`,
+  4. start DHT child,
+  5. run cascade + ingest via runner,
+  6. halt sup on `no_tiers` / `bootstrap_failed`,
+  7. start SWIM child.
+- `hecate_station:dht/0`, `swim/0` — runtime accessors
+  returning `{ok, pid()} | {error, not_started}` via
+  `whereis/1` on the registered names.
+- `hecate_station_stub_tier` (test) — deterministic
+  `hecate_bootstrap_tier` implementation for unit tests.
+- Tests: `hecate_station_bootstrap_runner_tests` (4 cases: happy
+  path, `no_tiers`, cascade_failed wrapping, app-env read) and
+  `hecate_station_app_tests` (4 cases: disabled env yields empty sup,
+  happy path boots DHT + SWIM with seeded routing table, `no_tiers`
+  aborts boot cleanly, warm-boot preserves identity across app
+  restarts).
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer` all green
+(693 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:** two-station CT on loopback is deferred to 8.3 — it
+needs the QUIC listener to be meaningful (two sups in one VM fight
+over the `hecate_dht`/`hecate_swim` registered names; without a
+listener there is nothing to "meet" over). The runtime-accessor
+contract is exercised by the eunit app tests.
 
 **Files:**
 - `hecate_station_sup` gains children in a fixed startup order:

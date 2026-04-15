@@ -17,7 +17,10 @@
     peers/1,
     tombstones/1,
     swim_members/1,
-    version/0
+    version/0,
+    %% Sup-driven runtime accessors (Session 8.2+).
+    dht/0,
+    swim/0
 ]).
 
 -spec start_link(hecate_station_config:opts()) -> {ok, pid()} | {error, term()}.
@@ -60,3 +63,21 @@ swim_members(Pid) ->
 -spec version() -> binary().
 version() ->
     <<"0.1.0-phase1">>.
+
+%%------------------------------------------------------------------
+%% Sup-driven runtime accessors
+%%------------------------------------------------------------------
+
+%% @doc Pid of the station's supervised DHT, if the app is booted.
+-spec dht() -> {ok, pid()} | {error, not_started}.
+dht() -> resolve(hecate_dht).
+
+%% @doc Pid of the station's supervised SWIM, if the app is booted.
+-spec swim() -> {ok, pid()} | {error, not_started}.
+swim() -> resolve(hecate_swim).
+
+resolve(Name) ->
+    deliver(whereis(Name)).
+
+deliver(undefined) -> {error, not_started};
+deliver(Pid) when is_pid(Pid) -> {ok, Pid}.

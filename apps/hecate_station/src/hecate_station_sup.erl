@@ -1,44 +1,68 @@
-%% @doc Top-level supervisor.
+%% @doc Top-level station supervisor.
 %%
-%% Session 8.1 surface: one `hecate_station_server' child whose opts come
-%% from `hecate_station_config:from_env/0'. When the application env is
-%% empty (walking-skeleton / chaos CT modes) the sup starts with no
-%% children — those suites drive `hecate_station_server' directly via
-%% `hecate_station:start_link/1'.
+%% From Session 8.2 onwards the supervisor owns long-lived runtime
+%% processes (DHT, SWIM, listener, …), each registered under a fixed
+%% local atom so the station API can look them up:
 %%
-%% A malformed `sys.config' surfaces as `{stop, {bad_config, Reason}}'
-%% per PLAN_STATION_INTEGRATION 8.1 acceptance.
+%% <ul>
+%%   <li>`hecate_dht' — S/Kademlia routing table server.</li>
+%%   <li>`hecate_swim' — SWIM failure detector.</li>
+%% </ul>
+%%
+%% The children are NOT listed in `init/1'. They are added at boot
+%% time by `hecate_station_app:start/2', which enforces strict
+%% bootstrap ordering (DHT → cascade ingest → SWIM) per
+%% PLAN_STATION_INTEGRATION §8.2. Starting them via
+%% `supervisor:start_child/2' from the application callback is what
+%% lets us refuse to bring SWIM up when the cascade yields zero peers.
+%%
+%% The walking-skeleton / chaos CT suites drive `hecate_station_server'
+%% directly via `hecate_station:start_link/1' and never touch this
+%% supervisor; they run in parallel in a single VM without colliding
+%% with the registered names because the sup is not started.
 -module(hecate_station_sup).
 -behaviour(supervisor).
 
--include("hecate_station_cfg.hrl").
-
 -export([start_link/0, init/1]).
+
+%% Start wrappers — referenced from child specs built in
+%% `hecate_station_app'. They register the child pid under a fixed
+%% local name so the station API can find it (`hecate_station:dht/0',
+%% `hecate_station:swim/0').
+-export([start_dht/1, start_swim/1]).
+
+-define(DHT_NAME,  hecate_dht).
+-define(SWIM_NAME, hecate_swim).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
-    children(hecate_station_config:enabled(), SupFlags).
+    {ok, {SupFlags, []}}.
 
-children(false, SupFlags) ->
-    {ok, {SupFlags, []}};
-children(true, SupFlags) ->
-    build_children(hecate_station_config:from_env(), SupFlags).
+%%==================================================================
+%% Name-registering start wrappers.
+%%==================================================================
 
-build_children({ok, Cfg}, SupFlags) ->
-    {ok, {SupFlags, [station_child(Cfg)]}};
-build_children({error, Reason}, _SupFlags) ->
-    {stop, Reason}.
+-spec start_dht(hecate_dht:opts()) -> {ok, pid()} | {error, term()}.
+start_dht(Opts) ->
+    register_result(hecate_dht:start_link(Opts), ?DHT_NAME).
 
-station_child(#station_cfg{} = Cfg) ->
-    Opts = hecate_station_config:to_opts(Cfg),
-    #{
-        id       => hecate_station_server,
-        start    => {hecate_station_server, start_link, [Opts]},
-        restart  => permanent,
-        shutdown => 10_000,
-        type     => worker,
-        modules  => [hecate_station_server]
-    }.
+-spec start_swim(hecate_swim:opts()) -> {ok, pid()} | {error, term()}.
+start_swim(Opts) ->
+    register_result(hecate_swim:start_link(Opts), ?SWIM_NAME).
+
+register_result({ok, Pid} = Ok, Name) ->
+    ensure_registered(Name, Pid),
+    Ok;
+register_result({error, _} = E, _Name) ->
+    E.
+
+%% On restart the old Pid is dead and its registration is already
+%% gone, but be defensive so a zombie name does not block the new
+%% registration.
+ensure_registered(Name, Pid) ->
+    _ = catch unregister(Name),
+    true = register(Name, Pid),
+    ok.
