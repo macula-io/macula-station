@@ -63,6 +63,41 @@ shutdown_is_idempotent_test_() ->
     end}.
 
 %%==================================================================
+%% prep_stop/1 pre-shutdown hook (Sprint A §3).
+%%
+%% `application:stop/1' calls `prep_stop/1' before terminating the
+%% app master's sup tree. The hook must run the tombstone + cache
+%% flush steps so a clean release-handler stop is equivalent to
+%% `hecate_station:shutdown/0' — minus the sup teardown, which the
+%% app master handles itself.
+%%==================================================================
+
+prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
+    {setup, fun setup_app/0, fun teardown_app/1, fun(#{kp := Kp} = Ctx) ->
+        {timeout, 15,
+         fun() ->
+             process_flag(trap_exit, true),
+             {ok, Dht} = hecate_station:dht(),
+             Pub       = macula_identity:public(Kp),
+             %% No prior tombstone for our NodeId.
+             ?assertEqual([],
+                 hecate_dht:find_local_record(Dht, Pub)),
+             %% Run prep_stop by hand — simulates what the app master
+             %% does on `application:stop(hecate_station)'. The sup
+             %% stays alive; we then observe state.
+             _State = hecate_station_app:prep_stop(#{}),
+             %% Tombstone now in the local DHT.
+             [Tomb] = hecate_dht:find_local_record(Dht, Pub),
+             ?assertEqual(16#0C, macula_record:type(Tomb)),
+             %% Cache file on disk.
+             CacheDir = maps:get(cache_dir, Ctx),
+             ?assert(filelib:is_regular(
+                 hecate_station_cache:path(CacheDir))),
+             _ = Ctx
+         end}
+    end}.
+
+%%==================================================================
 %% Tombstone persisted locally BEFORE the sup dies.
 %%==================================================================
 

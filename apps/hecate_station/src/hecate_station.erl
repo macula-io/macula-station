@@ -25,15 +25,13 @@
     listener/0,
     listen_addr/0,
     connect_to/1,
-    realm_sup/0,
-    realms/0,
-    realm/1,
     cache/0,
     rebootstrap/0,
     admin/0,
     admin_addr/0,
     shutdown/0,
     shutdown/1,
+    prepare_shutdown/1,
     current_identity/0,
     tombstone_type/0,
     %% Internal — called by `hecate_station_app' during boot/teardown.
@@ -102,31 +100,6 @@ observer() -> resolve(hecate_station_peer_observer).
 -spec listener() -> {ok, pid()} | {error, not_started}.
 listener() -> resolve(hecate_station_listener).
 
-%% @doc Pid of the realm supervisor, if the app is booted.
--spec realm_sup() -> {ok, pid()} | {error, not_started}.
-realm_sup() -> resolve(hecate_station_realm_sup).
-
-%% @doc Every supervised realm pid on this station.
--spec realms() -> [pid()].
-realms() ->
-    enumerate_realms(realm_sup()).
-
-enumerate_realms({ok, _}) -> hecate_station_realm_sup:children();
-enumerate_realms(_)       -> [].
-
-%% @doc Resolve a realm id to the matching realm gen_server pid.
--spec realm(<<_:256>>) -> {ok, pid()} | {error, not_started | not_found}.
-realm(RealmId) when is_binary(RealmId), byte_size(RealmId) =:= 32 ->
-    lookup_realm(observer(), RealmId).
-
-lookup_realm({ok, Obs}, RealmId) ->
-    map_lookup(hecate_station_peer_observer:realm_for(Obs, RealmId));
-lookup_realm(_, _) ->
-    {error, not_started}.
-
-map_lookup({ok, Pid})    -> {ok, Pid};
-map_lookup(error)        -> {error, not_found}.
-
 %% @doc Pid of the routing-table cache gen_server (if configured).
 -spec cache() -> {ok, pid()} | {error, not_started}.
 cache() -> resolve(hecate_station_cache).
@@ -181,14 +154,29 @@ shutdown() ->
 %% `retired' (deliberate) from `operator_stop' (routine) etc.
 -spec shutdown(atom()) -> ok | {error, not_started}.
 shutdown(Reason) when is_atom(Reason) ->
-    execute_shutdown(dht(), current_identity(), Reason).
+    finish_shutdown(prepare_shutdown(Reason)).
 
-execute_shutdown({ok, Dht}, {ok, Kp}, Reason) ->
-    _ = publish_tombstone(Dht, Kp, Reason),
-    _ = flush_cache(),
+finish_shutdown(ok) ->
     _ = teardown_sup(),
     ok;
-execute_shutdown(_DhtResult, _IdResult, _Reason) ->
+finish_shutdown({error, _} = E) ->
+    E.
+
+%% @doc Operator-safe pre-shutdown — publish tombstone + flush cache,
+%% but LEAVE the sup tree alone. This is what
+%% `hecate_station_app:prep_stop/1' calls: when the operator invokes
+%% `application:stop(hecate_station)', the OTP application master
+%% terminates the sup on its own, so we only need to do the
+%% pre-teardown bookkeeping here.
+-spec prepare_shutdown(atom()) -> ok | {error, not_started}.
+prepare_shutdown(Reason) when is_atom(Reason) ->
+    execute_pre_shutdown(dht(), current_identity(), Reason).
+
+execute_pre_shutdown({ok, Dht}, {ok, Kp}, Reason) ->
+    _ = publish_tombstone(Dht, Kp, Reason),
+    _ = flush_cache(),
+    ok;
+execute_pre_shutdown(_DhtResult, _IdResult, _Reason) ->
     {error, not_started}.
 
 publish_tombstone(Dht, Kp, Reason) ->

@@ -68,7 +68,6 @@ from_env_happy_path_test_() ->
                 ?assertEqual("127.0.0.1",  Cfg#station_cfg.bind),
                 ?assertEqual(9000,          Cfg#station_cfg.port),
                 ?assertEqual(Dir,           Cfg#station_cfg.data_dir),
-                ?assertEqual([],            Cfg#station_cfg.realms),
                 ?assertEqual(0,             Cfg#station_cfg.capabilities),
                 ?assert(is_map(Cfg#station_cfg.identity)),
                 Expected = hecate_station_identity:path_for(Dir),
@@ -159,7 +158,7 @@ set_all(Dir, Bind, Port) ->
 
 clear_env() ->
     Keys = [data_dir, identity_file, bind, port, certfile, keyfile,
-            realms, capabilities],
+            capabilities, cache, rebootstrap, admin],
     Saved = [{K, application:get_env(hecate_station, K)} || K <- Keys],
     [application:unset_env(hecate_station, K) || K <- Keys],
     [os:unsetenv(V) || V <- ["HECATE_STATION_DATA_DIR",
@@ -168,7 +167,6 @@ clear_env() ->
                              "HECATE_STATION_PORT",
                              "HECATE_STATION_CERTFILE",
                              "HECATE_STATION_KEYFILE",
-                             "HECATE_STATION_REALMS",
                              "HECATE_STATION_CAPABILITIES"]],
     Saved.
 

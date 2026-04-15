@@ -249,82 +249,51 @@ DHT routing table with observed ASN/country/tier.
   returns `touched`, not `admitted` (confirms the 6.10 bridge +
   the observer stay consistent).
 
-### 8.4 HyParView + Plumtree overlay startup per realm ✅ SHIPPED (2026-04-15)
+### 8.4 ❌ REVERSED (2026-04-15) — realm state is not a station concern
 
-**Deliverable:** for every realm the station serves (from config), a
-HyParView + Plumtree pair starts and joins the realm's intra-realm
-overlay using realm directory records from the DHT.
+The original 8.4 wired a per-realm HyParView + Plumtree gen_server
+into `hecate_station` and gave the peer observer a
+RealmId → RealmPid registry plus overlay-frame routing. That put
+**realm identity state inside the rail infrastructure**. In the
+railroad mental model a station does not care which train
+companies stop there; it provides tracks, platforms, and signalling
+and lets each train company run its own business. Realm identity,
+membership, admin keys, and per-realm overlay all live in a
+**separate `hecate-realm' / `macula-realm' service** that dials
+a station like any other peer (via `macula_peering').
 
-**Landed:**
-- `hecate_station_realm` — per-realm gen_server owning the
-  `hecate_overlay_view' (HyParView active + passive), the
-  `hecate_plumtree' state, and the `hecate_pubsub' state for one
-  `RealmId'. API: `add_peer/2`, `remove_peer/2`, `handle_frame/3`,
-  `publish/3`, `active_peers/1`, `is_active/2`, `counts/1`. Outbound
-  `{send, NodeId, Frame}` actions emitted by the pure protocol
-  modules are routed through a `send_fun' callback so the gen_server
-  stays fork-free and tests can capture traffic without network I/O.
-- `hecate_station_realm_sup' — simple_one_for_one supervisor
-  registered under `?MODULE'. `start_realm/1' spawns a transient
-  child; `stop_realm/1' tears it down; `children/0' enumerates.
-- `hecate_station_peer_observer' extended with:
-  - `conn_for/2' — NodeId → ConnPid lookup (new forward map).
-  - `register_realm/3' / `unregister_realm/2' / `realm_for/2' —
-    RealmId → RealmPid registry populated at boot.
-  - `send_to/3' — resolve + delegate to
-    `macula_peering:send_frame/2'. This is the function closed over
-    in the realm's `send_fun'.
-  - Frame classifier extended: hyparview_* / plumtree_* frames are
-    routed to the matching realm via the registry.
-- Config: new `#realm_cfg{}' record (`realm_id', `roles',
-  `active_view_size', `passive_view_size', `plumtree_fanout') + new
-  `realms_cfg' field on `#station_cfg{}'. `hecate_station_config'
-  gains a `realm_specs' parse type that converts the operator-facing
-  list-of-maps shape into records.
-- `hecate_station_app:start/2' boot pipeline extended: listener →
-  realm_sup → one realm child per `realms_cfg' entry. Each spawned
-  realm is registered with the observer immediately. Halt reasons
-  added: `{realm_sup_start_failed, _}`, `{realm_start_failed, _}`.
-- `hecate_station' facade: `realm_sup/0', `realms/0', `realm/1'.
-- Tests:
-  - `hecate_station_realm_tests' (5 cases): add/remove peer,
-    publish gossips to eager peers, inbound JOIN admits sender to
-    active view, inbound signed GOSSIP delivers locally exactly
-    once.
-  - `hecate_station_app_tests' gained 2 cases: configured realms
-    spawn children addressable via `realm/1`; crashing one realm
-    does not affect sibling realms (transient restart).
+**Reversed in Sprint A:**
+- Deleted: `apps/hecate_station/src/hecate_station_realm.erl',
+  `apps/hecate_station/src/hecate_station_realm_sup.erl',
+  `apps/hecate_station/test/hecate_station_realm_tests.erl'.
+- `#station_cfg{}' loses `realms_cfg' + the derived `realms'
+  pubkey list. `#realm_cfg{}' record + its parse type gone too.
+- `hecate_station_peer_observer' reverts to SWIM-only frame
+  handling. Realm registry (`register_realm/3',
+  `unregister_realm/2', `realm_for/2', `send_to/3') removed.
+  Observer keeps `peers/1' + `conn_for/2'.
+- `hecate_station_app:start/2' boot pipeline drops the realm_sup
+  + per-realm spawn steps. New order:
+  DHT → cascade → SWIM → observer → listener → cache →
+  rebootstrap → admin.
+- `hecate_station' facade drops `realm_sup/0', `realms/0',
+  `realm/1'.
+- `hecate_station_app_tests' loses the two realm cases; the
+  happy-path test stops asserting on realm sup / realms list.
+  The `/status' endpoint keeps its `realms' field for
+  operator-tool compatibility but always returns `[]'.
 
-**Pipeline:** `rebar3 xref/eunit/ct/dialyzer' all green
-(708 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+**What stays:**
+- `apps/hecate_overlay/' — pure HyParView / Plumtree / pubsub /
+  realm-join modules remain as library code. A future
+  `hecate-realm' / `macula-realm' service consumes them. Not
+  linked into the station's runtime tree.
+- `apps/hecate_realm/' — empty app skeleton untouched.
 
-**Deferred:**
-- Full DHT-directory-driven peer discovery (station looks up
-  realm directory records, dials endorsed peers, exchanges JOIN)
-  — needs realm admin keys + endorsement record publishing. Tracked
-  in `PLAN_DEFERRED_WORK.md` under the realm-admission line item.
-- Observer auto-unregistration of crashed realm pids — currently
-  the registry may hold a stale pid until the sup re-registers; a
-  monitor-based self-cleanup will land alongside the realm crash
-  observability in 8.6.
-- Two-station realm convergence CT — requires multi-VM or
-  per-sup-instance registered names; same constraint as 8.3.
-  Fleet CT (8.8) on beam cluster will cover this.
-
-**Files:**
-- `hecate_station_realm_sup` — simple_one_for_one, one child per
-  realm.
-- `hecate_station_realm` — `gen_server` that owns the HyParView
-  view + the Plumtree state for one `RealmId`.
-- Config: `realms: [#{realm_id, roles, policy_url}]` per station
-  opts.
-
-**Acceptance:**
-- Two stations in the same realm exchange `realm_member_endorsement`
-  records, land in each other's HyParView active views within 3 s.
-- A Plumtree message from one reaches the other within 100 ms on
-  loopback (single-hop).
-- Shutting down one realm child does not affect the other realms.
+**Deferred:** the realm service itself. See
+`PLAN_DEFERRED_WORK.md §6' (adjacent plans) — new entry
+`hecate-realm / macula-realm service — realm identity,
+admin keys, endorsements, per-realm HyParView + Plumtree'.
 
 ### 8.5 Periodic re-bootstrap + routing-table persistence ✅ SHIPPED (2026-04-15)
 
@@ -790,8 +759,8 @@ landed; pipeline green across every session.**
       `/metrics` Prometheus exporter deferred to Phase 7.*
 - [x] Full pipeline (`xref`, `eunit`, `ct`, `dialyzer`) green
       after every session.
-      <br>*727 eunit / 31 CT (33 with `--name'), 0 dialyzer, 0
-      xref.*
+      <br>*720 eunit (after the §8.4 rollback — 7 realm tests
+      removed) / 31 CT (33 with `--name'), 0 dialyzer, 0 xref.*
 - [ ] Runbook (`PLAN_STATION_RUNBOOK.md`) reviewed and updated
       where reality differs.
       <br>*Tracked for the §8.8.x follow-up together with the beam

@@ -226,7 +226,9 @@ status() ->
         listen_addr => maps:get(listen_addr, Runtime),
         dht         => #{size => maps:get(dht_size, Runtime)},
         swim        => #{members => maps:get(swim_count, Runtime)},
-        realms      => maps:get(realm_ids, Runtime),
+        %% Stations are realm-agnostic — this field stays in the
+        %% response for operator-tool compatibility but always empty.
+        realms      => [],
         version     => hecate_station:version()
     }).
 
@@ -302,8 +304,7 @@ runtime_snapshot() ->
         node_id     => snapshot_self_id(Dht),
         listen_addr => snapshot_listen_addr(),
         dht_size    => snapshot_size(Dht),
-        swim_count  => snapshot_member_count(Swim),
-        realm_ids   => snapshot_realm_ids()
+        swim_count  => snapshot_member_count(Swim)
     }.
 
 is_ok({ok, _}) -> true;
@@ -326,9 +327,6 @@ encode_addr({Bind, Port}) when is_integer(Port) ->
 encode_addr(_) ->
     null.
 
-snapshot_realm_ids() ->
-    [hex(hecate_station_realm:realm_id(P)) ||
-        P <- hecate_station:realms()].
 
 %%==================================================================
 %% Response encoding

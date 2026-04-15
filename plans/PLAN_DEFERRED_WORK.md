@@ -184,9 +184,10 @@ sprints once prerequisites land.
 
 | Plan | Scope | Prerequisites | Trigger |
 |------|-------|---------------|---------|
-| `PLAN_MNS_AND_REALM_JOIN.md` | Realm admission: OAuth-style join, invitation codes, admin key rotation, cross-realm federation | V2 walking skeleton (done) + realm_directory + realm_member_endorsement records (done) | "Start realm-join plan" |
-| `PLAN_GIT_OVER_MESH.md` | Git server pattern riding on V2 `macula:advertise/call/subscribe` | Station integration (in progress) + procedure_advertisement records (done) | "Start git-over-mesh" |
-| `PLAN_LOCAL_FIRST_BOOT.md` | Station boots offline, mesh activates on demand via POST /api/mesh/activate | Station integration + admin API | "Start local-first boot" |
+| `PLAN_HECATE_REALM_SERVICE.md` (new) | Realm identity service — per-realm HyParView + Plumtree + pubsub + admission (endorsement records), admin key rotation. Separate application (possibly separate repo: `hecate-social/hecate-realm' white-label + `macula-io/macula-realm' branded). Consumes `apps/hecate_overlay/' as library. Dials stations via `macula_peering' like any other peer. | Station integration sprint (done, 8.1-8.8) + `hecate_overlay' pure modules (done) | "Start realm service plan" |
+| `PLAN_MNS_AND_REALM_JOIN.md` | Realm admission flow: OAuth-style join, invitation codes, admin key rotation, cross-realm federation. Runs on the realm service above; daemon side handles UI. | Realm service skeleton + V2 walking skeleton (done) + realm_directory + realm_member_endorsement records (done) | "Start realm-join plan" |
+| `PLAN_GIT_OVER_MESH.md` | Git server pattern riding on V2 `macula:advertise/call/subscribe` | Station integration (done) + procedure_advertisement records (done) | "Start git-over-mesh" |
+| `PLAN_LOCAL_FIRST_BOOT.md` | **Daemon** (user-machine, `hecate-daemon' repo) boots offline, mesh activates on demand via `POST /api/mesh/activate'. NOT a station concern — stations are always-on servers. | Daemon repo + Tauri bridge | "Start local-first boot" |
 
 ---
 
@@ -201,20 +202,82 @@ sprints once prerequisites land.
 
 ---
 
-## 8. Station deferred items (composition layer)
+## 8. Station deferred items — post-sprint snapshot (2026-04-15)
 
-These surface during the integration sprint (`PLAN_STATION_INTEGRATION.md`)
-and get sequenced there:
+Station integration sprint 8.1–8.8 shipped. The pre-sprint wishlist
+that used to live here (persistent identity, listener config,
+periodic rebootstrap, admin API, graceful shutdown, realm-member
+endorsement loading) is all landed code. What follows is the
+list of items the sprint explicitly deferred, grouped by category.
+Each session's `Deferred:' block in `PLAN_STATION_INTEGRATION.md'
+is the authoritative detail.
 
-- Persistent identity load/generate to disk (`~/.hecate/station/identity`)
-- QUIC listener config from `sys.config' (port, cert dir, ALPN)
-- Periodic re-bootstrap timer (after first-boot cascade)
-- Admin HTTP API (bind, routes, auth)
-- Graceful shutdown — tombstone + state save
-- `hecate' CLI wrapping admin API
-- Realm-member-endorsement loading from disk
+### 8.1 — station-level polish (unblocked)
 
-Full session breakdown lives in `PLAN_STATION_INTEGRATION.md`.
+- **`geo_check` + rich DHT observe spec** — replace `asn => 0,
+  country => <<"??">>' defaults in
+  `hecate_station_peer_observer' with live geolocation lookup.
+  Trigger: "Start geo_check integration".
+- **Exponential back-off on repeated rebootstrap failures** —
+  current watchdog resets `low_since' unconditionally after a
+  trigger. Fine under the plan's §8.5 "not a tight loop" bar,
+  but adaptive back-off belongs on the next pass. Trigger:
+  "Add rebootstrap back-off".
+- **SWIM `leave` + overlay `REALM_LEAVE` frame types** — schema
+  extension in `macula_frame' so graceful shutdown can advertise
+  departure explicitly instead of relying on SWIM timeouts.
+  Trigger: "Add leave frames".
+- **`test/fleet_chaos.erl` helper module** — kill/partition
+  helpers live inline in `fleet_SUITE'; extract when the 4-node
+  scenarios land. Trigger: "Extract fleet_chaos helpers".
+
+### 8.2 — admin API (Phase 7 hardening)
+
+- **`POST /bootstrap/add-peer`** — rare operator-debug endpoint
+  for peer injection without a cascade.
+- **`GET /metrics`** — Prometheus text-format exporter; wants a
+  proper counter registry. Lands alongside the Grafana dashboard
+  in Phase 7.
+- **TLS + client-cert auth** on the admin listener. Loopback-only
+  today.
+- **Unix-socket bind** (`/tmp/hecate-admin.sock`) — needs
+  `gen_tcp' AF_UNIX support or a port-driver bridge.
+
+### 8.3 — fleet / real-network (beam-cluster work)
+
+- **4-node beam-fleet CT** — iptables partition / heal, gatewayed
+  tier diversity, podman auto-update observation.
+  `fleet_SUITE' covers the code paths via 2 `peer' VMs. The
+  4-node scenarios need real hardware + ops tooling.
+- **End-to-end warm-boot round-trip test** (cold boot → observe
+  peers → restart → assert DHT pre-seeded from cache on the new
+  process).
+- **Two-station tombstone-reach CT** — sender shuts down, reader's
+  DHT learns the tombstone via replicate walk.
+- **Tier-B mDNS responder real-network test** — needs live
+  responder.
+- **Automated report drop** to `/bulk0/.hecate/reports/$(date +%F)/' —
+  post-run `scp' step in the fleet script.
+
+### 8.4 — design reversal (no follow-up on station)
+
+Session 8.4's per-realm HyParView + Plumtree on the station was
+reversed in Sprint A (2026-04-15). Stations are realm-agnostic
+infrastructure; realm state moved to a new `hecate-realm' /
+`macula-realm' service. See §6 (adjacent plans) for the service
+plan, and `PLAN_STATION_INTEGRATION.md §8.4' for the reversal
+record.
+
+### 8.5 — runbook / operator-facing docs
+
+- **`PLAN_STATION_RUNBOOK.md`** alignment with shipped reality
+  (endpoint list, child tree, config shape, shutdown API,
+  accessors). Last unchecked acceptance item in
+  `PLAN_STATION_INTEGRATION.md §6'.
+
+Full per-session breakdown lives in
+`PLAN_STATION_INTEGRATION.md' — each `8.x' header ships a
+`Landed:' + `Deferred:' pair.
 
 ---
 

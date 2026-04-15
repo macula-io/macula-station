@@ -25,7 +25,7 @@
     enabled/0
 ]).
 
--export_type([opts/0, station_opts/0, station_cfg/0, realm_cfg/0,
+-export_type([opts/0, station_opts/0, station_cfg/0,
               cache_cfg/0, rebootstrap_cfg/0, admin_cfg/0]).
 
 -type opts() :: #{
@@ -133,7 +133,6 @@ build_cfg() ->
         {certfile,      "HECATE_STATION_CERTFILE",      str,               required},
         {keyfile,       "HECATE_STATION_KEYFILE",       str,               required},
         {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,           {optional, 0}},
-        {realms,        undefined,                      realm_specs,       {optional, []}},
         {cache,         undefined,                      cache_spec,        optional},
         {rebootstrap,   undefined,                      rebootstrap_spec,  optional},
         {admin,         undefined,                      admin_spec,        optional}
@@ -190,7 +189,6 @@ parse_value(V, str,     _Src) when is_list(V);  is_binary(V)  -> {ok, V};
 parse_value(V, integer, _Src) when is_integer(V)              -> {ok, V};
 parse_value(V, integer, Src)  when is_list(V)                 -> parse_int(V, Src);
 parse_value(V, integer, Src)  when is_binary(V)               -> parse_int(binary_to_list(V), Src);
-parse_value(V, realm_specs, Src) when is_list(V)              -> decode_realm_specs(V, Src);
 parse_value(V, cache_spec,  Src) when is_map(V)               -> decode_cache_spec(V, Src);
 parse_value(V, rebootstrap_spec, Src) when is_map(V)          -> decode_rebootstrap_spec(V, Src);
 parse_value(V, admin_spec,  Src) when is_map(V)               -> decode_admin_spec(V, Src);
@@ -202,31 +200,6 @@ parse_int(Str, Src) ->
 parse_int_result({N, ""},       _Src) when is_integer(N) -> {ok, N};
 parse_int_result({N, Rest},      Src) when is_integer(N)  -> {error, {bad_config, {parse, Src, integer, Rest}}};
 parse_int_result({error, R},     Src)                     -> {error, {bad_config, {parse, Src, integer, R}}}.
-
-%% Map → #realm_cfg{} — one entry per configured realm.
-decode_realm_specs(Specs, Src) ->
-    decode_realm_specs(Specs, Src, []).
-
-decode_realm_specs([], _Src, Acc) -> {ok, lists:reverse(Acc)};
-decode_realm_specs([Spec | Rest], Src, Acc) ->
-    decode_realm_specs_step(decode_realm_spec(Spec, Src), Rest, Src, Acc).
-
-decode_realm_specs_step({ok, R},           Rest, Src, Acc) ->
-    decode_realm_specs(Rest, Src, [R | Acc]);
-decode_realm_specs_step({error, _} = E,   _Rest, _Src, _Acc) ->
-    E.
-
-decode_realm_spec(#{realm_id := Id} = Spec, _Src)
-  when is_binary(Id), byte_size(Id) =:= 32 ->
-    {ok, #realm_cfg{
-        realm_id          = Id,
-        roles             = maps:get(roles,             Spec, [<<"member">>]),
-        active_view_size  = maps:get(active_view_size,  Spec, 5),
-        passive_view_size = maps:get(passive_view_size, Spec, 20),
-        plumtree_fanout   = maps:get(plumtree_fanout,   Spec, 3)
-     }};
-decode_realm_spec(Spec, Src) ->
-    {error, {bad_config, {parse, Src, realm_specs, Spec}}}.
 
 decode_cache_spec(#{path := Path} = M, _Src) ->
     {ok, #cache_cfg{
@@ -250,9 +223,8 @@ decode_admin_spec(M, _Src) when is_map(M) ->
      }}.
 
 finalise_cfg_map(Map0) ->
-    DataDir    = maps:get(data_dir, Map0),
-    Map        = ensure_identity_file(Map0, DataDir),
-    RealmsCfg  = maps:get(realms, Map, []),
+    DataDir = maps:get(data_dir, Map0),
+    Map     = ensure_identity_file(Map0, DataDir),
     #station_cfg{
         data_dir         = DataDir,
         identity_file    = maps:get(identity_file, Map),
@@ -260,12 +232,7 @@ finalise_cfg_map(Map0) ->
         port             = maps:get(port, Map),
         certfile         = maps:get(certfile, Map),
         keyfile          = maps:get(keyfile, Map),
-        %% Derive the flat pubkey list for the CONNECT handshake
-        %% from the per-realm config rather than asking the operator
-        %% to repeat themselves.
-        realms           = [R#realm_cfg.realm_id || R <- RealmsCfg],
         capabilities     = maps:get(capabilities, Map, 0),
-        realms_cfg       = RealmsCfg,
         cache_cfg        = maps:get(cache, Map, undefined),
         rebootstrap_cfg  = maps:get(rebootstrap, Map, undefined),
         admin_cfg        = maps:get(admin, Map, undefined)
@@ -279,10 +246,13 @@ on_identity({ok, Kp}, Cfg)          -> {ok, Cfg#station_cfg{identity = Kp}};
 on_identity({error, Reason}, _Cfg)  -> {error, {bad_config, {identity, Reason}}}.
 
 %% @doc Project a typed station cfg into the legacy `station_opts()'
-%% map consumed by `hecate_station_server:init/1'.
+%% map consumed by `hecate_station_server:init/1'. The `realms' key
+%% in that map is the realm-pubkey list the CONNECT handshake
+%% advertises; stations are realm-agnostic infrastructure, so the
+%% projection hard-codes it to `[]'.
 -spec to_opts(station_cfg()) -> station_opts().
 to_opts(#station_cfg{bind = Bind, port = Port, certfile = C, keyfile = K,
-                     identity = Id, realms = R, capabilities = Caps})
+                     identity = Id, capabilities = Caps})
   when Id =/= undefined ->
     #{bind => Bind, port => Port, certfile => C, keyfile => K,
-      identity => Id, realms => R, capabilities => Caps}.
+      identity => Id, realms => [], capabilities => Caps}.

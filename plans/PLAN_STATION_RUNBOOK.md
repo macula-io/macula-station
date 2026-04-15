@@ -85,39 +85,51 @@ V2 stations replace V1 relays.
 
 ---
 
-## 3. Station boot sequence (reference)
+## 3. Station boot sequence (as shipped, post-§8.4 reversal)
 
-Below is the <em>intended</em> boot flow once `PLAN_STATION_INTEGRATION.md`
-is done. Each step has a "healthy signal" and a "common failure
-mode". Use this as the mental model when diagnosing.
+Stations are realm-agnostic infrastructure. Realm identity /
+overlay lives in a separate `hecate-realm' / `macula-realm'
+service (deferred — see `PLAN_DEFERRED_WORK.md §6'). The station
+provides the mesh; any realm service dials it like any other peer.
 
 ```
  1. beam VM starts → kernel + stdlib + crypto + ssl + inets up.
- 2. hecate_station application:start/2 →
-    hecate_station_sup:start_link/0.
- 3. Sup starts identity child →
-    load NodeId from ~/.hecate/station/identity or generate + persist.
- 4. Sup starts QUIC listener child →
-    bind IPv6 port from sys.config, listen ready.
- 5. Sup starts hecate_bootstrap app transitively (already declared
-    in applications) → hecate_bootstrap_sup starts mDNS responder
-    if configured.
- 6. Sup starts DHT child → hecate_dht:start_link(#{self_id => …}).
- 7. Sup starts bootstrap orchestrator child (first-boot) →
-    hecate_bootstrap:run/0 → returns peers.
- 8. hecate_station_bootstrap:ingest(Dht, Peers) → routing table
-    seeded.
- 9. Sup starts SWIM child →
-    hecate_swim join with seed peers from DHT.
-10. Sup starts overlay child (HyParView + Plumtree) per realm.
-11. Sup starts admin API (HTTP/8443 with client-cert auth).
-12. /status reports ready, /metrics exposes prometheus data.
+ 2. hecate_station_app:start/2 → hecate_station_sup:start_link/0
+    (empty children list initially).
+ 3. Config loaded via hecate_station_config:from_env/0.
+    Identity loaded or generated at `{data_dir}/identity.erl.bin'
+    (mode 0600, atomic tmp+rename).
+ 4. DHT child (hecate_dht) started via hecate_station_sup wrapper,
+    registered under the `hecate_dht' atom. self_id =
+    Ed25519 public key.
+ 5. Warm cache load: if cache_cfg present, hecate_station_cache:load/2
+    re-injects persisted entries into the DHT before the cascade runs.
+ 6. Bootstrap cascade — hecate_station_bootstrap_runner:run/1 →
+    hecate_bootstrap:run/0 → hecate_station_bootstrap:ingest/2.
+    `{error, no_tiers}' halts the sup with a clear reason.
+ 7. SWIM child (hecate_swim) started; seeded from the DHT via the
+    peer observer in step 9.
+ 8. Observer child (hecate_station_peer_observer). Single
+    controlling_pid for every peering worker. Routes SWIM frames
+    only; application-layer frames pass end-to-end between peers.
+ 9. Listener child (hecate_station_listener) — QUIC accept loop.
+    Each new_conn → macula_peering:accept with observer as
+    controlling_pid.
+10. Cache child (hecate_station_cache) — periodic flush, if
+    cache_cfg present.
+11. Rebootstrap child (hecate_station_rebootstrap) — partition
+    watchdog, if rebootstrap_cfg present.
+12. Admin sub-sup (hecate_station_admin_sup) — loopback HTTP API,
+    if admin_cfg present.
 ```
 
 Each Sup child:
-- has `restart => permanent' (or `transient' for bootstrap-once),
-- reports to the station's own health registry,
-- emits telemetry events at start/stop.
+- has `restart => permanent' (or `transient' for one-shot workers),
+- named children register under fixed atoms so the facade can
+  resolve them (`hecate_station:dht/0', `swim/0', etc.),
+- graceful shutdown via `hecate_station:shutdown/0,1' or OTP
+  `application:stop(hecate_station)' (publishes tombstone + flushes
+  cache before tearing the sup down).
 
 ---
 
@@ -138,17 +150,29 @@ Each Sup child:
 └── log/                    # Rotated logs (if not going to journald)
 ```
 
-### 4.2 Minimum `sys.config`
+### 4.2 Minimum `sys.config` (as shipped)
+
+Keys are the exact names `hecate_station_config:from_env/0' parses.
+`HECATE_STATION_*' env-var overrides are available for a subset
+(see `hecate_station_config' source for the list).
 
 ```erlang
 [
     {hecate_station, [
-        {listen_port, 7443},
-        {listen_if,   "::"},                         %% IPv6 any
-        {identity_path, "/fast/.hecate/station/identity.erl.bin"},
-        {cache_dir,   "/fast/.hecate/station/cache"},
-        {admin_api,   #{bind => "::1", port => 8443,
-                        ca_cert => "..."}}
+        %% Required.
+        {data_dir, "/fast/.hecate/station"},
+        {bind,     "::"},                            %% IPv6 any
+        {port,     7443},
+        {certfile, "/fast/.hecate/station/cert.pem"},
+        {keyfile,  "/fast/.hecate/station/key.pem"},
+        %% Optional.
+        {capabilities, 16#FF},
+        {cache, #{path            => "/fast/.hecate/station/cache",
+                  flush_period_ms => 30_000}},
+        {rebootstrap, #{min_viable_peers    => 8,
+                        check_period_ms     => 5_000,
+                        partition_window_ms => 60_000}},
+        {admin, #{bind => "127.0.0.1", port => 8443}}
     ]},
     {hecate_bootstrap, [
         {tiers, [
@@ -199,7 +223,7 @@ Each Sup child:
 
 ```
 -name hecate@{hostname}.macula.beam
--setcookie hecate-station-<realm-id-suffix>
+-setcookie hecate-station-<fleet-name>
 +K true
 +A 32
 +sbwt very_short
@@ -257,48 +281,43 @@ Log levels:
 
 ### 5.2 `/metrics' (Prometheus)
 
-Exposed by the admin API. Minimum metrics:
+**Deferred to Phase 7 hardening.** The admin API shipped in §8.6
+with four JSON endpoints (`/status', `/dht/stats',
+`/swim/members', `/bootstrap/rerun'); a text-format Prometheus
+exporter + counter registry lands alongside the Grafana dashboard.
+Sample metrics we will expose:
 
 ```
-hecate_station_up{node_id="…",realm_id="…"} 1
+hecate_station_up{node_id="…"} 1
 hecate_station_uptime_seconds{…} 12345
 hecate_bootstrap_cascade_duration_ms{…,winning_tier="a"} 421
-hecate_bootstrap_cascade_peers_total{…,winning_tier="a"} 20
 hecate_dht_size{…} 87
-hecate_dht_bucket_count{…} 18
-hecate_dht_admits_total{…} 203
-hecate_dht_rejects_total{…} 7
 hecate_swim_alive_members{…} 14
 hecate_swim_suspected_members{…} 1
 hecate_swim_confirmed_failed_members{…} 2
-hecate_overlay_active_view_size{…,realm_id="…"} 4
-hecate_overlay_plumtree_eager_peers{…,realm_id="…"} 4
 ```
 
-### 5.3 `/status' (JSON)
+Overlay / realm metrics move to the future `hecate-realm' /
+`macula-realm' service (they are not station concerns).
 
-Single endpoint for humans + dashboards:
+### 5.3 `/status' (JSON — as shipped)
 
 ```json
 {
-    "station": {
-        "node_id":    "…hex…",
-        "uptime_ms":  12345678,
-        "version":    "0.1.0-phase8",
-        "healthy":    true
-    },
-    "bootstrap": {
-        "last_run":       "2026-04-15T13:42:02Z",
-        "winning_tier":   "a",
-        "peers_ingested": 20
-    },
-    "dht":    { "size": 87, "buckets": 18, "siblings": 16 },
-    "swim":   { "alive": 14, "suspected": 1, "confirmed_failed": 2 },
-    "realms": [
-        { "id": "…", "active_view": 4, "eager_plumtree": 4 }
-    ]
+    "healthy":     true,
+    "node_id":     "…hex…",
+    "listen_addr": "127.0.0.1:7443",
+    "dht":         { "size": 87 },
+    "swim":        { "members": 14 },
+    "realms":      [],
+    "version":     "0.1.0-phase1"
 }
 ```
+
+The `realms' field stays in the response shape for operator-tool
+compatibility but always returns an empty list — stations are
+realm-agnostic infrastructure. Richer DHT + SWIM detail comes
+from `/dht/stats' and `/swim/members'.
 
 ### 5.4 Live shell access
 
@@ -332,11 +351,10 @@ hecate_dht:siblings(DhtPid).
 
 %% SWIM
 hecate_swim:members(SwimPid).
-
-%% Overlay
-hecate_overlay:active_view(Pid, RealmId).
-hecate_overlay:plumtree_peers(Pid, RealmId).
 ```
+
+(Overlay introspection is not a station concern — it lives in the
+future `hecate-realm' / `macula-realm' service.)
 
 ### 5.5 Telemetry events (emitted via `telemetry' library)
 
@@ -345,7 +363,6 @@ hecate_overlay:plumtree_peers(Pid, RealmId).
 - `[hecate, dht, observe]'
 - `[hecate, dht, lookup, start]' / `[…, stop]'
 - `[hecate, swim, state, change]'
-- `[hecate, overlay, view, change]'
 
 Observed by a per-station `telemetry_handler' that writes
 to logger + updates Prometheus gauges.

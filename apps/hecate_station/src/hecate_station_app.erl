@@ -26,10 +26,20 @@
 
 -include("hecate_station_cfg.hrl").
 
--export([start/2, stop/1]).
+-export([start/2, prep_stop/1, stop/1]).
 
 start(_StartType, _StartArgs) ->
     boot(hecate_station_sup:start_link()).
+
+%% @doc `application:stop(hecate_station)' calls `prep_stop/1' before
+%% the application master tears down the sup tree. We use the hook
+%% to publish the tombstone + flush the cache so a clean
+%% `application:stop/1' from an operator / release handler gives the
+%% same effect as `hecate_station:shutdown/0' — minus the sup
+%% teardown, which is the app master's job.
+prep_stop(State) ->
+    _ = hecate_station:prepare_shutdown(application_stop),
+    State.
 
 stop(_State) ->
     _ = hecate_station:forget_dial_opts(),
@@ -99,27 +109,9 @@ boot_listener(SupPid, Cfg, ObserverPid) ->
 
 on_listener_started(SupPid, _Cfg, _ObserverPid, {error, Reason}) ->
     halt_sup(SupPid, {listener_start_failed, Reason});
-on_listener_started(SupPid, Cfg, ObserverPid, {ok, _ListenerPid}) ->
+on_listener_started(SupPid, Cfg, _ObserverPid, {ok, _ListenerPid}) ->
     ok = hecate_station:remember_dial_opts(dial_template(Cfg)),
-    boot_realm_sup(SupPid, Cfg, ObserverPid).
-
-boot_realm_sup(SupPid, Cfg, ObserverPid) ->
-    on_realm_sup_started(SupPid, Cfg, ObserverPid,
-                         supervisor:start_child(SupPid, realm_sup_child())).
-
-on_realm_sup_started(SupPid, _Cfg, _ObserverPid, {error, Reason}) ->
-    halt_sup(SupPid, {realm_sup_start_failed, Reason});
-on_realm_sup_started(SupPid, Cfg, ObserverPid, {ok, _RealmSupPid}) ->
-    spawn_configured_realms(SupPid, Cfg, ObserverPid,
-                            Cfg#station_cfg.realms_cfg).
-
-spawn_configured_realms(SupPid, Cfg, _ObserverPid, []) ->
-    boot_cache(SupPid, Cfg);
-spawn_configured_realms(SupPid, Cfg, ObserverPid, [RealmCfg | Rest]) ->
-    case spawn_realm(Cfg, ObserverPid, RealmCfg) of
-        {ok, _RealmPid}  -> spawn_configured_realms(SupPid, Cfg, ObserverPid, Rest);
-        {error, Reason}  -> halt_sup(SupPid, {realm_start_failed, Reason})
-    end.
+    boot_cache(SupPid, Cfg).
 
 %%==================================================================
 %% Optional periodic children — cache + rebootstrap.
@@ -161,33 +153,11 @@ on_admin_started(SupPid, {error, Reason}) ->
 on_admin_started(SupPid, {ok, _AdminSupPid}) ->
     {ok, SupPid}.
 
-spawn_realm(#station_cfg{identity = Kp}, ObserverPid, RealmCfg) ->
-    RealmId = RealmCfg#realm_cfg.realm_id,
-    Opts = #{
-        realm_cfg => RealmCfg,
-        identity  => Kp,
-        send_fun  => realm_send_fun(ObserverPid)
-    },
-    on_realm_spawned(ObserverPid, RealmId,
-                     hecate_station_realm_sup:start_realm(Opts)).
-
-on_realm_spawned(ObserverPid, RealmId, {ok, RealmPid}) ->
-    ok = hecate_station_peer_observer:register_realm(ObserverPid,
-                                                     RealmId, RealmPid),
-    {ok, RealmPid};
-on_realm_spawned(_Observer, _RealmId, {error, _} = E) ->
-    E.
-
-%% The send_fun binds the observer pid; dispatcher closure routes
-%% each `{send, NodeId, Frame}` action through
-%% `hecate_station_peer_observer:send_to/3'.
-realm_send_fun(ObserverPid) ->
-    fun(NodeId, Frame) ->
-        hecate_station_peer_observer:send_to(ObserverPid, NodeId, Frame)
-    end.
-
-dial_template(#station_cfg{identity = Kp, realms = R, capabilities = C}) ->
-    #{identity => Kp, realms => R, capabilities => C}.
+%% Stations are realm-agnostic — the CONNECT handshake advertises no
+%% realm memberships. A future `hecate-realm' / `macula-realm' service
+%% dials the same peering layer with its own realms list.
+dial_template(#station_cfg{identity = Kp, capabilities = C}) ->
+    #{identity => Kp, realms => [], capabilities => C}.
 
 halt_sup(SupPid, Reason) ->
     _ = hecate_station:forget_dial_opts(),
@@ -225,16 +195,6 @@ swim_child(#station_cfg{identity = Kp}) ->
         shutdown => 5000,
         type     => worker,
         modules  => [hecate_swim]
-    }.
-
-realm_sup_child() ->
-    #{
-        id       => hecate_station_realm_sup,
-        start    => {hecate_station_realm_sup, start_link, []},
-        restart  => permanent,
-        shutdown => 10_000,
-        type     => supervisor,
-        modules  => [hecate_station_realm_sup]
     }.
 
 cache_child(DhtPid, CacheCfg) ->
@@ -283,8 +243,7 @@ observer_child(DhtPid, SwimPid) ->
 
 listener_child(#station_cfg{bind = Bind, port = Port,
                             certfile = Cert, keyfile = Key,
-                            identity = Kp, realms = R,
-                            capabilities = Caps},
+                            identity = Kp, capabilities = Caps},
                ObserverPid) ->
     Opts = #{
         bind         => Bind,
@@ -292,7 +251,10 @@ listener_child(#station_cfg{bind = Bind, port = Port,
         certfile     => Cert,
         keyfile      => Key,
         identity     => Kp,
-        realms       => R,
+        %% Stations advertise no realm memberships on the CONNECT
+        %% handshake — realm identity lives in the `hecate-realm'
+        %% / `macula-realm' service, not here.
+        realms       => [],
         capabilities => Caps,
         observer     => ObserverPid
     },

@@ -23,16 +23,13 @@
     port           :: inet:port_number(),
     certfile       :: file:name_all(),
     keyfile        :: file:name_all(),
-    %% Peering policy — realm ids this station advertises membership
-    %% of in the CONNECT handshake. `realms_cfg' below carries the
-    %% per-realm protocol configuration (overlay caps + plumtree
-    %% fan-out).
-    realms         = [] :: [macula_identity:pubkey()],
+    %% Peering capability bits advertised in the CONNECT handshake
+    %% (`macula_frame' feature negotiation). Stations are
+    %% realm-agnostic infrastructure per the railroad mental model —
+    %% realm identity, admission, and overlay belong to a separate
+    %% `hecate-realm' / `macula-realm' service — so no realm
+    %% membership lives here.
     capabilities   = 0  :: non_neg_integer(),
-    %% Per-realm overlay configuration. One entry per realm the
-    %% station participates in; each spawns a
-    %% `hecate_station_realm' child under `hecate_station_realm_sup'.
-    realms_cfg     = [] :: [realm_cfg()],
     %% Routing-table cache — persists the DHT contacts to disk so
     %% warm boots can seed the DHT before the cascade runs.
     cache_cfg      = undefined :: cache_cfg() | undefined,
@@ -55,8 +52,6 @@
     passive_view_size   = 20 :: pos_integer(),
     plumtree_fanout     = 3  :: pos_integer()
 }).
-
--type realm_cfg() :: #realm_cfg{}.
 
 -record(cache_cfg, {
     %% Directory the cache lives in. A single `routing-table.erl.bin'

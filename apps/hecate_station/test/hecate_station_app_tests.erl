@@ -47,53 +47,14 @@ happy_path_boots_full_runtime_test_() ->
                 {ok, SwimPid}     = hecate_station:swim(),
                 {ok, ObserverPid} = hecate_station:observer(),
                 {ok, ListenerPid} = hecate_station:listener(),
-                {ok, RealmSup}    = hecate_station:realm_sup(),
                 [?assert(is_process_alive(P))
-                 || P <- [DhtPid, SwimPid, ObserverPid,
-                          ListenerPid, RealmSup]],
+                 || P <- [DhtPid, SwimPid, ObserverPid, ListenerPid]],
                 ?assertEqual(3, hecate_dht:size(DhtPid)),
                 ?assertEqual([], hecate_swim:members(SwimPid)),
                 ?assertMatch({"127.0.0.1", _Port},
                              hecate_station:listen_addr()),
-                %% No realms configured → realm sup empty.
-                ?assertEqual([], hecate_station:realms()),
                 ok = cleanup_sup(Sup)
             after
-                rm_rf(Dir)
-            end
-        end
-    end}.
-
-%%==================================================================
-%% Realms in config — realm children spawned, registered with
-%% observer, addressable via hecate_station:realm/1.
-%%==================================================================
-
-configured_realms_spawn_children_test_() ->
-    {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
-        fun() ->
-            process_flag(trap_exit, true),
-            Dir   = make_tmpdir(),
-            Peers = hecate_station_stub_tier:stub_peers(1),
-            R1    = <<1:256>>,
-            R2    = <<2:256>>,
-            try
-                set_station_env(Dir),
-                set_bootstrap_tiers(Peers),
-                application:set_env(hecate_station, realms, [
-                    #{realm_id => R1},
-                    #{realm_id => R2, active_view_size => 3}
-                ]),
-                {ok, Sup} = hecate_station_app:start(normal, []),
-                ?assertEqual(2, length(hecate_station:realms())),
-                {ok, RealmPid1} = hecate_station:realm(R1),
-                {ok, RealmPid2} = hecate_station:realm(R2),
-                ?assertNotEqual(RealmPid1, RealmPid2),
-                ?assertEqual(R1, hecate_station_realm:realm_id(RealmPid1)),
-                ?assertEqual(R2, hecate_station_realm:realm_id(RealmPid2)),
-                ok = cleanup_sup(Sup)
-            after
-                application:unset_env(hecate_station, realms),
                 rm_rf(Dir)
             end
         end
@@ -130,38 +91,6 @@ cache_and_rebootstrap_children_start_when_configured_test_() ->
             after
                 application:unset_env(hecate_station, cache),
                 application:unset_env(hecate_station, rebootstrap),
-                rm_rf(Dir)
-            end
-        end
-    end}.
-
-realm_crash_does_not_affect_siblings_test_() ->
-    {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
-        fun() ->
-            process_flag(trap_exit, true),
-            Dir   = make_tmpdir(),
-            Peers = hecate_station_stub_tier:stub_peers(1),
-            R1    = <<11:256>>,
-            R2    = <<22:256>>,
-            try
-                set_station_env(Dir),
-                set_bootstrap_tiers(Peers),
-                application:set_env(hecate_station, realms, [
-                    #{realm_id => R1},
-                    #{realm_id => R2}
-                ]),
-                {ok, Sup} = hecate_station_app:start(normal, []),
-                {ok, R1Pid} = hecate_station:realm(R1),
-                {ok, R2PidBefore} = hecate_station:realm(R2),
-                %% Crash R1; sup's `transient' restart policy + intensity=5
-                %% brings it back; R2 stays live throughout.
-                exit(R1Pid, kill),
-                timer:sleep(100),
-                ?assertEqual({ok, R2PidBefore}, hecate_station:realm(R2)),
-                ?assert(is_process_alive(R2PidBefore)),
-                ok = cleanup_sup(Sup)
-            after
-                application:unset_env(hecate_station, realms),
                 rm_rf(Dir)
             end
         end
@@ -282,7 +211,7 @@ reset_env() ->
     process_flag(trap_exit, true),
     {ok, _} = application:ensure_all_started(macula_peering),
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
-               realms, capabilities, realms_cfg, cache, rebootstrap],
+               capabilities, cache, rebootstrap, admin],
     Boot    = [tiers, cascade_opts],
     Saved = [{S, station, application:get_env(hecate_station, S)} || S <- Station]
           ++ [{B, bootstrap, application:get_env(hecate_bootstrap, B)} || B <- Boot],
