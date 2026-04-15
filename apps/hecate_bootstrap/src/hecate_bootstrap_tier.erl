@@ -18,11 +18,12 @@
 -type tier() :: a | b | c | d | e.
 
 -type verified_peer() :: #{
-    node_id   := macula_identity:pubkey(),
-    record    := macula_record:record(),
-    addresses := [map()],
-    tier      := tier(),
-    via       := module()
+    node_id      := macula_identity:pubkey(),
+    record       := macula_record:record(),
+    addresses    := [map()],
+    tier         := tier(),
+    via          := module(),
+    gateway_tier => 3 | 4 | undefined
 }.
 
 -type probe_opts() :: map().

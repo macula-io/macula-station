@@ -68,9 +68,10 @@ peers_from_record(Record, Tier, Via) ->
 
 seed_to_peer(Record, Seed, Tier, Via) ->
     #{
-        node_id   => maps:get({text, <<"node_id">>},   Seed),
-        record    => Record,
-        addresses => maps:get({text, <<"addresses">>}, Seed, []),
-        tier      => Tier,
-        via       => Via
+        node_id      => maps:get({text, <<"node_id">>},   Seed),
+        record       => Record,
+        addresses    => maps:get({text, <<"addresses">>}, Seed, []),
+        tier         => Tier,
+        via          => Via,
+        gateway_tier => maps:get({text, <<"tier">>}, Seed, undefined)
     }.

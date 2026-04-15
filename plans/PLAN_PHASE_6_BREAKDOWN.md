@@ -428,6 +428,61 @@ shutdowns without killing the test process.
 **State of green (post-6.9):** 656 station eunit / 31 station CT /
 xref / dialyzer clean.
 
+## Session 6.10 — Bootstrap → DHT ingestion (shipped 2026-04-15)
+
+**Scope:** closes Phase 6's last-mile gap — the cascade returned
+verified peers but nothing consumed them. Now a one-call bridge
+feeds every cascade peer into the station's Kademlia routing table
+via `hecate_dht:observe/2', returning a summary of outcomes.
+
+**Architectural note:** the bridge module lives in `hecate_station'
+(not `hecate_bootstrap') because it joins two apps. Keeping
+`hecate_bootstrap' self-contained preserves its "library" nature
+and avoids forcing a `hecate_dht' dependency on callers who only
+want the cascade.
+
+**Files added:**
+- `hecate_station_bootstrap`:
+  - `to_entry_spec/1` — pure. Maps
+    `hecate_bootstrap_tier:verified_peer()' →
+    `hecate_dht_entry:spec()' with defaults for metadata the
+    cascade doesn't carry (`asn => 0', `country => <<"??">>').
+    Foundation-seed peers map `gateway_tier' 3|4 → `t3'; everyone
+    else defaults to `t0'.
+  - `ingest/2` — iterates peer list, calls
+    `hecate_dht:observe/2' per peer, classifies every response
+    (`admitted' / `touched' / `{replaced, _}' / `rejected') into
+    a running summary.
+
+**Upstream tweak:**
+- `hecate_bootstrap_foundation:peers_from_record/3` now surfaces
+  the seed's `tier' field as `gateway_tier` on the
+  verified_peer. `hecate_bootstrap_tier:verified_peer()' type
+  gains the optional `gateway_tier => 3 | 4 | undefined' key so
+  downstream consumers (like `to_entry_spec/1`) can distinguish
+  foundation gateways from leaf stations.
+
+**Tests — 12 new eunit:**
+- `to_entry_spec`: defaults for unknown metadata, address
+  preservation, gateway_tier 3 / 4 / undefined → correct DHT tier,
+  Tier B / E peers default to t0.
+- `ingest`: empty list → zero summary; five new peers all
+  `admitted`; duplicate peer `touched` on second observe; foundation
+  seed gateway_tier=4 results in DHT entry with tier=t3; peers from
+  every cascade tier ingest successfully.
+
+**State of green (post-6.10):** 668 station eunit / 31 station CT /
+xref / dialyzer clean.
+
+**Next usage pattern** (for station boot integration):
+```
+{ok, Peers}  = hecate_bootstrap:run(),
+{ok, Dht}    = hecate_dht:start_link(#{self_id => MyId}),
+_Summary     = hecate_station_bootstrap:ingest(Dht, Peers),
+%% DHT is now seeded; subsequent hecate_dht:lookup_nodes/2 walks
+%% start from these peers.
+```
+
 ## Session 6.7 — Acceptance suite (shipped 2026-04-15)
 
 **Scope:** phase6_SUITE expanded to exercise the full 5-tier cascade
