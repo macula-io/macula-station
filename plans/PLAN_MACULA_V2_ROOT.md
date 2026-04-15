@@ -155,6 +155,23 @@ The plan body is split across nine Parts. Authored in dependency order.
 
 Authoring order: 1 → 2 → 4 → 3 → 5 → 6 → 7 → 8 → 9. Part 4 (Lifecycle) before Part 3 (Discovery) because lifecycle invariants drive discovery design, not vice versa.
 
+### 6.1 Companion plans (operational + forward-planning)
+
+Authored during the build, not part of the Part 1–9 design plan —
+they capture what we do <em>with</em> the shipped design.
+
+| Plan | Purpose | Authored |
+|------|---------|----------|
+| [PLAN_PHASE_3_BREAKDOWN.md](PLAN_PHASE_3_BREAKDOWN.md) | S/Kademlia DHT session breakdown | 2026-04-14 (complete) |
+| [PLAN_PHASE_4_BREAKDOWN.md](PLAN_PHASE_4_BREAKDOWN.md) | Source routing + CALL state machine session breakdown | 2026-04-14 (complete) |
+| [PLAN_PHASE_5_BREAKDOWN.md](PLAN_PHASE_5_BREAKDOWN.md) | Intra-realm overlay session breakdown | 2026-04-14 (complete) |
+| [PLAN_PHASE_6_BREAKDOWN.md](PLAN_PHASE_6_BREAKDOWN.md) | Bootstrap cascade session breakdown — all 5 tiers + adapters + integration bridge | 2026-04-15 (complete) |
+| [PHASE_2_LIFEGUARD_GAPS.md](PHASE_2_LIFEGUARD_GAPS.md) | L1–L4 SWIM Lifeguard extensions (deferred) | 2026-04-14 |
+| [PLAN_STATION_INTEGRATION.md](PLAN_STATION_INTEGRATION.md) | Session-by-session sprint to wire the running station (identity + QUIC + bootstrap + DHT + SWIM + overlay + admin API); precedes Phase 7 | 2026-04-15 |
+| [PLAN_STATION_RUNBOOK.md](PLAN_STATION_RUNBOOK.md) | Operating + troubleshooting guide; fleet-as-test-harness scenarios on beam00–03 + relays + laptops | 2026-04-15 |
+| [PLAN_DEFERRED_WORK.md](PLAN_DEFERRED_WORK.md) | Single source of truth for everything intentionally not shipped yet — each item with blocker, owner, trigger | 2026-04-15 |
+| [THREAT_MODEL_MACULA.md](THREAT_MODEL_MACULA.md) | Security threat model referenced from Part 1 | 2026-04-14 |
+
 ---
 
 ## 7. Phase timeline
