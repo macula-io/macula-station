@@ -28,11 +28,14 @@
 %% Start wrappers — referenced from child specs built in
 %% `hecate_station_app'. They register the child pid under a fixed
 %% local name so the station API can find it (`hecate_station:dht/0',
-%% `hecate_station:swim/0').
--export([start_dht/1, start_swim/1]).
+%% `hecate_station:swim/0', `hecate_station:observer/0',
+%% `hecate_station:listener/0').
+-export([start_dht/1, start_swim/1, start_observer/1, start_listener/1]).
 
--define(DHT_NAME,  hecate_dht).
--define(SWIM_NAME, hecate_swim).
+-define(DHT_NAME,      hecate_dht).
+-define(SWIM_NAME,     hecate_swim).
+-define(OBSERVER_NAME, hecate_station_peer_observer).
+-define(LISTENER_NAME, hecate_station_listener).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -52,6 +55,18 @@ start_dht(Opts) ->
 -spec start_swim(hecate_swim:opts()) -> {ok, pid()} | {error, term()}.
 start_swim(Opts) ->
     register_result(hecate_swim:start_link(Opts), ?SWIM_NAME).
+
+-spec start_observer(hecate_station_peer_observer:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_observer(Opts) ->
+    register_result(hecate_station_peer_observer:start_link(Opts),
+                    ?OBSERVER_NAME).
+
+-spec start_listener(hecate_station_listener:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_listener(Opts) ->
+    register_result(hecate_station_listener:start_link(Opts),
+                    ?LISTENER_NAME).
 
 register_result({ok, Pid} = Ok, Name) ->
     ensure_registered(Name, Pid),

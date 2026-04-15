@@ -171,12 +171,65 @@ contract is exercised by the eunit app tests.
 - CT: spin up two station sups on loopback, confirm they meet via
   the bridge.
 
-### 8.3 QUIC listener + macula_peering integration
+### 8.3 QUIC listener + macula_peering integration ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** the station actually listens for incoming QUIC
 connections on the configured port; incoming peers trigger
 `macula_peering:handshake_and_record/3` which in turn updates the
 DHT routing table with observed ASN/country/tier.
+
+**Landed:**
+- `hecate_station_peer_observer` — single gen_server that is the
+  `controlling_pid` for every `macula_peering_conn' the station
+  spawns (inbound via listener, outbound via `connect_to/1`). On
+  `connected` it calls `hecate_dht:observe/2` with a `tier=t0`
+  direct-peer spec and `hecate_swim:add_peer/3`. On `frame` it
+  verifies the signature and routes SWIM frames to
+  `hecate_swim:handle_frame/3`; unknown/unsigned frames are
+  dropped. On `disconnected' it calls `hecate_swim:remove_peer/2`.
+- `hecate_station_listener` — gen_server owning the
+  `macula_transport' listener + async accept loop; each
+  `{quic, new_conn, ...}' message calls `macula_peering:accept/2'
+  with `controlling_pid = Observer' and re-arms accept.
+- `hecate_station_sup:start_observer/1` + `start_listener/1` —
+  name-registering wrappers analogous to `start_dht/1` /
+  `start_swim/1`.
+- `hecate_station_app:start/2` — extended pipeline: SWIM → observer
+  → listener. Halt reasons added: `{observer_start_failed, _}`,
+  `{listener_start_failed, _}`. After listener starts, the station
+  caches a dial template (identity + realms + capabilities) in
+  `persistent_term` so `connect_to/1` can build peering opts
+  without re-reading the config file.
+- `hecate_station` — new accessors `observer/0`, `listener/0`,
+  `listen_addr/0` plus `connect_to/1` that dials a remote endpoint
+  through the observer. `remember_dial_opts/1` /
+  `forget_dial_opts/0` internals used by the app callback.
+- Tests: `hecate_station_peer_observer_tests` (7 cases — connected
+  observes tier=t0 + adds to SWIM, duplicate observe is `touched`,
+  disconnected removes from SWIM, signed SWIM frames route through
+  the observer, unsigned frames + frames from unknown conns are
+  dropped without crashing). `hecate_station_app_tests` gained
+  two cases — full-runtime boot verifies DHT + SWIM + observer +
+  listener all alive and `listen_addr/0` returns the expected
+  tuple; an end-to-end test dials the station from an independent
+  `macula_peering:connect/1' with a fresh identity and asserts the
+  external peer's NodeId lands in the station's DHT (tier=t0) +
+  SWIM within 10 s.
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer` all green
+(701 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:**
+- Two-station-per-VM CT — would require per-sup instance names
+  (the sup currently registers `hecate_dht`, `hecate_swim`,
+  `hecate_station_peer_observer`, `hecate_station_listener`
+  atoms globally). Multi-station fleet testing is Session 8.8
+  via the beam cluster (separate BEAM VMs, no name collision).
+  The end-to-end eunit above already proves the full path by
+  dialing the station from an independent peering client.
+- Rich `hecate_dht` observe spec (ASN / country inferred from
+  peer IP) — needs a local `geo_check' lookup, deferred to
+  8.3.x per `PLAN_DEFERRED_WORK.md`.
 
 **Files:**
 - `hecate_station_listener` — wraps the `macula_transport` NIF

@@ -32,6 +32,7 @@ start(_StartType, _StartArgs) ->
     boot(hecate_station_sup:start_link()).
 
 stop(_State) ->
+    _ = hecate_station:forget_dial_opts(),
     ok.
 
 %%==================================================================
@@ -61,14 +62,40 @@ boot_dht(SupPid, Cfg, {ok, DhtPid}) ->
 boot_bootstrap(SupPid, _Cfg, {error, Reason}) ->
     halt_sup(SupPid, Reason);
 boot_bootstrap(SupPid, Cfg, {ok, _Summary}) ->
-    boot_swim(SupPid, supervisor:start_child(SupPid, swim_child(Cfg))).
+    boot_swim(SupPid, Cfg, supervisor:start_child(SupPid, swim_child(Cfg))).
 
-boot_swim(SupPid, {error, Reason}) ->
+boot_swim(SupPid, _Cfg, {error, Reason}) ->
     halt_sup(SupPid, {swim_start_failed, Reason});
-boot_swim(SupPid, {ok, _SwimPid}) ->
+boot_swim(SupPid, Cfg, {ok, SwimPid}) ->
+    boot_observer(SupPid, Cfg, SwimPid).
+
+boot_observer(SupPid, Cfg, SwimPid) ->
+    {ok, DhtPid} = hecate_station:dht(),
+    ObsSpec = observer_child(DhtPid, SwimPid),
+    on_observer_started(SupPid, Cfg,
+                        supervisor:start_child(SupPid, ObsSpec)).
+
+on_observer_started(SupPid, _Cfg, {error, Reason}) ->
+    halt_sup(SupPid, {observer_start_failed, Reason});
+on_observer_started(SupPid, Cfg, {ok, ObserverPid}) ->
+    boot_listener(SupPid, Cfg, ObserverPid).
+
+boot_listener(SupPid, Cfg, ObserverPid) ->
+    Spec = listener_child(Cfg, ObserverPid),
+    on_listener_started(SupPid, Cfg,
+                        supervisor:start_child(SupPid, Spec)).
+
+on_listener_started(SupPid, _Cfg, {error, Reason}) ->
+    halt_sup(SupPid, {listener_start_failed, Reason});
+on_listener_started(SupPid, Cfg, {ok, _ListenerPid}) ->
+    ok = hecate_station:remember_dial_opts(dial_template(Cfg)),
     {ok, SupPid}.
 
+dial_template(#station_cfg{identity = Kp, realms = R, capabilities = C}) ->
+    #{identity => Kp, realms => R, capabilities => C}.
+
 halt_sup(SupPid, Reason) ->
+    _ = hecate_station:forget_dial_opts(),
     _ = catch exit(SupPid, shutdown),
     {error, Reason}.
 
@@ -91,8 +118,9 @@ swim_child(#station_cfg{identity = Kp}) ->
     SwimOpts = #{
         self_node_id    => macula_identity:public(Kp),
         identity        => Kp,
-        %% Session 8.3 replaces this placeholder with the station
-        %% server / listener that actually reacts to SWIM events.
+        %% SWIM frames arrive via the peer observer; membership state
+        %% notifications are not routed anywhere yet (Session 8.6
+        %% plugs them into `/status'). Sup is a safe sink until then.
         controlling_pid => whereis(hecate_station_sup)
     },
     #{
@@ -102,4 +130,39 @@ swim_child(#station_cfg{identity = Kp}) ->
         shutdown => 5000,
         type     => worker,
         modules  => [hecate_swim]
+    }.
+
+observer_child(DhtPid, SwimPid) ->
+    Opts = #{dht => DhtPid, swim => SwimPid},
+    #{
+        id       => hecate_station_peer_observer,
+        start    => {hecate_station_sup, start_observer, [Opts]},
+        restart  => permanent,
+        shutdown => 5000,
+        type     => worker,
+        modules  => [hecate_station_peer_observer]
+    }.
+
+listener_child(#station_cfg{bind = Bind, port = Port,
+                            certfile = Cert, keyfile = Key,
+                            identity = Kp, realms = R,
+                            capabilities = Caps},
+               ObserverPid) ->
+    Opts = #{
+        bind         => Bind,
+        port         => Port,
+        certfile     => Cert,
+        keyfile      => Key,
+        identity     => Kp,
+        realms       => R,
+        capabilities => Caps,
+        observer     => ObserverPid
+    },
+    #{
+        id       => hecate_station_listener,
+        start    => {hecate_station_sup, start_listener, [Opts]},
+        restart  => permanent,
+        shutdown => 5000,
+        type     => worker,
+        modules  => [hecate_station_listener]
     }.
