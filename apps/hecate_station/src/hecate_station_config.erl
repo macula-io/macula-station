@@ -25,7 +25,8 @@
     enabled/0
 ]).
 
--export_type([opts/0, station_opts/0, station_cfg/0, realm_cfg/0]).
+-export_type([opts/0, station_opts/0, station_cfg/0, realm_cfg/0,
+              cache_cfg/0, rebootstrap_cfg/0]).
 
 -type opts() :: #{
     bind          => inet:ip_address() | string(),
@@ -125,15 +126,16 @@ continue_with_identity({error, _} = E) ->
 -spec build_cfg() -> {ok, station_cfg()} | {error, {bad_config, term()}}.
 build_cfg() ->
     promote(read_many([
-        {data_dir,      "HECATE_STATION_DATA_DIR",      str,          required},
-        {identity_file, "HECATE_STATION_IDENTITY_FILE", str,          optional},
-        {bind,          "HECATE_STATION_BIND",          str,          required},
-        {port,          "HECATE_STATION_PORT",          integer,      required},
-        {certfile,      "HECATE_STATION_CERTFILE",      str,          required},
-        {keyfile,       "HECATE_STATION_KEYFILE",       str,          required},
-        {realms,        "HECATE_STATION_REALMS",        realms,       {optional, []}},
-        {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,      {optional, 0}},
-        {realms_cfg,    undefined,                      realm_specs,  {optional, []}}
+        {data_dir,      "HECATE_STATION_DATA_DIR",      str,               required},
+        {identity_file, "HECATE_STATION_IDENTITY_FILE", str,               optional},
+        {bind,          "HECATE_STATION_BIND",          str,               required},
+        {port,          "HECATE_STATION_PORT",          integer,           required},
+        {certfile,      "HECATE_STATION_CERTFILE",      str,               required},
+        {keyfile,       "HECATE_STATION_KEYFILE",       str,               required},
+        {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,           {optional, 0}},
+        {realms,        undefined,                      realm_specs,       {optional, []}},
+        {cache,         undefined,                      cache_spec,        optional},
+        {rebootstrap,   undefined,                      rebootstrap_spec,  optional}
     ])).
 
 promote({ok, Map})          -> {ok, finalise_cfg_map(Map)};
@@ -187,9 +189,9 @@ parse_value(V, str,     _Src) when is_list(V);  is_binary(V)  -> {ok, V};
 parse_value(V, integer, _Src) when is_integer(V)              -> {ok, V};
 parse_value(V, integer, Src)  when is_list(V)                 -> parse_int(V, Src);
 parse_value(V, integer, Src)  when is_binary(V)               -> parse_int(binary_to_list(V), Src);
-parse_value(V, realms,  _Src) when is_list(V)                 -> decode_realms(V);
-parse_value(V, realms,  _Src) when is_binary(V)               -> decode_realms(binary_to_list(V));
 parse_value(V, realm_specs, Src) when is_list(V)              -> decode_realm_specs(V, Src);
+parse_value(V, cache_spec,  Src) when is_map(V)               -> decode_cache_spec(V, Src);
+parse_value(V, rebootstrap_spec, Src) when is_map(V)          -> decode_rebootstrap_spec(V, Src);
 parse_value(V, T,       Src)                                  -> {error, {bad_config, {parse, Src, T, V}}}.
 
 parse_int(Str, Src) ->
@@ -198,30 +200,6 @@ parse_int(Str, Src) ->
 parse_int_result({N, ""},       _Src) when is_integer(N) -> {ok, N};
 parse_int_result({N, Rest},      Src) when is_integer(N)  -> {error, {bad_config, {parse, Src, integer, Rest}}};
 parse_int_result({error, R},     Src)                     -> {error, {bad_config, {parse, Src, integer, R}}}.
-
-%% Realms: list of 32-byte binaries, or comma-separated hex strings.
-decode_realms([]) -> {ok, []};
-decode_realms([H | _] = L) when is_integer(H) ->
-    %% flat string of hex, comma-separated.
-    decode_realm_parts(string:split(L, ",", all), []);
-decode_realms(L) when is_list(L) ->
-    decode_realm_list(L, []).
-
-decode_realm_list([], Acc) -> {ok, lists:reverse(Acc)};
-decode_realm_list([H | T], Acc) ->
-    decode_realm_step(decode_one_realm(H), T, Acc).
-
-decode_realm_step({ok, R}, T, Acc)          -> decode_realm_list(T, [R | Acc]);
-decode_realm_step({error, _} = E, _T, _Acc) -> E.
-
-decode_realm_parts([], Acc) -> {ok, lists:reverse(Acc)};
-decode_realm_parts([""|T], Acc) -> decode_realm_parts(T, Acc);
-decode_realm_parts([H|T], Acc)  ->
-    decode_realm_step(decode_one_realm(H), T, Acc).
-
-decode_one_realm(B) when is_binary(B), byte_size(B) =:= 32 -> {ok, B};
-decode_one_realm(L) when is_list(L), length(L) =:= 64      -> decode_hex(L, <<>>);
-decode_one_realm(V) -> {error, {bad_config, {realm, V}}}.
 
 %% Map → #realm_cfg{} — one entry per configured realm.
 decode_realm_specs(Specs, Src) ->
@@ -248,36 +226,40 @@ decode_realm_spec(#{realm_id := Id} = Spec, _Src)
 decode_realm_spec(Spec, Src) ->
     {error, {bad_config, {parse, Src, realm_specs, Spec}}}.
 
-%% Pair-at-a-time hex decode. Returns {ok, <<_:256>>} | {error, _}.
-decode_hex([], Acc) when byte_size(Acc) =:= 32 -> {ok, Acc};
-decode_hex([A, B | Rest], Acc) ->
-    decode_hex_step(nibble(A), nibble(B), Rest, Acc);
-decode_hex(_, _) ->
-    {error, {bad_config, bad_hex}}.
+decode_cache_spec(#{path := Path} = M, _Src) ->
+    {ok, #cache_cfg{
+        path            = Path,
+        flush_period_ms = maps:get(flush_period_ms, M, 30_000)
+     }};
+decode_cache_spec(M, Src) ->
+    {error, {bad_config, {parse, Src, cache_spec, M}}}.
 
-decode_hex_step({ok, H}, {ok, L}, Rest, Acc) ->
-    decode_hex(Rest, <<Acc/binary, (H bsl 4 bor L)>>);
-decode_hex_step(_, _, _, _) ->
-    {error, {bad_config, bad_hex}}.
-
-nibble(C) when C >= $0, C =< $9 -> {ok, C - $0};
-nibble(C) when C >= $a, C =< $f -> {ok, C - $a + 10};
-nibble(C) when C >= $A, C =< $F -> {ok, C - $A + 10};
-nibble(_)                       -> error.
+decode_rebootstrap_spec(M, _Src) when is_map(M) ->
+    {ok, #rebootstrap_cfg{
+        min_viable_peers    = maps:get(min_viable_peers,    M, 8),
+        check_period_ms     = maps:get(check_period_ms,     M, 5_000),
+        partition_window_ms = maps:get(partition_window_ms, M, 60_000)
+     }}.
 
 finalise_cfg_map(Map0) ->
-    DataDir = maps:get(data_dir, Map0),
-    Map     = ensure_identity_file(Map0, DataDir),
+    DataDir    = maps:get(data_dir, Map0),
+    Map        = ensure_identity_file(Map0, DataDir),
+    RealmsCfg  = maps:get(realms, Map, []),
     #station_cfg{
-        data_dir      = DataDir,
-        identity_file = maps:get(identity_file, Map),
-        bind          = maps:get(bind, Map),
-        port          = maps:get(port, Map),
-        certfile      = maps:get(certfile, Map),
-        keyfile       = maps:get(keyfile, Map),
-        realms        = maps:get(realms, Map, []),
-        capabilities  = maps:get(capabilities, Map, 0),
-        realms_cfg    = maps:get(realms_cfg, Map, [])
+        data_dir         = DataDir,
+        identity_file    = maps:get(identity_file, Map),
+        bind             = maps:get(bind, Map),
+        port             = maps:get(port, Map),
+        certfile         = maps:get(certfile, Map),
+        keyfile          = maps:get(keyfile, Map),
+        %% Derive the flat pubkey list for the CONNECT handshake
+        %% from the per-realm config rather than asking the operator
+        %% to repeat themselves.
+        realms           = [R#realm_cfg.realm_id || R <- RealmsCfg],
+        capabilities     = maps:get(capabilities, Map, 0),
+        realms_cfg       = RealmsCfg,
+        cache_cfg        = maps:get(cache, Map, undefined),
+        rebootstrap_cfg  = maps:get(rebootstrap, Map, undefined)
     }.
 
 ensure_identity_file(#{identity_file := _} = Map, _DataDir) -> Map;

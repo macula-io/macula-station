@@ -30,12 +30,15 @@
 %% local name so the station API can find it (`hecate_station:dht/0',
 %% `hecate_station:swim/0', `hecate_station:observer/0',
 %% `hecate_station:listener/0').
--export([start_dht/1, start_swim/1, start_observer/1, start_listener/1]).
+-export([start_dht/1, start_swim/1, start_observer/1, start_listener/1,
+         start_cache/1, start_rebootstrap/1]).
 
--define(DHT_NAME,      hecate_dht).
--define(SWIM_NAME,     hecate_swim).
--define(OBSERVER_NAME, hecate_station_peer_observer).
--define(LISTENER_NAME, hecate_station_listener).
+-define(DHT_NAME,         hecate_dht).
+-define(SWIM_NAME,        hecate_swim).
+-define(OBSERVER_NAME,    hecate_station_peer_observer).
+-define(LISTENER_NAME,    hecate_station_listener).
+-define(CACHE_NAME,       hecate_station_cache).
+-define(REBOOTSTRAP_NAME, hecate_station_rebootstrap).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -67,6 +70,17 @@ start_observer(Opts) ->
 start_listener(Opts) ->
     register_result(hecate_station_listener:start_link(Opts),
                     ?LISTENER_NAME).
+
+-spec start_cache(hecate_station_cache:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_cache(Opts) ->
+    register_result(hecate_station_cache:start_link(Opts), ?CACHE_NAME).
+
+-spec start_rebootstrap(hecate_station_rebootstrap:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_rebootstrap(Opts) ->
+    register_result(hecate_station_rebootstrap:start_link(Opts),
+                    ?REBOOTSTRAP_NAME).
 
 register_result({ok, Pid} = Ok, Name) ->
     ensure_registered(Name, Pid),

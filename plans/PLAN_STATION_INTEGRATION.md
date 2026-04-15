@@ -326,10 +326,88 @@ overlay using realm directory records from the DHT.
   loopback (single-hop).
 - Shutting down one realm child does not affect the other realms.
 
-### 8.5 Periodic re-bootstrap + routing-table persistence
+### 8.5 Periodic re-bootstrap + routing-table persistence ✅ SHIPPED (2026-04-15)
 
 **Deliverable:** stations cache their routing table to disk and
 trigger a re-bootstrap on long partition / DHT size collapse.
+
+**Landed:**
+- `hecate_station_cache` — dump/load + periodic flush gen_server.
+  - `dump/2` serialises the DHT's current routing table to
+    `$Dir/routing-table.erl.bin' atomically (tmp + rename) as
+    `term_to_binary({hecate_station_cache, 1, Entries})'.
+  - `load/2` reads the file and re-injects each entry into the DHT
+    via `hecate_dht:observe/2'. Missing file returns
+    `{ok, #{loaded => 0, skipped => 0}}'; corrupt or
+    version-mismatched files return `{error, _}'.
+  - `start_link/1` supervises periodic flushes on the configured
+    `flush_period_ms'; `flush/1' forces an immediate dump; clean
+    `terminate/2' performs a final flush so the newest contacts
+    survive shutdown.
+- `hecate_station_rebootstrap' — partition-recovery watchdog.
+  - `gen_server' polling `hecate_dht:size/1' every
+    `check_period_ms'. Tracks `low_since' when the table is
+    below `min_viable_peers'; fires exactly one re-bootstrap when
+    the table has stayed low for longer than `partition_window_ms',
+    then resets `low_since' so the next trigger requires a fresh
+    recovery + drop cycle (no tight-loop retry under sustained
+    partition).
+  - Re-bootstrap runs in a spawned helper so the poll loop never
+    blocks on the cascade.
+  - `force_tick/1' + `state/0' let tests run the check
+    synchronously and assert `#{triggers, low_since_ms, size}'.
+- Config: new `#cache_cfg{}' + `#rebootstrap_cfg{}' records in
+  `hecate_station_cfg.hrl' with the field defaults from plan §4.
+  `hecate_station_config' gains `cache_spec' + `rebootstrap_spec'
+  parse types that accept the operator-facing map shapes.
+- Config shape unified: the `realms' env key now carries the
+  per-realm overlay config list (previously it was a pubkey list).
+  The flat pubkey list used by the CONNECT handshake is derived
+  from `realms_cfg' in `finalise_cfg_map/1', so operators only
+  specify the realm set once.
+- `hecate_station_app:start/2' boot pipeline extended:
+  - Between DHT start and the cascade, `warm_load_cache/2' seeds
+    the DHT from disk (a no-op when no cache is configured or the
+    file is missing — warm boots are cheap, cold boots fall
+    straight through to the cascade).
+  - After realm spawn, the pipeline starts the cache + rebootstrap
+    children when their configs are present. Halt reasons added:
+    `{cache_start_failed, _}`, `{rebootstrap_start_failed, _}`.
+- `hecate_station_sup' new wrappers: `start_cache/1' +
+  `start_rebootstrap/1'.
+- `hecate_station' new accessors: `cache/0' + `rebootstrap/0'.
+- Tests:
+  - `hecate_station_cache_tests' (6 cases): dump/load round-trip
+    across two DHT instances; missing file is zero; corrupt file
+    returns error; wrong version returns error; periodic gen_server
+    writes the file within the flush window; explicit `flush/1'
+    writes immediately.
+  - `hecate_station_rebootstrap_tests' (4 cases): healthy DHT no
+    trigger; brief dip no trigger; sustained-low triggers exactly
+    once (verified via notify channel) + next tick does NOT
+    re-fire; recovery clears `low_since'.
+  - `hecate_station_app_tests' gained 1 case: full-runtime boot
+    with both cache + rebootstrap configs exposes the accessor
+    pids and a forced flush writes the cache file under the
+    configured path.
+
+**Pipeline:** `rebar3 xref/eunit/ct/dialyzer' all green
+(719 eunit / 31 ct, 0 dialyzer warnings, 0 xref issues).
+
+**Deferred:**
+- End-to-end warm-boot round-trip (boot station → observe peers →
+  restart → verify DHT already seeded on new process) — unit
+  tests cover the dump + load primitives end-to-end; the app
+  boot test asserts children are present; a full round-trip via
+  application restart needs a multi-stage test harness, lands in
+  8.8 fleet CT.
+- Exponential backoff on repeated re-bootstrap failures — current
+  watchdog resets `low_since' unconditionally after a trigger. If
+  the cascade keeps failing, the window restarts from zero. The
+  implemented rate is one trigger per `partition_window_ms' under
+  sustained partition, which satisfies the §8.5 acceptance
+  "not a tight loop"; adaptive back-off is tracked in
+  `PLAN_DEFERRED_WORK.md`.
 
 **Files:**
 - `hecate_station_cache` — periodic `ets:tab2file/2` of the

@@ -57,7 +57,19 @@ boot_cfg(SupPid, {ok, Cfg}) ->
 boot_dht(SupPid, _Cfg, {error, Reason}) ->
     halt_sup(SupPid, {dht_start_failed, Reason});
 boot_dht(SupPid, Cfg, {ok, DhtPid}) ->
+    %% Warm-boot optimisation: seed the DHT from the on-disk cache
+    %% BEFORE the cascade runs (PLAN_STATION_INTEGRATION §8.5
+    %% acceptance). A missing cache file is not an error — the
+    %% cascade simply provides every peer. A corrupt cache is logged
+    %% and ignored.
+    _ = warm_load_cache(Cfg, DhtPid),
     boot_bootstrap(SupPid, Cfg, hecate_station_bootstrap_runner:run(DhtPid)).
+
+warm_load_cache(#station_cfg{cache_cfg = undefined}, _Dht) ->
+    ok;
+warm_load_cache(#station_cfg{cache_cfg = #cache_cfg{path = Path}}, Dht) ->
+    _ = hecate_station_cache:load(Dht, Path),
+    ok.
 
 boot_bootstrap(SupPid, _Cfg, {error, Reason}) ->
     halt_sup(SupPid, Reason);
@@ -101,13 +113,41 @@ on_realm_sup_started(SupPid, Cfg, ObserverPid, {ok, _RealmSupPid}) ->
     spawn_configured_realms(SupPid, Cfg, ObserverPid,
                             Cfg#station_cfg.realms_cfg).
 
-spawn_configured_realms(SupPid, _Cfg, _ObserverPid, []) ->
-    {ok, SupPid};
+spawn_configured_realms(SupPid, Cfg, _ObserverPid, []) ->
+    boot_cache(SupPid, Cfg);
 spawn_configured_realms(SupPid, Cfg, ObserverPid, [RealmCfg | Rest]) ->
     case spawn_realm(Cfg, ObserverPid, RealmCfg) of
         {ok, _RealmPid}  -> spawn_configured_realms(SupPid, Cfg, ObserverPid, Rest);
         {error, Reason}  -> halt_sup(SupPid, {realm_start_failed, Reason})
     end.
+
+%%==================================================================
+%% Optional periodic children — cache + rebootstrap.
+%%==================================================================
+
+boot_cache(SupPid, #station_cfg{cache_cfg = undefined} = Cfg) ->
+    boot_rebootstrap(SupPid, Cfg);
+boot_cache(SupPid, #station_cfg{cache_cfg = CacheCfg} = Cfg) ->
+    {ok, DhtPid} = hecate_station:dht(),
+    Spec = cache_child(DhtPid, CacheCfg),
+    on_cache_started(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
+
+on_cache_started(SupPid, _Cfg, {error, Reason}) ->
+    halt_sup(SupPid, {cache_start_failed, Reason});
+on_cache_started(SupPid, Cfg, {ok, _CachePid}) ->
+    boot_rebootstrap(SupPid, Cfg).
+
+boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = undefined}) ->
+    {ok, SupPid};
+boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = RbCfg}) ->
+    {ok, DhtPid} = hecate_station:dht(),
+    Spec = rebootstrap_child(DhtPid, RbCfg),
+    on_rebootstrap_started(SupPid, supervisor:start_child(SupPid, Spec)).
+
+on_rebootstrap_started(SupPid, {error, Reason}) ->
+    halt_sup(SupPid, {rebootstrap_start_failed, Reason});
+on_rebootstrap_started(SupPid, {ok, _RbPid}) ->
+    {ok, SupPid}.
 
 spawn_realm(#station_cfg{identity = Kp}, ObserverPid, RealmCfg) ->
     RealmId = RealmCfg#realm_cfg.realm_id,
@@ -183,6 +223,28 @@ realm_sup_child() ->
         shutdown => 10_000,
         type     => supervisor,
         modules  => [hecate_station_realm_sup]
+    }.
+
+cache_child(DhtPid, CacheCfg) ->
+    Opts = #{dht => DhtPid, cache => CacheCfg},
+    #{
+        id       => hecate_station_cache,
+        start    => {hecate_station_sup, start_cache, [Opts]},
+        restart  => permanent,
+        shutdown => 5000,
+        type     => worker,
+        modules  => [hecate_station_cache]
+    }.
+
+rebootstrap_child(DhtPid, RbCfg) ->
+    Opts = #{dht => DhtPid, rebootstrap => RbCfg},
+    #{
+        id       => hecate_station_rebootstrap,
+        start    => {hecate_station_sup, start_rebootstrap, [Opts]},
+        restart  => permanent,
+        shutdown => 5000,
+        type     => worker,
+        modules  => [hecate_station_rebootstrap]
     }.
 
 observer_child(DhtPid, SwimPid) ->

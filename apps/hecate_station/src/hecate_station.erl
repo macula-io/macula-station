@@ -28,6 +28,8 @@
     realm_sup/0,
     realms/0,
     realm/1,
+    cache/0,
+    rebootstrap/0,
     %% Internal — called by `hecate_station_app' during boot/teardown.
     remember_dial_opts/1,
     forget_dial_opts/0
@@ -118,6 +120,14 @@ lookup_realm(_, _) ->
 
 map_lookup({ok, Pid})    -> {ok, Pid};
 map_lookup(error)        -> {error, not_found}.
+
+%% @doc Pid of the routing-table cache gen_server (if configured).
+-spec cache() -> {ok, pid()} | {error, not_started}.
+cache() -> resolve(hecate_station_cache).
+
+%% @doc Pid of the re-bootstrap watchdog (if configured).
+-spec rebootstrap() -> {ok, pid()} | {error, not_started}.
+rebootstrap() -> resolve(hecate_station_rebootstrap).
 
 %% @doc `{Bind, Port}' the listener is bound to. Errors if the app is
 %% not booted.

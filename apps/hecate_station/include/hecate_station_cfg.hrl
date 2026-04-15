@@ -32,7 +32,14 @@
     %% Per-realm overlay configuration. One entry per realm the
     %% station participates in; each spawns a
     %% `hecate_station_realm' child under `hecate_station_realm_sup'.
-    realms_cfg     = [] :: [realm_cfg()]
+    realms_cfg     = [] :: [realm_cfg()],
+    %% Routing-table cache — persists the DHT contacts to disk so
+    %% warm boots can seed the DHT before the cascade runs.
+    cache_cfg      = undefined :: cache_cfg() | undefined,
+    %% Partition-recovery watchdog — triggers `hecate_bootstrap:run/0'
+    %% again when the DHT size stays below a floor for a sustained
+    %% window.
+    rebootstrap_cfg = undefined :: rebootstrap_cfg() | undefined
 }).
 
 %% Matches the shape of `application:get_env(hecate_station, realms_cfg, [])'
@@ -46,5 +53,22 @@
 }).
 
 -type realm_cfg() :: #realm_cfg{}.
+
+-record(cache_cfg, {
+    %% Directory the cache lives in. A single `routing-table.erl.bin'
+    %% file is written under this path.
+    path              :: file:name_all(),
+    flush_period_ms   = 30_000 :: pos_integer()
+}).
+
+-type cache_cfg() :: #cache_cfg{}.
+
+-record(rebootstrap_cfg, {
+    min_viable_peers    = 8      :: pos_integer(),
+    check_period_ms     = 5_000  :: pos_integer(),
+    partition_window_ms = 60_000 :: pos_integer()
+}).
+
+-type rebootstrap_cfg() :: #rebootstrap_cfg{}.
 
 -endif.

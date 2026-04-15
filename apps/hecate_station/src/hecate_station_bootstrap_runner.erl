@@ -24,7 +24,7 @@
 
 -export([run/1, run/2]).
 
--export_type([result/0]).
+-export_type([result/0, cfg/0]).
 
 -type cfg() :: hecate_bootstrap:station_config() | from_app_env.
 

@@ -80,7 +80,7 @@ configured_realms_spawn_children_test_() ->
             try
                 set_station_env(Dir),
                 set_bootstrap_tiers(Peers),
-                application:set_env(hecate_station, realms_cfg, [
+                application:set_env(hecate_station, realms, [
                     #{realm_id => R1},
                     #{realm_id => R2, active_view_size => 3}
                 ]),
@@ -93,7 +93,43 @@ configured_realms_spawn_children_test_() ->
                 ?assertEqual(R2, hecate_station_realm:realm_id(RealmPid2)),
                 ok = cleanup_sup(Sup)
             after
-                application:unset_env(hecate_station, realms_cfg),
+                application:unset_env(hecate_station, realms),
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+cache_and_rebootstrap_children_start_when_configured_test_() ->
+    {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            process_flag(trap_exit, true),
+            Dir   = make_tmpdir(),
+            Peers = hecate_station_stub_tier:stub_peers(1),
+            try
+                set_station_env(Dir),
+                set_bootstrap_tiers(Peers),
+                application:set_env(hecate_station, cache, #{
+                    path => filename:join(Dir, "cache"),
+                    flush_period_ms => 60_000
+                }),
+                application:set_env(hecate_station, rebootstrap, #{
+                    min_viable_peers => 8,
+                    check_period_ms => 60_000,
+                    partition_window_ms => 60_000
+                }),
+                {ok, Sup} = hecate_station_app:start(normal, []),
+                {ok, CachePid} = hecate_station:cache(),
+                {ok, RbPid}    = hecate_station:rebootstrap(),
+                ?assert(is_process_alive(CachePid)),
+                ?assert(is_process_alive(RbPid)),
+                %% Force a flush; file should appear under the cache dir.
+                ok = hecate_station_cache:flush(CachePid),
+                ?assert(filelib:is_regular(hecate_station_cache:path(
+                    filename:join(Dir, "cache")))),
+                ok = cleanup_sup(Sup)
+            after
+                application:unset_env(hecate_station, cache),
+                application:unset_env(hecate_station, rebootstrap),
                 rm_rf(Dir)
             end
         end
@@ -110,7 +146,7 @@ realm_crash_does_not_affect_siblings_test_() ->
             try
                 set_station_env(Dir),
                 set_bootstrap_tiers(Peers),
-                application:set_env(hecate_station, realms_cfg, [
+                application:set_env(hecate_station, realms, [
                     #{realm_id => R1},
                     #{realm_id => R2}
                 ]),
@@ -125,7 +161,7 @@ realm_crash_does_not_affect_siblings_test_() ->
                 ?assert(is_process_alive(R2PidBefore)),
                 ok = cleanup_sup(Sup)
             after
-                application:unset_env(hecate_station, realms_cfg),
+                application:unset_env(hecate_station, realms),
                 rm_rf(Dir)
             end
         end
@@ -246,7 +282,7 @@ reset_env() ->
     process_flag(trap_exit, true),
     {ok, _} = application:ensure_all_started(macula_peering),
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
-               realms, capabilities],
+               realms, capabilities, realms_cfg, cache, rebootstrap],
     Boot    = [tiers, cascade_opts],
     Saved = [{S, station, application:get_env(hecate_station, S)} || S <- Station]
           ++ [{B, bootstrap, application:get_env(hecate_bootstrap, B)} || B <- Boot],
