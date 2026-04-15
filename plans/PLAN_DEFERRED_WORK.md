@@ -38,7 +38,7 @@ we can ship when convenient.
 |---|------|-------|---------|-------|---------|
 | 6.3.5 | IPv6 anycast Tier-A probe (Part 5 §4.4) — parallel QUIC handshake against the foundation's `/48' anycast prefix; reachable endpoints feed Tier A as extra resolver targets | new `hecate_bootstrap_anycast` | Foundation must allocate + RPKI-sign a `/48' and announce from ≥2 custodians' ASNs | Foundation ops | "Start 6.3.5 — anycast probe" (after foundation confirms prefix) |
 | 6.3.6 | Gated DoH CT against real resolvers (Cloudflare / Quad9 / Mullvad) | `hecate_bootstrap_doh_SUITE` | Foundation must publish signed PKARR records under `_pkarr.<b32>.macula.io' zone | Foundation ops | "Start 6.3.6 — gated DoH" (after PKARR zone live) |
-| 6.4.y | Link-local scope-id + multi-interface mDNS fan-out (Part 5 §5) | `hecate_bootstrap_mdns_udp` extension, per-interface supervisor | None (unblocked) | Us | "Start 6.4.y — mDNS scope-id" |
+| 6.4.y | Link-local scope-id + multi-interface mDNS fan-out (Part 5 §5) | Probe fan-out + interface enumeration shipped 2026-04-15 (Sprint C). Remaining: per-interface responder sup + real-network validation against a multi-NIC host. | None (unblocked) | Us | "Finish 6.4.y — responder fan-out" |
 | 6.5.x | Real Mainline DHT UDP client (BEP 5 + BEP 44 `get`) | new `hecate_bootstrap_dht_udp` | None (unblocked) — 500-1000 LOC sub-project; choose Erlang-native or Rust NIF | Us | "Start 6.5.x — BT-DHT UDP client" |
 | 6.6.y | Gated CT against real Electrum/Esplora + Infura/Ankr | `hecate_bootstrap_chain_SUITE` | Foundation must publish Bitcoin OP_RETURN + Ethereum `AnchorPublished' events on testnet | Foundation ops | "Start 6.6.y — gated chain CT" (after testnet anchors published) |
 
