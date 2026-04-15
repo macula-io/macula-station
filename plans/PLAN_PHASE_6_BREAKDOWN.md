@@ -384,3 +384,38 @@ Remaining work (gated network suites + real transports):
 - 6.5.x real Kademlia UDP BT-DHT client
 - 6.6.x real Bitcoin + Ethereum chain adapters
 
+## Session 6.8 — `hecate_bootstrap_foundation` refactor (shipped 2026-04-15)
+
+**Scope:** consolidate the "safe decode → verify foundation → emit
+peers" trust boundary that Tiers A, C, and D were each hand-rolling
+independently. Reduces duplicated code and establishes a single
+trust-boundary surface so future real-network adapters plug into
+one well-tested helper.
+
+**Files added:**
+- `hecate_bootstrap_foundation`:
+  - `decode_record_bytes/1` — trust-boundary `macula_record:decode'
+    with `try/catch' normalising CBOR crashes to
+    `{error, bad_record_bytes}'.
+  - `peers_from_record/3` — walks a verified
+    `foundation_seed_list' record's seeds, stamping each with the
+    caller's cascade `tier' atom and `via' module; returns `[]'
+    for non-seed-list record types (defensive).
+
+**Refactored callers:**
+- `hecate_bootstrap_tier_a` — `decode_and_verify/2' now delegates
+  to `foundation:decode_record_bytes/1'; `peers_from/1' is now a
+  one-liner forwarding to `foundation:peers_from_record/3'. Tier A's
+  storage-key integrity check remains tier-local.
+- `hecate_bootstrap_tier_c` — same pattern; BEP 44 signature + DHT
+  pubkey-match checks remain tier-local.
+- `hecate_bootstrap_tier_d` — same pattern.
+
+**Tests:** 12 new eunit for the helper (round-trip, garbage variants,
+malformed CBOR, non-macula CBOR envelope, peer stamping, seed field
+preservation, empty seed list, non-seed-list record types, address
+preservation). All existing tier tests pass unchanged.
+
+**State of green (post-6.8):** 618 station eunit / 30 station CT /
+xref / dialyzer clean.
+

@@ -106,9 +106,12 @@ fetch_and_verify(Mod, Pubkey, Timeout) ->
         fun(Item)   -> check_pubkey(Item, Pubkey) end,
         fun(Item)   -> check_bep44(Item) end,
         fun(Item)   -> extract_record_bytes(Item) end,
-        fun(Bytes)  -> decode_record(Bytes) end,
+        fun(Bytes)  -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
         fun(Record) -> macula_foundation:verify_record(Record) end,
-        fun(Record) -> {ok, peers(Record)} end
+        fun(Record) ->
+                {ok, hecate_bootstrap_foundation:peers_from_record(
+                       Record, c, ?MODULE)}
+        end
     ]).
 
 check_pubkey(#{pubkey := Pk} = Item, Pk) -> {ok, Item};
@@ -137,32 +140,6 @@ collapse(Strings) ->
 
 nonempty(<<>>) -> {error, empty_pkarr};
 nonempty(Bin)  -> {ok, Bin}.
-
-%% DHT item bytes are from a remote trust boundary: CBOR crashes
-%% rather than `{error, _}' on garbage, so catch here.
-decode_record(Bytes) ->
-    try macula_record:decode(Bytes) of
-        {ok, _} = Ok   -> Ok;
-        {error, _} = E -> E
-    catch
-        _:_ -> {error, bad_record_bytes}
-    end.
-
-peers(Record) ->
-    Payload = macula_record:payload(Record),
-    Seeds   = maps:get({text, <<"seeds">>}, Payload, []),
-    [seed_to_peer(Record, S) || S <- Seeds].
-
-seed_to_peer(Record, Seed) ->
-    NodeId = maps:get({text, <<"node_id">>}, Seed),
-    Addrs  = maps:get({text, <<"addresses">>}, Seed, []),
-    #{
-        node_id   => NodeId,
-        record    => Record,
-        addresses => Addrs,
-        tier      => c,
-        via       => ?MODULE
-    }.
 
 %%------------------------------------------------------------------
 %% Result chain

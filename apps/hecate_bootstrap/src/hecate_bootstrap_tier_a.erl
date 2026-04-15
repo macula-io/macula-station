@@ -143,20 +143,10 @@ verify_and_emit(Pk, Bytes, Rest) ->
 
 decode_and_verify(Pk, Bytes) ->
     chain([
-        fun() -> safe_decode(Bytes) end,
+        fun() -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
         fun(R) -> check_storage_key(Pk, R) end,
         fun(R) -> macula_foundation:verify_record(R) end
     ]).
-
-%% Resolver bytes are from a remote trust boundary: CBOR crashes
-%% rather than `{error, _}' on garbage, so catch here.
-safe_decode(Bytes) ->
-    try macula_record:decode(Bytes) of
-        {ok, _} = Ok   -> Ok;
-        {error, _} = E -> E
-    catch
-        _:_ -> {error, bad_record_bytes}
-    end.
 
 %% Sequential `>>=' over `{ok, _} | {error, _}'.
 chain([Step | Rest]) -> chain(Step(), Rest).
@@ -174,24 +164,11 @@ check_storage_key(Pk, Record) ->
     end.
 
 %%------------------------------------------------------------------
-%% Peer extraction
+%% Peer extraction (delegates to the shared foundation helper)
 %%------------------------------------------------------------------
 
 peers_from(Record) ->
-    Payload = macula_record:payload(Record),
-    Seeds   = maps:get({text, <<"seeds">>}, Payload, []),
-    [seed_to_peer(Record, S) || S <- Seeds].
-
-seed_to_peer(Record, Seed) ->
-    NodeId = maps:get({text, <<"node_id">>},   Seed),
-    Addrs  = maps:get({text, <<"addresses">>}, Seed, []),
-    #{
-        node_id   => NodeId,
-        record    => Record,
-        addresses => Addrs,
-        tier      => a,
-        via       => ?MODULE
-    }.
+    hecate_bootstrap_foundation:peers_from_record(Record, a, ?MODULE).
 
 %%------------------------------------------------------------------
 %% Time helpers

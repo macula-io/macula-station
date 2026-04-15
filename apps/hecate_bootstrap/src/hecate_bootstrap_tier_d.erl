@@ -93,37 +93,13 @@ collect(N, Tag, Deadline) ->
 fetch_and_verify(Mod, ChainOpts, Timeout) ->
     chain([
         fun() -> Mod:latest_anchor(ChainOpts, Timeout) end,
-        fun(Bytes)  -> decode_record(Bytes) end,
+        fun(Bytes)  -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
         fun(Record) -> macula_foundation:verify_record(Record) end,
-        fun(Record) -> {ok, peers(Record)} end
+        fun(Record) ->
+                {ok, hecate_bootstrap_foundation:peers_from_record(
+                       Record, d, ?MODULE)}
+        end
     ]).
-
-%% External-source bytes may be arbitrary garbage; macula_record
-%% crashes on malformed CBOR rather than returning `{error, _}', so
-%% we catch at the trust boundary here.
-decode_record(Bytes) ->
-    try macula_record:decode(Bytes) of
-        {ok, _} = Ok   -> Ok;
-        {error, _} = E -> E
-    catch
-        _:_ -> {error, bad_record_bytes}
-    end.
-
-peers(Record) ->
-    Payload = macula_record:payload(Record),
-    Seeds   = maps:get({text, <<"seeds">>}, Payload, []),
-    [seed_to_peer(Record, S) || S <- Seeds].
-
-seed_to_peer(Record, Seed) ->
-    NodeId = maps:get({text, <<"node_id">>}, Seed),
-    Addrs  = maps:get({text, <<"addresses">>}, Seed, []),
-    #{
-        node_id   => NodeId,
-        record    => Record,
-        addresses => Addrs,
-        tier      => d,
-        via       => ?MODULE
-    }.
 
 %%------------------------------------------------------------------
 %% Result chain
