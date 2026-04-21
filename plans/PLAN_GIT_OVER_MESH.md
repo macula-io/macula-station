@@ -1,6 +1,6 @@
 # Plan: git-over-mesh — decentralized git as a core hecate capability
 
-**Status:** Phase 1 in progress — foundational daemon apps scaffolded
+**Status:** Phase 2 walking skeleton shipped — chunked streaming + cross-node CT deferred to Phase 2.1
 **Created:** 2026-04-21
 **Last Updated:** 2026-04-21
 **Owner:** hecate-daemon + hecate-web (core capability, not a plugin)
@@ -316,13 +316,43 @@ Pending for Phase 2 (covered by the next plan iteration, not blockers on Phase 1
 - CT integration suite (cross-node fetch, subscription round-trip) — requires Phase 2 wire protocol
 
 ### Phase 2 — Server-side git RPC (1-1.5 weeks)
-- [ ] `serve_git_over_mesh` advertises 3 procedures per repo on repo-initiated event
-- [ ] `git upload-pack` subprocess integration (erlexec or similar)
-- [ ] `git receive-pack` subprocess integration
-- [ ] Post-receive hook emits `ref_updated_v1` FACT
-- [ ] Chunked streaming of pack bytes through RPC reply
-- [ ] Auth: realm cert verification on every call
-- [ ] Integration test: node A invokes fetch on node B, pack bytes round-trip
+- [x] `serve_git_over_mesh` advertises 1 multiplexed procedure per repo on repo-initiated event (`<realm>.git.<repo_id>.rpc`, ops = `describe` / `fetch` / `push`)
+- [x] `git upload-pack --stateless-rpc` subprocess integration (sh-redirected stdin, no `erlexec` dep)
+- [x] `git receive-pack --stateless-rpc` subprocess integration
+- [x] Post-receive hook emits `ref_updated_v1` FACT via Unix-socket listener in `announce_ref_updates`
+- [ ] **Deferred to Phase 2.1** — chunked streaming of pack bytes through RPC reply (requires `macula:call_stream`, not yet in SDK)
+- [ ] **Deferred to Phase 2.1** — auth: realm cert verification on every call (needs mesh-level caller identity plumbed through the advertisement handler)
+- [x] CT test scaffold (`git_over_mesh_SUITE`) in place; full cross-node round-trip is Phase 2.1 work
+
+#### Phase 2 caveat — no streaming yet
+
+Macula SDK v1.4.30 exports `call/3,4` but no streaming primitive
+(`call_stream`). The walking skeleton therefore serves **whole-pack**
+responses: the server runs `git upload-pack --stateless-rpc` to
+completion, buffers stdout, and returns it in a single RPC reply.
+
+Consequences:
+- Adequate for config repos, persona repos, Martha — all small (<10 MB typical).
+- O(pack size) memory pressure on both server and client.
+- Not suitable for large repositories.
+
+Phase 2.1 swaps in a chunked variant the moment macula ships
+`call_stream` + server-side chunk iterator. No other changes to the
+RPC contract shape are planned — `fetch` keeps its `{op, stdin, ...}`
+args; only the reply becomes a stream.
+
+Shipped apps (2026-04-21):
+- `apps/serve_git_over_mesh/` — desks: `initialize_repo_on_disk/`,
+  `advertise_repo_procedures/`, `git_over_mesh_procedure/`.
+- `apps/announce_ref_updates/` — desks: `receive_ref_update_rpc/`
+  (Unix socket listener), `publish_ref_updated_fact/`.
+- `hecate_mesh_client:unregister_advertisement/1` helper added to
+  retract procedures on `repo_archived_v1`.
+
+### Phase 2.1 — Streaming + cross-node round-trip (future)
+- [ ] Replace `op_fetch` / `op_push` whole-pack returns with chunked streams (gated on `macula:call_stream`)
+- [ ] Per-call caller identity surfaced to the advertisement handler (realm cert verification)
+- [ ] Two-node CT round-trip: node A initiates repo, node B fetches pack, post-receive FACT observed on a third subscriber
 
 ### Phase 3 — `git-remote-mesh` client (1 week)
 - [ ] Rust binary, vendored in a new repo `hecate-social/git-remote-mesh` OR bundled with `hecate-cli`
