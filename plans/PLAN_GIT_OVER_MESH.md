@@ -354,13 +354,29 @@ Shipped apps (2026-04-21):
 - [ ] Per-call caller identity surfaced to the advertisement handler (realm cert verification)
 - [ ] Two-node CT round-trip: node A initiates repo, node B fetches pack, post-receive FACT observed on a third subscriber
 
-### Phase 3 — `git-remote-mesh` client (1 week)
-- [ ] Rust binary, vendored in a new repo `hecate-social/git-remote-mesh` OR bundled with `hecate-cli`
-- [ ] URL parsing: `mesh://<did>/<repo>`
-- [ ] macula-sdk client integration (reuses identity config)
-- [ ] git-remote-helper protocol: capabilities, list, push, fetch commands
-- [ ] Test: `git clone mesh://...` from dev workstation to Hecate node
-- [ ] Distribution: single binary in GitHub releases, homebrew cask, AUR pkg
+### Phase 3 — `git-remote-mesh` client (clone-only MVP shipped 2026-04-21)
+- [x] Rust binary in a new repo `hecate-social/git-remote-mesh`
+- [x] URL parsing: `mesh://<realm>/<repo_id>` (strict validation; extra path segments rejected)
+- [x] Thin-shim design: the binary talks HTTP to the local `hecate-daemon` Unix socket — **no Rust macula SDK**, by design. The daemon (already a mesh client) does the actual `macula:call`.
+- [x] git-remote-helper protocol: `capabilities`, `list`, `fetch` — enough for clone/fetch
+- [x] Stateless-RPC (git protocol v2) encoders + ref-advertisement parser
+- [x] Packfile section extractor for v2 `fetch` responses (sideband-1 demux)
+- [x] Daemon HTTP bridge: `POST /api/git/rpc` (new desk under `serve_git_over_mesh/relay_git_rpc/`)
+- [x] `push` returns explicit "unsupported (Phase 3.1)" per refspec — no silent no-op (see Phase 3.1 below)
+- [x] CI: GitHub Actions matrix (ubuntu + macos) running `cargo fmt/clippy/test/build --release`
+- [x] 13 cargo tests (URL parse, pkt-line framing, ref parsing, CLI arg validation); clippy `-D warnings` clean
+- [x] 9 eunit tests for the daemon bridge (request decode + reply shaping)
+
+Pending (Phase 3.1):
+- [ ] `git push` — encode receive-pack body, wire to daemon bridge (`op: push` already routed server-side since Phase 2)
+- [ ] Manual end-to-end test: `git clone mesh://...` from dev workstation against a running hecate-daemon (interactive, not CI-automatable)
+- [ ] Distribution: homebrew cask, AUR pkg (GitHub release tarballs already in CI on tag push)
+- [ ] DID/human-name URL resolution (`mesh://did:realm:alice/config`) — needs a daemon resolver endpoint
+
+### Phase 3.1 — push support + polish
+- [ ] Client-side: encode the full receive-pack body (command list + pack stream) and send via the existing `op: push` bridge path (server already handles it)
+- [ ] Update `capabilities` response to include `push` once the above lands
+- [ ] Drop the "push unsupported" error message in `helper.rs`
 
 ### Phase 4 — hecate-web Svelte browsing UX (1-1.5 weeks)
 - [ ] New route `/git` in hecate-web
