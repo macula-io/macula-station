@@ -355,7 +355,7 @@ Shipped apps (2026-04-21):
 - [ ] Two-node CT round-trip: node A initiates repo, node B fetches pack, post-receive FACT observed on a third subscriber
 
 ### Phase 3 — `git-remote-mesh` client (clone-only MVP shipped 2026-04-21)
-- [x] Rust binary in a new repo `hecate-social/git-remote-mesh`
+- [x] Rust binary in a new repo `macula-io/git-remote-mesh`
 - [x] URL parsing: `mesh://<realm>/<repo_id>` (strict validation; extra path segments rejected)
 - [x] Thin-shim design: the binary talks HTTP to the local `hecate-daemon` Unix socket — **no Rust macula SDK**, by design. The daemon (already a mesh client) does the actual `macula:call`.
 - [x] git-remote-helper protocol: `capabilities`, `list`, `fetch` — enough for clone/fetch
@@ -433,7 +433,7 @@ Phase 6 + Martha: +1.5 weeks when Martha itself lands.
 - `apps/announce_ref_updates/{src,test}/...`
 
 ### Create (new repo)
-- `hecate-social/git-remote-mesh` — Rust binary + docs
+- `macula-io/git-remote-mesh` — Rust binary + docs
 
 ### Create (hecate-web)
 - `src/lib/components/git/RepoList.svelte`
