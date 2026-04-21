@@ -1,6 +1,6 @@
 # Plan: git-over-mesh — decentralized git as a core hecate capability
 
-**Status:** Phase 2 walking skeleton shipped — chunked streaming + cross-node CT deferred to Phase 2.1
+**Status:** Phases 1–3 + 5 shipped; Phase 2.1 (streaming + cross-node CT), Phase 3.1 (push), Phase 4 (Svelte UX) pending
 **Created:** 2026-04-21
 **Last Updated:** 2026-04-21
 **Owner:** hecate-daemon + hecate-web (core capability, not a plugin)
@@ -387,11 +387,25 @@ Pending (Phase 3.1):
 - [ ] `RefSubscription` component with live FACT updates
 - [ ] Wire to viewstate pattern — daemon computes all presentation state
 
-### Phase 5 — macula-realm gitops migration (0.5-1 week)
-- [ ] Replace GitHub App calls in macula-realm with calls to `guide_repo_lifecycle.initiate_repo` on user's node
-- [ ] Delete `system/apps/macula_realm/lib/macula_realm/github/` directory
-- [ ] Update gitops_setup_live to generate mesh URIs instead of GitHub URLs
-- [ ] Docs: user onboarding flow
+### Phase 5 — macula-realm gitops migration — ✅ shipped 2026-04-21
+- [x] `MaculaRealm.Accounts.update_user_gitops_uri/2` + `User.gitops_changeset/2` — persists the mesh URI returned by the user's daemon.
+- [x] `MaculaRealm.Gitops.provision_for/1` — the mesh-RPC orchestrator (`:macula.connect/2` + `:macula.call/4`, 30s hard timeout, synchronous, translates reply into `{:ok, %User{}}` or a specific `{:error, reason}`).
+- [x] `MaculaRealmWeb.GitopsSetupLive` — LiveView on `/gitops/setup` with a provisioning button, copy-to-clipboard URI, `git remote add hecate …` snippet, and per-error remediation flashes (`:timeout`, `:unauthorized`, `:realm_mismatch`, `:missing_realm_server_did`, …).
+- [x] Router — route restored inside `live_session :dashboard` under `:require_auth` + `:require_complete_profile`; dashboard layout gained a "GitOps" nav entry.
+- [x] `MACULA_REALM_SERVER_DID` wired through `config/runtime.exs`, `docker-compose.demo.yml`, `ROADMAP.md`, and `CLAUDE.md`.
+- [x] New responder desk on hecate-daemon side: `apps/serve_git_over_mesh/src/respond_to_realm_gitops_init/` — advertises `<realm>.config.gitops.initiate`, DID-allowlist auth (fail-closed), dispatches `initiate_repo_v1`, returns `mesh://{realm}/{repo_id}`. 5 eunit cases cover validation + auth + happy path.
+- [x] `MACULA_REALM_SERVER_DIDS` env var wired through `sys.config` and a boot-time loader in `serve_git_over_mesh_app:start/2`.
+- [x] No GitHub artefacts remain in `macula-realm/system` (grep clean).
+
+#### Phase 5 caveats — v1 design limits
+
+The shipped flow trades safety for simplicity in three places that are explicitly deferred:
+
+- **DID allowlist, no cert chain.** The daemon rejects any caller not listed in `MACULA_REALM_SERVER_DIDS`. Realm-cert signature validation is NOT performed. A compromised realm-server DID can provision a gitops repo on any daemon that allowlisted it. *Future polish:* validate the caller's realm-cert chain against the realm's published JWKS (or mesh FACT), same mechanism as the Hanko Platform IdP plan.
+- **No user-consent dialog.** The daemon auto-accepts the call; the user never sees a prompt. Rationale: the user has already joined the realm and clicked "Provision" on the macula-realm UI — a separate consent modal feels redundant. *Future polish:* surface an audit feed ("macula.io provisioned a gitops repo for you at …") and an opt-in "require consent for realm-initiated actions" setting in hecate-web.
+- **Synchronous, no polling UI.** macula-realm calls `macula:call/4` with a 30s timeout; if the daemon is offline the LiveView surfaces a flash. No retry, no "we'll notify you when your daemon comes back". *Future polish:* queue the request as an outbox FACT and deliver when the daemon next activates its mesh.
+
+None of these are security holes *per se* — the DID allowlist is a genuine gate — but each one is visible technical debt.
 
 ### Phase 6 — Integration + first consumer (Martha) (1-1.5 weeks, later)
 - [ ] Martha plugin consumes git-over-mesh for persona install
