@@ -178,6 +178,37 @@ is just a compose swap.
 
 | Box | Decision | Cutover date | Soak result | Rolled back? |
 |---|---|---|---|---|
-| relays-linode-paris       | _pending_ | _ | _ | _ |
-| relays-hetzner-helsinki   | _blocked on Paris_ | _ | _ | _ |
+| relays-linode-paris       | ✅ canary live | 2026-04-25 14:10 UTC | _soaking_ | _ |
+| relays-hetzner-helsinki   | _blocked on Paris ≥48h soak_ | _ | _ | _ |
 | relays-hetzner-nuremberg  | _blocked on Helsinki_ | _ | _ | _ |
+
+## Paris cutover — initial readings (2026-04-25 14:10 UTC)
+
+- Image: `ghcr.io/hecate-social/hecate-station@sha256:73e76755…` (built from `2dda7e4`)
+- Container: `hecate-station Up (healthy)` per Docker healthcheck
+- All 5 T1 identities registered:
+  - `relay-t1-london.macula.io` → `2600:3c1a:e001:19::100:4433`
+  - `relay-t1-brussels.macula.io` → `2600:3c1a:e001:19::101:4433`
+  - `relay-t1-frankfurt.macula.io` → `2600:3c1a:e001:19::102:4433`
+  - `relay-t1-milan.macula.io` → `2600:3c1a:e001:19::103:4433`
+  - `relay-t1-madrid.macula.io` → `2600:3c1a:e001:19::104:4433`
+- Per-identity health (sampled London): all 6 children
+  (`listener`, `peer_observer`, `swim`, `dht`, `content_announcer`,
+  `pubsub_registry`) report `state=alive`; `healthy=true`.
+- DHT size 0, SWIM members 0 at boot — expected since no
+  bootstrap tiers configured (cascade `no_tiers` → silent skip).
+  Population happens as T2 boxes (Hetzner) dial in.
+- Resource usage: 81 MB RSS / 1.9 GB total; CPU 0.12% idle.
+- V1 compose (`docker-compose.yml`) left untouched for instant
+  rollback.
+
+### Known cosmetic gap
+
+`GET /status` (legacy single-identity route) returns
+`healthy: false` because the multi-identity boot path does not
+populate the legacy singletons (`hecate_station:dht/0` etc).
+Docker healthcheck only checks the HTTP status code (200) so it
+is not affected. Operators inspecting the body should use
+`GET /admin/identities` and `/admin/identities/:id/health`
+instead. Future work: rewire `/status` to aggregate over the
+registry.
