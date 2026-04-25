@@ -52,6 +52,10 @@
     %% Constructors — PubSub (Part 6 §6)
     publish/1, subscribe/1, unsubscribe/1, event/1,
 
+    %% Constructors — Content transfer (Part 6 §9)
+    want/1, have/1, block/1,
+    manifest_req/1, manifest_res/1, cancel/1,
+
     %% Sign / verify frame
     sign/2, verify/2,
 
@@ -92,7 +96,10 @@
     plumtree_graft_spec/0, plumtree_prune_spec/0,
     msg_id/0,
     publish_spec/0, subscribe_spec/0, unsubscribe_spec/0, event_spec/0,
-    delivery_channel/0
+    delivery_channel/0,
+    mcid/0, want_priority/0, want_entry/0, have_entry/0,
+    want_spec/0, have_spec/0, block_spec/0,
+    manifest_req_spec/0, manifest_res_spec/0, cancel_spec/0
 ]).
 
 -define(SIG_DOMAIN,        "macula-v2-frame\0").
@@ -113,7 +120,9 @@
                     | hyparview_shuffle | hyparview_shuffle_reply
                     | plumtree_gossip | plumtree_ihave
                     | plumtree_graft | plumtree_prune
-                    | publish | subscribe | unsubscribe | event.
+                    | publish | subscribe | unsubscribe | event
+                    | want | have | block
+                    | manifest_req | manifest_res | cancel.
 
 -type member_state() :: alive | suspect | confirmed_failed.
 
@@ -394,6 +403,57 @@
     seq           := non_neg_integer(),
     payload       := term(),
     delivered_via := delivery_channel()
+}.
+
+%%------------------------------------------------------------------
+%% Content transfer frame specs (Part 6 §9)
+%%
+%% MCID — Macula Content IDentifier — 34 bytes:
+%% <<Version:8, Codec:8, Hash:32/binary>>. Block payloads carry
+%% raw chunk bytes; manifest payloads carry the structured manifest
+%% map. Frames are signed by the sender for accountability; the
+%% recipient verifies the signature on top of the per-block /
+%% per-manifest hash check.
+%%------------------------------------------------------------------
+
+-type mcid() :: <<_:272>>.
+
+-type want_priority() :: 0..255.
+
+-type want_entry() :: #{
+    mcid     := mcid(),
+    priority => want_priority()
+}.
+
+-type have_entry() :: #{
+    mcid := mcid(),
+    size := non_neg_integer()
+}.
+
+-type want_spec() :: #{
+    blocks := [want_entry()]
+}.
+
+-type have_spec() :: #{
+    blocks := [have_entry()]
+}.
+
+-type block_spec() :: #{
+    mcid    := mcid(),
+    payload := binary()
+}.
+
+-type manifest_req_spec() :: #{
+    mcid := mcid()
+}.
+
+-type manifest_res_spec() :: #{
+    mcid     := mcid(),
+    manifest := map() | not_found
+}.
+
+-type cancel_spec() :: #{
+    blocks := [mcid()]
 }.
 
 %%------------------------------------------------------------------
@@ -935,6 +995,69 @@ validate_optional_ttl(N) when is_integer(N), N >= 0          -> ok.
 
 -spec validate_options(map()) -> ok.
 validate_options(M) when is_map(M) -> ok.
+
+%%------------------------------------------------------------------
+%% Content transfer constructors (Part 6 §9)
+%%
+%% Want / Have / Block / Manifest_req / Manifest_res / Cancel are the
+%% bitswap-style exchange primitives. All carry the standard frame
+%% header and are signed by the sender; payloads validated for size
+%% invariants but the contents are application-opaque.
+%%------------------------------------------------------------------
+
+-spec want(want_spec()) -> frame().
+want(#{blocks := Bs}) when is_list(Bs) ->
+    Validated = [validate_want_entry(E) || E <- Bs],
+    (base(want, 0))#{blocks => Validated}.
+
+-spec have(have_spec()) -> frame().
+have(#{blocks := Bs}) when is_list(Bs) ->
+    Validated = [validate_have_entry(E) || E <- Bs],
+    (base(have, 0))#{blocks => Validated}.
+
+-spec block(block_spec()) -> frame().
+block(#{mcid := M, payload := P}) when is_binary(P) ->
+    validate_mcid(M),
+    (base(block, 0))#{mcid => M, payload => P}.
+
+-spec manifest_req(manifest_req_spec()) -> frame().
+manifest_req(#{mcid := M}) ->
+    validate_mcid(M),
+    (base(manifest_req, 0))#{mcid => M}.
+
+-spec manifest_res(manifest_res_spec()) -> frame().
+manifest_res(#{mcid := M, manifest := Manifest}) ->
+    validate_mcid(M),
+    validate_manifest_payload(Manifest),
+    (base(manifest_res, 0))#{mcid => M, manifest => Manifest}.
+
+-spec cancel(cancel_spec()) -> frame().
+cancel(#{blocks := Bs}) when is_list(Bs) ->
+    lists:foreach(fun validate_mcid/1, Bs),
+    (base(cancel, 0))#{blocks => Bs}.
+
+-spec validate_mcid(mcid()) -> ok.
+validate_mcid(<<_:272>>) -> ok.
+
+-spec validate_want_entry(want_entry()) -> want_entry().
+validate_want_entry(#{mcid := M} = E) ->
+    validate_mcid(M),
+    Prio = maps:get(priority, E, 128),
+    validate_priority(Prio),
+    #{mcid => M, priority => Prio}.
+
+-spec validate_priority(want_priority()) -> ok.
+validate_priority(P) when is_integer(P), P >= 0, P =< 255 -> ok.
+
+-spec validate_have_entry(have_entry()) -> have_entry().
+validate_have_entry(#{mcid := M, size := S})
+  when is_integer(S), S >= 0 ->
+    validate_mcid(M),
+    #{mcid => M, size => S}.
+
+-spec validate_manifest_payload(map() | not_found) -> ok.
+validate_manifest_payload(not_found)              -> ok;
+validate_manifest_payload(M) when is_map(M)       -> ok.
 
 %%------------------------------------------------------------------
 %% Sign / verify

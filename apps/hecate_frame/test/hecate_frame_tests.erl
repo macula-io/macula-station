@@ -1030,3 +1030,111 @@ event_wire_roundtrip_test() ->
             delivered_via => direct}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D).
+
+%%------------------------------------------------------------------
+%% Content transfer frames — Part 6 §9
+%%------------------------------------------------------------------
+
+mcid()     -> <<1, 1, (crypto:strong_rand_bytes(32))/binary>>.
+
+want_carries_blocks_with_priority_test() ->
+    M1 = mcid(), M2 = mcid(),
+    F = hecate_frame:want(#{blocks => [
+        #{mcid => M1, priority => 200},
+        #{mcid => M2}
+    ]}),
+    ?assertEqual(want, hecate_frame:frame_type(F)),
+    [B1, B2] = maps:get(blocks, F),
+    ?assertEqual(M1,  maps:get(mcid, B1)),
+    ?assertEqual(200, maps:get(priority, B1)),
+    ?assertEqual(M2,  maps:get(mcid, B2)),
+    ?assertEqual(128, maps:get(priority, B2)).
+
+want_rejects_bad_priority_test() ->
+    ?assertError(function_clause,
+                 hecate_frame:want(#{blocks => [
+                     #{mcid => mcid(), priority => 999}
+                 ]})).
+
+want_rejects_short_mcid_test() ->
+    ?assertError(function_clause,
+                 hecate_frame:want(#{blocks => [
+                     #{mcid => <<"too short">>}
+                 ]})).
+
+have_carries_size_per_block_test() ->
+    M = mcid(),
+    F = hecate_frame:have(#{blocks => [#{mcid => M, size => 4096}]}),
+    ?assertEqual(have, hecate_frame:frame_type(F)),
+    [B] = maps:get(blocks, F),
+    ?assertEqual(M,    maps:get(mcid, B)),
+    ?assertEqual(4096, maps:get(size, B)).
+
+have_rejects_negative_size_test() ->
+    ?assertError(function_clause,
+                 hecate_frame:have(#{blocks => [
+                     #{mcid => mcid(), size => -1}
+                 ]})).
+
+block_carries_payload_test() ->
+    M = mcid(),
+    F = hecate_frame:block(#{mcid => M, payload => <<"data">>}),
+    ?assertEqual(block, hecate_frame:frame_type(F)),
+    ?assertEqual(M,           maps:get(mcid, F)),
+    ?assertEqual(<<"data">>,  maps:get(payload, F)).
+
+block_rejects_non_binary_payload_test() ->
+    ?assertError(function_clause,
+                 hecate_frame:block(#{mcid => mcid(), payload => 42})).
+
+manifest_req_carries_mcid_test() ->
+    M = mcid(),
+    F = hecate_frame:manifest_req(#{mcid => M}),
+    ?assertEqual(manifest_req, hecate_frame:frame_type(F)),
+    ?assertEqual(M,            maps:get(mcid, F)).
+
+manifest_res_carries_manifest_test() ->
+    M = mcid(),
+    Manifest = #{name => <<"hello.txt">>, size => 1024},
+    F = hecate_frame:manifest_res(#{mcid => M, manifest => Manifest}),
+    ?assertEqual(manifest_res, hecate_frame:frame_type(F)),
+    ?assertEqual(Manifest,     maps:get(manifest, F)).
+
+manifest_res_accepts_not_found_test() ->
+    M = mcid(),
+    F = hecate_frame:manifest_res(#{mcid => M, manifest => not_found}),
+    ?assertEqual(not_found, maps:get(manifest, F)).
+
+cancel_carries_mcid_list_test() ->
+    M1 = mcid(), M2 = mcid(),
+    F = hecate_frame:cancel(#{blocks => [M1, M2]}),
+    ?assertEqual(cancel, hecate_frame:frame_type(F)),
+    ?assertEqual([M1, M2], maps:get(blocks, F)).
+
+cancel_rejects_short_mcid_in_list_test() ->
+    ?assertError(function_clause,
+                 hecate_frame:cancel(#{blocks => [mcid(), <<"short">>]})).
+
+want_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    F = hecate_frame:sign(hecate_frame:want(#{
+            blocks => [#{mcid => mcid(), priority => 99}]}), Kp),
+    {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
+    ?assertEqual(F, D),
+    ?assertMatch({ok, _},
+                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+
+block_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    F = hecate_frame:sign(hecate_frame:block(#{
+            mcid => mcid(), payload => <<"chunk-bytes">>}), Kp),
+    {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
+    ?assertEqual(F, D).
+
+manifest_res_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    F = hecate_frame:sign(hecate_frame:manifest_res(#{
+            mcid     => mcid(),
+            manifest => #{name => <<"x">>, size => 42}}), Kp),
+    {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
+    ?assertEqual(F, D).
