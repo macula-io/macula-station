@@ -232,14 +232,25 @@ endpoint_for(Hostname, Port) ->
 load_box_secret() ->
     hecate_station_identity_keys:load_or_generate_box_secret(box_secret_path()).
 
-%% @doc Resolved path for the box-secret. App-env override or the
-%% per-user default under `~/.hecate'.
+%% @doc Resolved path for the box-secret. Resolution order, first
+%% hit wins:
+%% <ol>
+%%   <li>`application:get_env(hecate_station, box_secret_path)'</li>
+%%   <li>OS env var `HECATE_STATION_BOX_SECRET_PATH'
+%%       (used by the Dockerfile to point at the persistent volume
+%%       mount inside the container)</li>
+%%   <li>`$HOME/.hecate/box-secret'</li>
+%% </ol>
 -spec box_secret_path() -> file:name_all().
 box_secret_path() ->
-    case application:get_env(hecate_station, box_secret_path) of
-        {ok, P}   -> P;
-        undefined -> default_box_secret_path()
-    end.
+    classify_box_secret_path(
+        application:get_env(hecate_station, box_secret_path),
+        os:getenv("HECATE_STATION_BOX_SECRET_PATH")).
+
+classify_box_secret_path({ok, P}, _Env) -> P;
+classify_box_secret_path(undefined, false) -> default_box_secret_path();
+classify_box_secret_path(undefined, "")    -> default_box_secret_path();
+classify_box_secret_path(undefined, P)     -> P.
 
 default_box_secret_path() ->
     Home = case os:getenv("HOME") of
