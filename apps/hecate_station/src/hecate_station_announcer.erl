@@ -46,6 +46,13 @@
     capabilities => non_neg_integer(),
     display_name => binary(),
     caps_hint    => binary(),
+    %% Geo + reach metadata (macula 3.4+).
+    hostname     => binary(),
+    endpoint     => binary(),
+    city         => binary(),
+    country      => binary(),
+    lat          => float() | integer(),
+    lng          => float() | integer(),
     ttl_ms       => pos_integer(),
     %% Fraction of TTL after which to refresh (default 0.75).
     refresh_at_fraction => float(),
@@ -108,7 +115,12 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
 
 node_record_opts(Opts) ->
     Base = #{ttl_ms => maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS)},
-    add_optional([display_name, caps_hint, station_id], Opts, Base).
+    %% Macula 3.4+ accepts hostname/endpoint/city/country/lat/lng on
+    %% node_record so the realm dashboard can render the station
+    %% without a side-channel topology poll.
+    Optional = [display_name, caps_hint, station_id,
+                hostname, endpoint, city, country, lat, lng],
+    add_optional(Optional, Opts, Base).
 
 add_optional([], _Src, Acc) -> Acc;
 add_optional([K | Rest], Src, Acc) ->
