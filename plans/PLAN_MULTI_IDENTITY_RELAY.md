@@ -14,7 +14,7 @@
 | 4 | ✅ shipped | identity config parser (`MACULA_RELAY_IDENTITIES`); deterministic per-identity Ed25519 keys (HMAC-SHA256(box_secret, hostname)); cascade in identity_sup chain; station_app multi-identity boot branch; 3-identity boot test |
 | 5 | ✅ shipped | admin endpoints `GET /admin/identities`, `POST .../start|stop|reload`; bearer auth via `MACULA_ADMIN_TOKEN`; registry remembers opts for reload; admin sup also boots under multi-identity flow |
 | 6 | ✅ shipped | per-identity logger metadata on workers we own (pubsub_registry + content_announcer); `GET /admin/identities/:id/health` returning DHT/SWIM/listener/announcer/pubsub_registry status. Prometheus exporter still pending — out of 0.5-session scope. |
-| 7 | pending | cutover ops |
+| 7 | ✅ code-ready | V1-compatible env-var fallback (`MACULA_QUIC_PORT`, `MACULA_TLS_CERTFILE`, `MACULA_TLS_KEYFILE`); production Dockerfile (Erlang 27 + Rust toolchain for macula NIFs); CI image build/push to ghcr.io. Canary + soak deferred to operator: see `PLAN_STATION_CANARY.md`. |
 
 ## Overview
 

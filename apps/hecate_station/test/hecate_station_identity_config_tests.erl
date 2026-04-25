@@ -120,3 +120,81 @@ from_env_with_value_parses_test_() ->
          {ok, Specs} = ?MOD:from_env("HECATE_PHASE4_TEST_VAR"),
          ?_assertEqual(2, length(Specs))
      end}.
+
+%%==================================================================
+%% shared_listener_opts/0 — Phase 7 V1 env-var fallback
+%%==================================================================
+
+shared_listener_opts_app_env_test_() ->
+    {setup,
+     fun() ->
+         clear_listener_env(),
+         application:set_env(hecate_station, port,     1234),
+         application:set_env(hecate_station, certfile, "/tmp/cert.pem"),
+         application:set_env(hecate_station, keyfile,  "/tmp/key.pem")
+     end,
+     fun(_) -> clear_listener_env() end,
+     fun(_) ->
+         ?_assertEqual({ok, #{port     => 1234,
+                              certfile => "/tmp/cert.pem",
+                              keyfile  => "/tmp/key.pem"}},
+                       ?MOD:shared_listener_opts())
+     end}.
+
+shared_listener_opts_v1_env_var_fallback_test_() ->
+    {setup,
+     fun() ->
+         clear_listener_env(),
+         os:putenv("MACULA_QUIC_PORT",    "5678"),
+         os:putenv("MACULA_TLS_CERTFILE", "/etc/cert.pem"),
+         os:putenv("MACULA_TLS_KEYFILE",  "/etc/key.pem")
+     end,
+     fun(_) ->
+         os:unsetenv("MACULA_QUIC_PORT"),
+         os:unsetenv("MACULA_TLS_CERTFILE"),
+         os:unsetenv("MACULA_TLS_KEYFILE")
+     end,
+     fun(_) ->
+         ?_assertEqual({ok, #{port     => 5678,
+                              certfile => "/etc/cert.pem",
+                              keyfile  => "/etc/key.pem"}},
+                       ?MOD:shared_listener_opts())
+     end}.
+
+shared_listener_opts_app_env_wins_over_env_var_test_() ->
+    {setup,
+     fun() ->
+         clear_listener_env(),
+         application:set_env(hecate_station, port, 1111),
+         os:putenv("MACULA_QUIC_PORT", "9999")
+     end,
+     fun(_) ->
+         clear_listener_env(),
+         os:unsetenv("MACULA_QUIC_PORT")
+     end,
+     fun(_) ->
+         %% certfile + keyfile are still missing; the test only
+         %% pins the precedence of `port'.
+         ?_assertMatch({error, {missing_station_env, certfile}},
+                       ?MOD:shared_listener_opts())
+     end}.
+
+shared_listener_opts_missing_returns_error_test_() ->
+    {setup,
+     fun() ->
+         clear_listener_env(),
+         os:unsetenv("MACULA_QUIC_PORT"),
+         os:unsetenv("MACULA_TLS_CERTFILE"),
+         os:unsetenv("MACULA_TLS_KEYFILE")
+     end,
+     fun(_) -> ok end,
+     fun(_) ->
+         ?_assertMatch({error, {missing_station_env, port}},
+                       ?MOD:shared_listener_opts())
+     end}.
+
+clear_listener_env() ->
+    application:unset_env(hecate_station, port),
+    application:unset_env(hecate_station, certfile),
+    application:unset_env(hecate_station, keyfile),
+    ok.

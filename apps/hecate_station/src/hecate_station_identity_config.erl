@@ -249,7 +249,18 @@ default_box_secret_path() ->
     filename:join([Home, ".hecate", "box-secret"]).
 
 %% @doc Read `port', `certfile', `keyfile' from the `hecate_station'
-%% app env. Each is mandatory for the multi-identity boot path —
+%% app env, with V1-compatible OS env-var fallback so hecate-station
+%% drops into the existing macula-relay V1 docker-compose without
+%% editing `sys.config'.
+%%
+%% Resolution order, first hit wins:
+%% <ol>
+%%   <li>`application:get_env(hecate_station, Key)'</li>
+%%   <li>OS env var: `MACULA_QUIC_PORT' / `MACULA_TLS_CERTFILE'
+%%       / `MACULA_TLS_KEYFILE' (V1 conventions)</li>
+%% </ol>
+%%
+%% Each field is mandatory for the multi-identity boot path —
 %% missing entries yield `{error, {missing_station_env, K}}'.
 -spec shared_listener_opts() ->
     {ok, #{port := inet:port_number(),
@@ -257,15 +268,34 @@ default_box_secret_path() ->
            keyfile := file:name_all()}}
   | {error, {missing_station_env, atom()}}.
 shared_listener_opts() ->
-    require_app_env([port, certfile, keyfile], #{}).
+    require_app_env([
+        {port,     "MACULA_QUIC_PORT",     integer},
+        {certfile, "MACULA_TLS_CERTFILE",  string},
+        {keyfile,  "MACULA_TLS_KEYFILE",   string}
+    ], #{}).
 
 require_app_env([], Acc) ->
     {ok, Acc};
-require_app_env([K | Rest], Acc) ->
-    require_one_app_env(application:get_env(hecate_station, K),
-                        K, Rest, Acc).
+require_app_env([Spec | Rest], Acc) ->
+    require_one(resolve_one(Spec), Spec, Rest, Acc).
 
-require_one_app_env({ok, V}, K, Rest, Acc) ->
-    require_app_env(Rest, Acc#{K => V});
-require_one_app_env(undefined, K, _Rest, _Acc) ->
-    {error, {missing_station_env, K}}.
+resolve_one({Key, EnvVar, Type}) ->
+    classify_resolution(application:get_env(hecate_station, Key),
+                        os:getenv(EnvVar), Type).
+
+classify_resolution({ok, V}, _Env, _Type) -> {ok, V};
+classify_resolution(undefined, false, _Type) -> undefined;
+classify_resolution(undefined, "",    _Type) -> undefined;
+classify_resolution(undefined, Raw,   integer) -> parse_integer(Raw);
+classify_resolution(undefined, Raw,   string)  -> {ok, Raw}.
+
+parse_integer(Raw) ->
+    parse_integer_step(string:to_integer(Raw)).
+
+parse_integer_step({I, []}) when is_integer(I) -> {ok, I};
+parse_integer_step(_)                          -> undefined.
+
+require_one({ok, V}, {Key, _, _}, Rest, Acc) ->
+    require_app_env(Rest, Acc#{Key => V});
+require_one(undefined, {Key, _, _}, _Rest, _Acc) ->
+    {error, {missing_station_env, Key}}.
