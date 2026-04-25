@@ -78,7 +78,15 @@
     %% this with the per-identity DHT).
     dht                => hecate_dht:dht() | undefined,
     %% Optional content-announcer record TTL (defaults to 5 min).
-    ttl_ms             => pos_integer()
+    ttl_ms             => pos_integer(),
+    %% Phase 4: hard-skip the bootstrap cascade between DHT + SWIM.
+    %% Defaults to false. The cascade itself silently skips when no
+    %% tiers are configured in app env, so most tests do NOT need
+    %% to set this. The flag exists so Phase 3-style tests that
+    %% MUST avoid touching the bootstrap path (e.g. when
+    %% `hecate_bootstrap' app env is preloaded by another test
+    %% case) can opt out cleanly.
+    skip_cascade       => boolean()
 }.
 
 -spec start_link(identity_opts()) -> {ok, pid()} | {error, term()}.
@@ -176,7 +184,28 @@ seed_dht(Sup, Opts) ->
 on_dht(_Sup, _Opts, {error, R}) ->
     {error, {dht_start_failed, R}};
 on_dht(Sup, Opts, {ok, DhtPid}) ->
-    seed_swim(Sup, Opts, DhtPid).
+    seed_cascade(Sup, Opts, DhtPid).
+
+%% Bootstrap cascade — runs between DHT start and SWIM start so the
+%% routing table is seeded before SWIM begins probing peers. The
+%% cascade reads `hecate_bootstrap' app env; when no tiers are
+%% configured it returns `{error, no_tiers}' which we treat as a
+%% silent skip — the same identity may run in unit-test contexts
+%% with an empty bootstrap config without aborting boot. Any other
+%% cascade error IS fatal: a misconfigured tier should not be
+%% papered over.
+seed_cascade(Sup, #{skip_cascade := true} = Opts, DhtPid) ->
+    seed_swim(Sup, Opts, DhtPid);
+seed_cascade(Sup, Opts, DhtPid) ->
+    on_cascade(Sup, Opts, DhtPid,
+               hecate_station_bootstrap_runner:run(DhtPid)).
+
+on_cascade(Sup, Opts, DhtPid, {ok, _Summary}) ->
+    seed_swim(Sup, Opts, DhtPid);
+on_cascade(Sup, Opts, DhtPid, {error, no_tiers}) ->
+    seed_swim(Sup, Opts, DhtPid);
+on_cascade(_Sup, _Opts, _DhtPid, {error, R}) ->
+    {error, {cascade_failed, R}}.
 
 seed_swim(Sup, Opts, DhtPid) ->
     on_swim(Sup, Opts, DhtPid,

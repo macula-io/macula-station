@@ -11,7 +11,7 @@
 | 1 | ✅ shipped | identity registry + identity_sup skeleton; rebar3 override for macula debug_info |
 | 2 | ✅ shipped | de-singletoned pubsub_registry + content_announcer; deleted pubsub_server_sup; identity_sup wires per-identity registry + announcer |
 | 3 | ✅ shipped | per-identity DHT/SWIM/observer/listener procedural startup; cross-talk test (two identities dialing each other via QUIC). Cascade ingest deferred to Phase 4. |
-| 4 | pending | identity config loader + boot |
+| 4 | ✅ shipped | identity config parser (`MACULA_RELAY_IDENTITIES`); deterministic per-identity Ed25519 keys (HMAC-SHA256(box_secret, hostname)); cascade in identity_sup chain; station_app multi-identity boot branch; 3-identity boot test |
 | 5 | pending | admin API |
 | 6 | pending | operational tooling |
 | 7 | pending | cutover ops |

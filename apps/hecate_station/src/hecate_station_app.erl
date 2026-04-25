@@ -1,8 +1,30 @@
 %% @doc Application callback — orchestrates boot order.
 %%
-%% Session 8.2 boot sequence:
+%% Two boot paths:
 %%
-%% 1. Start `hecate_station_sup' (empty children list).
+%% <ul>
+%%   <li><b>Legacy single-identity</b> (`MACULA_RELAY_IDENTITIES'
+%%       unset/empty): the original Session 8.2 sequence. Loads
+%%       single identity from `hecate_station' app env, builds
+%%       DHT/SWIM/observer/listener as fixed-name children of
+%%       `hecate_station_sup'. Used by every existing test +
+%%       single-tenant deployment.</li>
+%%
+%%   <li><b>Multi-identity</b>
+%%       (PLAN_MULTI_IDENTITY_RELAY §Phase 4): when the env var is
+%%       set, parses it via `hecate_station_identity_config', loads
+%%       the box-secret, derives a deterministic Ed25519 keypair
+%%       per identity, and registers each via
+%%       `hecate_station_identity_registry:register/2'. Each
+%%       registration spawns its own
+%%       `hecate_station_identity_sup' which runs the per-identity
+%%       DHT → cascade → SWIM → observer → listener chain in
+%%       isolation.</li>
+%% </ul>
+%%
+%% Legacy single-identity sequence (still in effect for path 1):
+%%
+%% 1. Start `hecate_station_sup' (registry as the only static child).
 %% 2. If `hecate_station' application env is empty, stop here —
 %%    programmatic callers (walking-skeleton / chaos CT) drive
 %%    `hecate_station_server' directly.
@@ -57,7 +79,114 @@ boot({ok, SupPid}) ->
 boot_enabled(SupPid, false) ->
     {ok, SupPid};
 boot_enabled(SupPid, true) ->
-    boot_cfg(SupPid, hecate_station_config:from_env()).
+    boot_dispatch(SupPid, hecate_station_identity_config:from_env()).
+
+%%==================================================================
+%% Path selection — multi-identity vs legacy single-identity.
+%%==================================================================
+
+boot_dispatch(SupPid, {error, Reason}) ->
+    halt_sup(SupPid, {identity_config_failed, Reason});
+boot_dispatch(SupPid, {ok, []}) ->
+    boot_cfg(SupPid, hecate_station_config:from_env());
+boot_dispatch(SupPid, {ok, Specs}) ->
+    boot_multi(SupPid, Specs).
+
+%%==================================================================
+%% Multi-identity branch — Phase 4.
+%%==================================================================
+
+boot_multi(SupPid, Specs) ->
+    on_box_secret(SupPid, Specs, load_box_secret()).
+
+load_box_secret() ->
+    Path = box_secret_path(),
+    hecate_station_identity_keys:load_or_generate_box_secret(Path).
+
+box_secret_path() ->
+    case application:get_env(hecate_station, box_secret_path) of
+        {ok, P}   -> P;
+        undefined -> default_box_secret_path()
+    end.
+
+default_box_secret_path() ->
+    Home = case os:getenv("HOME") of
+               false -> "/tmp";
+               H     -> H
+           end,
+    filename:join([Home, ".hecate", "box-secret"]).
+
+on_box_secret(SupPid, _Specs, {error, Reason}) ->
+    halt_sup(SupPid, {box_secret_failed, Reason});
+on_box_secret(SupPid, Specs, {ok, BoxSecret}) ->
+    on_shared_opts(SupPid, Specs, BoxSecret, shared_listener_opts()).
+
+on_shared_opts(SupPid, _Specs, _BoxSecret, {error, Reason}) ->
+    halt_sup(SupPid, Reason);
+on_shared_opts(SupPid, Specs, BoxSecret, {ok, Shared}) ->
+    register_each(SupPid, Specs, BoxSecret, Shared).
+
+shared_listener_opts() ->
+    require_app_env([port, certfile, keyfile], #{}).
+
+require_app_env([], Acc) ->
+    {ok, Acc};
+require_app_env([K | Rest], Acc) ->
+    require_one_app_env(application:get_env(hecate_station, K),
+                        K, Rest, Acc).
+
+require_one_app_env({ok, V}, K, Rest, Acc) ->
+    require_app_env(Rest, Acc#{K => V});
+require_one_app_env(undefined, K, _Rest, _Acc) ->
+    {error, {missing_station_env, K}}.
+
+register_each(SupPid, [], _BoxSecret, _Shared) ->
+    {ok, SupPid};
+register_each(SupPid, [Spec | Rest], BoxSecret, Shared) ->
+    Opts = spec_to_opts(Spec, BoxSecret, Shared),
+    Key  = maps:get(identity_key, Opts),
+    on_register(SupPid, Rest, BoxSecret, Shared,
+                hecate_station_identity_registry:register(Key, Opts)).
+
+on_register(SupPid, _Rest, _BoxSecret, _Shared, {error, Reason}) ->
+    halt_sup(SupPid, {identity_register_failed, Reason});
+on_register(SupPid, Rest, BoxSecret, Shared, {ok, _IdSup}) ->
+    register_each(SupPid, Rest, BoxSecret, Shared).
+
+spec_to_opts(Spec, BoxSecret, Shared) ->
+    Hostname = maps:get(hostname, Spec),
+    Bind     = bind_for(Spec, Shared),
+    Port     = maps:get(port, Shared),
+    Kp       = hecate_station_identity_keys:derive(BoxSecret, Hostname),
+    StationId = macula_identity:public(Kp),
+    Endpoint = endpoint_for(Hostname, Port),
+    Capabilities = maps:get(capabilities, Shared,
+                            application:get_env(hecate_station, capabilities, 0)),
+    #{
+        identity_key => Hostname,
+        identity     => Kp,
+        bind         => Bind,
+        port         => Port,
+        certfile     => maps:get(certfile, Shared),
+        keyfile      => maps:get(keyfile, Shared),
+        capabilities => Capabilities,
+        realms       => [],
+        station_id   => StationId,
+        endpoint     => Endpoint
+    }.
+
+bind_for(#{bind := undefined}, Shared) ->
+    %% Spec did not provide a per-identity bind; fall back to the
+    %% box-wide one. Useful for tests that share `127.0.0.1' across
+    %% identities (each on a distinct port via the shared opts).
+    application:get_env(hecate_station, bind,
+                        maps:get(bind, Shared, "0.0.0.0"));
+bind_for(#{bind := Addr}, _Shared) when is_binary(Addr) ->
+    binary_to_list(Addr).
+
+endpoint_for(Hostname, Port) ->
+    iolist_to_binary([<<"quic://">>, Hostname,
+                      $:, integer_to_binary(Port)]).
 
 boot_cfg(SupPid, {error, Reason}) ->
     halt_sup(SupPid, Reason);

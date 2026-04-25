@@ -99,14 +99,23 @@ load_or_create_identity(Path) ->
 %% Application-env API — supervision tree.
 %%==================================================================
 
-%% @doc True when the application env or an `HECATE_STATION_BIND'
-%% override is set. The supervisor tolerates unconfigured environments
-%% so the walking-skeleton CT suites (which drive
+%% @doc True when the application env, an `HECATE_STATION_BIND'
+%% override, or `MACULA_RELAY_IDENTITIES' (multi-identity boot path)
+%% is set. The supervisor tolerates unconfigured environments so
+%% the walking-skeleton CT suites (which drive
 %% `hecate_station_server' directly) still run under `rebar3 ct'.
 -spec enabled() -> boolean().
 enabled() ->
     application:get_env(hecate_station, bind) =/= undefined orelse
-    os:getenv("HECATE_STATION_BIND") =/= false.
+    os:getenv("HECATE_STATION_BIND") =/= false orelse
+    has_identity_env().
+
+has_identity_env() ->
+    case os:getenv("MACULA_RELAY_IDENTITIES") of
+        false -> false;
+        ""    -> false;
+        _     -> true
+    end.
 
 %% @doc Read `sys.config' + `HECATE_STATION_*' env-var overrides into a
 %% typed station cfg. Loads or generates the identity from disk.
