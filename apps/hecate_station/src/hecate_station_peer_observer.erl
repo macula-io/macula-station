@@ -49,10 +49,19 @@
 -type opts() :: #{dht := pid(), swim := pid()}.
 
 -record(state, {
-    dht    :: pid(),
-    swim   :: pid(),
-    peers  :: #{pid() => macula_identity:pubkey()},
-    conns  :: #{macula_identity:pubkey() => pid()}
+    dht                  :: pid(),
+    swim                 :: pid(),
+    %% Per-identity RPC procedure registry (Track 2 — multi-identity
+    %% mesh discovery). Optional: when undefined, CALL frames are
+    %% dropped silently. Identity_sup wires it in when the handler
+    %% app is part of the per-identity child set.
+    handler_registry     :: pid() | undefined,
+    %% This station's own identity — RESULT / call_error frames
+    %% carry it as the `responded_by' / `reported_by' pubkey so the
+    %% caller knows who answered.
+    self_id              :: macula_identity:pubkey() | undefined,
+    peers                :: #{pid() => macula_identity:pubkey()},
+    conns                :: #{macula_identity:pubkey() => pid()}
 }).
 
 %%==================================================================
@@ -78,9 +87,14 @@ conn_for(Pid, <<_:256>> = NodeId) ->
 %% gen_server
 %%==================================================================
 
-init(#{dht := Dht, swim := Swim}) when is_pid(Dht), is_pid(Swim) ->
-    {ok, #state{dht = Dht, swim = Swim,
-                peers = #{}, conns = #{}}}.
+init(#{dht := Dht, swim := Swim} = Opts)
+  when is_pid(Dht), is_pid(Swim) ->
+    {ok, #state{dht              = Dht,
+                swim             = Swim,
+                handler_registry = maps:get(handler_registry, Opts, undefined),
+                self_id          = maps:get(self_id, Opts, undefined),
+                peers            = #{},
+                conns            = #{}}}.
 
 handle_call(peers, _From, #state{peers = P} = S) ->
     {reply, maps:to_list(P), S};
@@ -149,10 +163,13 @@ classify(swim_ping)    -> swim;
 classify(swim_ack)     -> swim;
 classify(swim_suspect) -> swim;
 classify(swim_confirm) -> swim;
+classify(call)         -> call;
 classify(_)            -> other.
 
 dispatch(swim, Frame, NodeId, #state{swim = Swim}) ->
     deliver_swim(hecate_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
+dispatch(call, Frame, NodeId, S) ->
+    deliver_call(hecate_frame:verify(Frame, NodeId), Frame, NodeId, S);
 dispatch(other, _Frame, _NodeId, _S) ->
     ok.
 
@@ -160,6 +177,31 @@ deliver_swim({ok, _}, Frame, NodeId, Swim) ->
     ok = hecate_swim:handle_frame(Swim, NodeId, Frame);
 deliver_swim({error, _Reason}, _Frame, _NodeId, _Swim) ->
     ok.
+
+%% CALL dispatch — verify signature, dispatch to per-identity
+%% handler registry, send the resulting RESULT / call_error back
+%% on the originating connection. Handler invocation runs inside
+%% the dispatch helper which traps crashes; the observer process
+%% is never blocked or killed by a misbehaving handler.
+deliver_call(_Verified, _Frame, _NodeId,
+             #state{handler_registry = undefined}) ->
+    ok;
+deliver_call({error, _}, _Frame, _NodeId, _S) ->
+    ok;
+deliver_call({ok, _}, Frame, NodeId,
+             #state{handler_registry = Registry,
+                    self_id = SelfId,
+                    conns = C}) ->
+    Reply = hecate_handler_dispatch:dispatch_call(Frame, Registry, SelfId),
+    send_reply_to(maps:find(NodeId, C), Reply).
+
+send_reply_to(error, _Reply) ->
+    %% Caller's connection is gone — RESULT goes nowhere. The
+    %% connection cleanup already removed it from `conns'; nothing
+    %% to do.
+    ok;
+send_reply_to({ok, ConnPid}, Reply) ->
+    hecate_peering:send_frame(ConnPid, Reply).
 
 %%==================================================================
 %% disconnected

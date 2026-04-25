@@ -162,7 +162,7 @@ on_sup_started({ok, Sup}, Opts) ->
 attempt_phase3(_Sup, _Opts, false) ->
     skipped;
 attempt_phase3(Sup, Opts, true) ->
-    seed_dht(Sup, Opts).
+    seed_handler_registry(Sup, Opts).
 
 on_phase3_done(Sup, skipped)        -> {ok, Sup};
 on_phase3_done(Sup, ok)             -> {ok, Sup};
@@ -181,7 +181,19 @@ has_listener_opts(#{bind := _, port := _, certfile := _,
                     keyfile := _, identity := _}) -> true;
 has_listener_opts(_)                              -> false.
 
-%% DHT → SWIM → observer → listener, flat clauses.
+%% Handler registry → DHT → cascade → SWIM → observer → listener.
+%% Handler registry runs first so the observer (later in the chain)
+%% can be wired to dispatch CALL frames against it.
+
+seed_handler_registry(Sup, Opts) ->
+    on_handler_registry(Sup, Opts,
+                        supervisor:start_child(Sup,
+                                               handler_registry_spec(Opts))).
+
+on_handler_registry(_Sup, _Opts, {error, R}) ->
+    {error, {handler_registry_start_failed, R}};
+on_handler_registry(Sup, Opts, {ok, HrPid}) ->
+    seed_dht(Sup, Opts#{handler_registry => HrPid}).
 
 seed_dht(Sup, Opts) ->
     on_dht(Sup, Opts,
@@ -224,7 +236,8 @@ on_swim(Sup, Opts, DhtPid, {ok, SwimPid}) ->
 
 seed_observer(Sup, Opts, DhtPid, SwimPid) ->
     on_observer(Sup, Opts,
-                supervisor:start_child(Sup, observer_spec(DhtPid, SwimPid))).
+                supervisor:start_child(Sup,
+                                       observer_spec(DhtPid, SwimPid, Opts))).
 
 on_observer(_Sup, _Opts, {error, R}) ->
     {error, {observer_start_failed, R}};
@@ -266,14 +279,35 @@ swim_spec(#{identity := Kp}, Sup) ->
       type     => worker,
       modules  => [hecate_swim]}.
 
-observer_spec(DhtPid, SwimPid) ->
-    Opts = #{dht => DhtPid, swim => SwimPid},
+handler_registry_spec(IdentityOpts) ->
+    %% Identity_key is always present in identity_opts (`:=' not `=>')
+    %% so the registry's logger metadata always has a value.
+    Opts = #{identity_key => maps:get(identity_key, IdentityOpts)},
+    #{id       => hecate_handler_registry,
+      start    => {hecate_handler_registry, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_handler_registry]}.
+
+observer_spec(DhtPid, SwimPid, IdentityOpts) ->
+    Opts = #{
+        dht              => DhtPid,
+        swim             => SwimPid,
+        handler_registry => maps:get(handler_registry, IdentityOpts, undefined),
+        self_id          => self_id_of(IdentityOpts)
+    },
     #{id       => hecate_station_peer_observer,
       start    => {hecate_station_peer_observer, start_link, [Opts]},
       restart  => permanent,
       shutdown => 5_000,
       type     => worker,
       modules  => [hecate_station_peer_observer]}.
+
+%% observer_spec/3 only fires through the Phase-3 chain, which is
+%% gated by `has_listener_opts/1' — `identity' is therefore always
+%% present at this call site.
+self_id_of(#{identity := Kp}) -> macula_identity:public(Kp).
 
 listener_spec(#{bind := Bind, port := Port,
                 certfile := Cert, keyfile := Key,
