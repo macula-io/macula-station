@@ -119,18 +119,24 @@ pubsub_registry_child(IdentityOpts) ->
           modules  => [hecate_pubsub_registry]}
     ].
 
-registry_opts(#{identity := Kp}) -> #{identity => Kp};
-registry_opts(_)                 -> #{}.
+%% identity_key is always present in identity_opts (`:=' not `=>')
+%% so the registry's logger metadata always has a value to use.
+registry_opts(#{identity := Kp, identity_key := Key}) ->
+    #{identity => Kp, identity_key => Key};
+registry_opts(#{identity_key := Key}) ->
+    #{identity_key => Key}.
 
-content_announcer_child(#{identity   := Kp,
-                          station_id := SId,
-                          endpoint   := Ep} = O) ->
+content_announcer_child(#{identity     := Kp,
+                          identity_key := Key,
+                          station_id   := SId,
+                          endpoint     := Ep} = O) ->
     Opts = #{
-        dht        => maps:get(dht, O, undefined),
-        identity   => Kp,
-        station_id => SId,
-        endpoint   => Ep,
-        ttl_ms     => maps:get(ttl_ms, O, 300_000)
+        dht          => maps:get(dht, O, undefined),
+        identity     => Kp,
+        identity_key => Key,
+        station_id   => SId,
+        endpoint     => Ep,
+        ttl_ms       => maps:get(ttl_ms, O, 300_000)
     },
     [
         #{id       => hecate_content_announcer,

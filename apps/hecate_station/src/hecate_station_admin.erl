@@ -11,6 +11,7 @@
 %%   <tr><td>GET</td>  <td>/swim/members</td>                 <td>none</td>   <td>current SWIM member list</td></tr>
 %%   <tr><td>POST</td> <td>/bootstrap/rerun</td>              <td>none</td>   <td>trigger a re-cascade</td></tr>
 %%   <tr><td>GET</td>  <td>/admin/identities</td>             <td>bearer</td> <td>list registered identities</td></tr>
+%%   <tr><td>GET</td>  <td>/admin/identities/:id/health</td>  <td>bearer</td> <td>per-identity DHT/SWIM/listener snapshot</td></tr>
 %%   <tr><td>POST</td> <td>/admin/identities/:id/start</td>   <td>bearer</td> <td>spawn a new identity from a JSON spec</td></tr>
 %%   <tr><td>POST</td> <td>/admin/identities/:id/stop</td>    <td>bearer</td> <td>terminate an identity</td></tr>
 %%   <tr><td>POST</td> <td>/admin/identities/:id/reload</td>  <td>bearer</td> <td>stop + re-register with the same opts</td></tr>
@@ -234,6 +235,8 @@ dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
 dispatch(<<"POST">>, [<<"bootstrap">>, <<"rerun">>],  _Req) -> bootstrap_rerun();
 dispatch(<<"GET">>,  [<<"admin">>, <<"identities">>],  Req) ->
     with_auth(Req, fun() -> list_identities() end);
+dispatch(<<"GET">>,  [<<"admin">>, <<"identities">>, Id, <<"health">>], Req) ->
+    with_auth(Req, fun() -> identity_health(Id) end);
 dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"start">>], Req) ->
     with_auth(Req, fun() -> start_identity(Id, Req) end);
 dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"stop">>], Req) ->
@@ -383,6 +386,102 @@ classify_listener(_) ->
 
 child_id_bin(A) when is_atom(A)   -> atom_to_binary(A, utf8);
 child_id_bin(B) when is_binary(B) -> B.
+
+%%------------------------------------------------------------------
+%% GET /admin/identities/:id/health — Phase 6
+%%
+%% Per-identity status snapshot. Composes the live state of every
+%% per-identity child the identity_sup supervises into a single
+%% JSON document. 404 if the identity is not registered.
+%%------------------------------------------------------------------
+
+identity_health(Id) ->
+    on_health_lookup(Id, hecate_station_identity_registry:lookup(Id)).
+
+on_health_lookup(_Id, {error, not_found}) ->
+    json_response(404, #{result => <<"error">>, reason => <<"not_found">>});
+on_health_lookup(Id, {ok, Sup}) ->
+    Children = supervisor:which_children(Sup),
+    Body = #{
+        identity_key      => to_bin(Id),
+        sup_pid           => list_to_binary(pid_to_list(Sup)),
+        listener          => listener_status(Children),
+        dht               => dht_health(Children),
+        swim              => swim_health(Children),
+        peer_observer     => process_health(Children, hecate_station_peer_observer),
+        content_announcer => process_health(Children, hecate_content_announcer),
+        pubsub_registry   => pubsub_health(Children),
+        healthy           => sup_healthy(Children)
+    },
+    json_response(200, Body).
+
+%% Sup is healthy when every child has a live pid (a `restarting'
+%% or `undefined' child means the supervisor is mid-recovery and
+%% the identity is degraded — operators should be able to see that).
+sup_healthy(Children) ->
+    lists:all(fun({_Id, Pid, _Type, _Mods}) ->
+                  is_pid(Pid) andalso is_process_alive(Pid)
+              end, Children).
+
+dht_health(Children) ->
+    classify_dht(child_pid_for(Children, hecate_dht)).
+
+classify_dht(undefined) ->
+    #{state => <<"absent">>};
+classify_dht(Pid) ->
+    classify_dht_alive(Pid, is_process_alive(Pid)).
+
+classify_dht_alive(_Pid, false) ->
+    #{state => <<"down">>};
+classify_dht_alive(Pid, true) ->
+    #{state   => <<"alive">>,
+      size    => hecate_dht:size(Pid),
+      self_id => hex(hecate_dht:self_id(Pid))}.
+
+swim_health(Children) ->
+    classify_swim(child_pid_for(Children, hecate_swim)).
+
+classify_swim(undefined) ->
+    #{state => <<"absent">>};
+classify_swim(Pid) ->
+    classify_swim_alive(Pid, is_process_alive(Pid)).
+
+classify_swim_alive(_Pid, false) ->
+    #{state => <<"down">>};
+classify_swim_alive(Pid, true) ->
+    #{state   => <<"alive">>,
+      members => length(hecate_swim:members(Pid))}.
+
+pubsub_health(Children) ->
+    classify_pubsub(child_pid_for(Children, hecate_pubsub_registry)).
+
+classify_pubsub(undefined) ->
+    #{state => <<"absent">>};
+classify_pubsub(Pid) ->
+    classify_pubsub_alive(Pid, is_process_alive(Pid)).
+
+classify_pubsub_alive(_Pid, false) ->
+    #{state => <<"down">>};
+classify_pubsub_alive(Pid, true) ->
+    #{state  => <<"alive">>,
+      realms => length(hecate_pubsub_registry:list_realms(Pid))}.
+
+%% Generic alive/down status for children where there is no extra
+%% per-process data worth surfacing.
+process_health(Children, ChildId) ->
+    classify_process(child_pid_for(Children, ChildId)).
+
+classify_process(undefined)  -> #{state => <<"absent">>};
+classify_process(Pid)        -> classify_process_alive(is_process_alive(Pid)).
+
+classify_process_alive(true)  -> #{state => <<"alive">>};
+classify_process_alive(false) -> #{state => <<"down">>}.
+
+child_pid_for(Children, ChildId) ->
+    case [P || {Id, P, _, _} <- Children, Id =:= ChildId, is_pid(P)] of
+        [Pid] -> Pid;
+        _     -> undefined
+    end.
 
 %%------------------------------------------------------------------
 %% POST /admin/identities/:id/start

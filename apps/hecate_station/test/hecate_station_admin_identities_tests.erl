@@ -44,7 +44,9 @@ admin_identities_test_() ->
         fun stop_unknown_identity_returns_404/1,
         fun reload_changes_sup_pid/1,
         fun start_with_id_hostname_mismatch_returns_400/1,
-        fun start_with_invalid_json_returns_400/1
+        fun start_with_invalid_json_returns_400/1,
+        fun health_endpoint_returns_per_identity_snapshot/1,
+        fun health_endpoint_unknown_id_returns_404/1
       ]}}.
 
 %% Auth-no-token has its own setup (different MACULA_ADMIN_TOKEN
@@ -179,6 +181,42 @@ start_with_invalid_json_returns_400(#{port := Port, token := Token}) ->
             post_json_authed(Port, Path, <<"not-json">>, Token),
         ?assertEqual(<<"invalid_json">>,
                      maps:get(<<"reason">>, Reply))
+    end).
+
+health_endpoint_returns_per_identity_snapshot(#{port := Port, token := Token}) ->
+    ?_test(begin
+        Path = "/admin/identities/boot.macula.io/health",
+        {ok, Body, 200} = get_json_authed(Port, Path, Token),
+
+        ?assertEqual(?BOOT_IDENTITY, maps:get(<<"identity_key">>, Body)),
+        ?assertEqual(true,           maps:get(<<"healthy">>, Body)),
+
+        Listener = maps:get(<<"listener">>, Body),
+        ?assertEqual(<<"alive">>, maps:get(<<"state">>, Listener)),
+        ?assert(is_binary(maps:get(<<"addr">>, Listener))),
+
+        Dht = maps:get(<<"dht">>, Body),
+        ?assertEqual(<<"alive">>, maps:get(<<"state">>, Dht)),
+        ?assert(is_integer(maps:get(<<"size">>, Dht))),
+        ?assertEqual(64, byte_size(maps:get(<<"self_id">>, Dht))),
+
+        Swim = maps:get(<<"swim">>, Body),
+        ?assertEqual(<<"alive">>, maps:get(<<"state">>, Swim)),
+        ?assert(is_integer(maps:get(<<"members">>, Swim))),
+
+        PubSub = maps:get(<<"pubsub_registry">>, Body),
+        ?assertEqual(<<"alive">>, maps:get(<<"state">>, PubSub)),
+        ?assertEqual(0, maps:get(<<"realms">>, PubSub)),
+
+        Observer = maps:get(<<"peer_observer">>, Body),
+        ?assertEqual(<<"alive">>, maps:get(<<"state">>, Observer))
+    end).
+
+health_endpoint_unknown_id_returns_404(#{port := Port, token := Token}) ->
+    ?_test(begin
+        Path = "/admin/identities/unknown.macula.io/health",
+        {ok, Body, 404} = get_json_authed(Port, Path, Token),
+        ?assertEqual(<<"not_found">>, maps:get(<<"reason">>, Body))
     end).
 
 %%==================================================================

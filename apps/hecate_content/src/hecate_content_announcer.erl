@@ -45,11 +45,16 @@
 -export_type([opts/0]).
 
 -type opts() :: #{
-    dht        := hecate_dht:dht() | undefined,
-    identity   := macula_identity:key_pair(),
-    station_id := macula_identity:pubkey(),
-    endpoint   := binary(),
-    ttl_ms     => pos_integer()
+    dht          := hecate_dht:dht() | undefined,
+    identity     := macula_identity:key_pair(),
+    station_id   := macula_identity:pubkey(),
+    endpoint     := binary(),
+    ttl_ms       => pos_integer(),
+    %% Phase 6 (operational tooling): when supplied, the announcer
+    %% sets `logger:set_process_metadata(#{identity_id =&gt; Key})'
+    %% on init so its log lines carry the identity for diagnostics
+    %% on a multi-identity box.
+    identity_key => term()
 }.
 
 -record(state, {
@@ -91,6 +96,7 @@ announce(Pid, MCID, Manifest) ->
 
 init(Opts) ->
     ensure_pg_scope(),
+    set_logger_identity(Opts),
     ok = pg:join(hecate_content_store:events_group(), self()),
     {ok, #state{
         dht        = maps:get(dht, Opts, undefined),
@@ -99,6 +105,11 @@ init(Opts) ->
         endpoint   = maps:get(endpoint, Opts),
         ttl_ms     = maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS)
     }}.
+
+set_logger_identity(#{identity_key := Key}) ->
+    logger:set_process_metadata(#{identity_id => Key});
+set_logger_identity(_) ->
+    ok.
 
 handle_call({announce, MCID, Manifest}, _From, S) ->
     {reply, do_announce(MCID, Manifest, S), S};

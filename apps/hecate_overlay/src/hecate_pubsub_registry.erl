@@ -54,7 +54,14 @@
     %% Default identity used when a `register/3' caller does not
     %% pass one explicitly. Optional — passing identity per-call
     %% gives the same behaviour as the pre-Phase-2 API.
-    identity => identity()
+    identity     => identity(),
+    %% Phase 6 (operational tooling): when supplied, the registry
+    %% sets `logger:set_process_metadata(#{identity_id =&gt; Key})'
+    %% on init so every log line from the registry process — and
+    %% from the pubsub_servers it spawn-links — carries the
+    %% identity for grep-friendly diagnostics on a multi-identity
+    %% box.
+    identity_key => term()
 }.
 
 -record(state, {
@@ -121,7 +128,13 @@ stop(RegistryPid) ->
 %% uses to clear the realm map.
 init(Opts) ->
     process_flag(trap_exit, true),
+    set_logger_identity(Opts),
     {ok, #state{default_identity = maps:get(identity, Opts, undefined)}}.
+
+set_logger_identity(#{identity_key := Key}) ->
+    logger:set_process_metadata(#{identity_id => Key});
+set_logger_identity(_) ->
+    ok.
 
 handle_call({register, Realm, Identity}, _From, S) ->
     do_register_call(Realm, Identity, maps:find(Realm, S#state.by_realm), S);

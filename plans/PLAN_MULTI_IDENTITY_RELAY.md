@@ -13,7 +13,7 @@
 | 3 | ✅ shipped | per-identity DHT/SWIM/observer/listener procedural startup; cross-talk test (two identities dialing each other via QUIC). Cascade ingest deferred to Phase 4. |
 | 4 | ✅ shipped | identity config parser (`MACULA_RELAY_IDENTITIES`); deterministic per-identity Ed25519 keys (HMAC-SHA256(box_secret, hostname)); cascade in identity_sup chain; station_app multi-identity boot branch; 3-identity boot test |
 | 5 | ✅ shipped | admin endpoints `GET /admin/identities`, `POST .../start|stop|reload`; bearer auth via `MACULA_ADMIN_TOKEN`; registry remembers opts for reload; admin sup also boots under multi-identity flow |
-| 6 | pending | operational tooling |
+| 6 | ✅ shipped | per-identity logger metadata on workers we own (pubsub_registry + content_announcer); `GET /admin/identities/:id/health` returning DHT/SWIM/listener/announcer/pubsub_registry status. Prometheus exporter still pending — out of 0.5-session scope. |
 | 7 | pending | cutover ops |
 
 ## Overview
