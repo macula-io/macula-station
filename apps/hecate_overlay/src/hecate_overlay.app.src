@@ -1,12 +1,15 @@
 {application, hecate_overlay, [
     {description, "Hecate Station — HyParView + Plumtree intra-realm gossip"},
     {vsn, "0.1.0"},
-    {registered, []},
+    {registered, [hecate_overlay_sup]},
+    {mod, {hecate_overlay_app, []}},
     {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, [hecate_overlay_view, hecate_overlay_proto,
                hecate_plumtree, hecate_or_set, hecate_pubsub,
-               hecate_realm_join]},
+               hecate_realm_join,
+               hecate_overlay_app, hecate_overlay_sup,
+               hecate_pubsub_server]},
     {licenses, ["Apache-2.0"]},
     {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}
 ]}.
