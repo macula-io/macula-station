@@ -202,6 +202,32 @@ seed_dht(Sup, Opts) ->
 on_dht(_Sup, _Opts, {error, R}) ->
     {error, {dht_start_failed, R}};
 on_dht(Sup, Opts, {ok, DhtPid}) ->
+    seed_dht_handlers(Sup, Opts, DhtPid).
+
+%% Advertises `_dht.*' procedures against the per-identity registry.
+%% Lives between DHT start and cascade so `find_records_by_type' and
+%% friends are reachable as soon as the DHT is live.
+seed_dht_handlers(Sup, #{handler_registry := HrPid} = Opts, DhtPid) ->
+    Spec = dht_handlers_spec(HrPid, DhtPid, Opts),
+    on_dht_handlers(Sup, Opts, DhtPid,
+                    supervisor:start_child(Sup, Spec)).
+
+on_dht_handlers(_Sup, _Opts, _DhtPid, {error, R}) ->
+    {error, {dht_handlers_start_failed, R}};
+on_dht_handlers(Sup, Opts, DhtPid, {ok, _Pid}) ->
+    seed_announcer(Sup, Opts, DhtPid).
+
+%% Per-identity announcer publishes this station's `node_record'
+%% (Macula V2 type 0x01) into the local DHT on init + refreshes
+%% before TTL. Tombstones on graceful shutdown so peers learn we
+%% are gone without waiting for TTL.
+seed_announcer(Sup, Opts, DhtPid) ->
+    on_announcer(Sup, Opts, DhtPid,
+                 supervisor:start_child(Sup, announcer_spec(DhtPid, Opts))).
+
+on_announcer(_Sup, _Opts, _DhtPid, {error, R}) ->
+    {error, {announcer_start_failed, R}};
+on_announcer(Sup, Opts, DhtPid, {ok, _Pid}) ->
     seed_cascade(Sup, Opts, DhtPid).
 
 %% Bootstrap cascade — runs between DHT start and SWIM start so the
@@ -289,6 +315,48 @@ handler_registry_spec(IdentityOpts) ->
       shutdown => 5_000,
       type     => worker,
       modules  => [hecate_handler_registry]}.
+
+dht_handlers_spec(HrPid, DhtPid, IdentityOpts) ->
+    Opts = #{
+        handler_registry => HrPid,
+        dht              => DhtPid,
+        identity_key     => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_dht_handlers,
+      start    => {hecate_station_dht_handlers, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_dht_handlers]}.
+
+announcer_spec(DhtPid, IdentityOpts) ->
+    Opts = announcer_opts(DhtPid, IdentityOpts),
+    #{id       => hecate_station_announcer,
+      start    => {hecate_station_announcer, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_announcer]}.
+
+announcer_opts(DhtPid, IdentityOpts) ->
+    Base = #{
+        dht          => DhtPid,
+        identity     => maps:get(identity, IdentityOpts),
+        identity_key => maps:get(identity_key, IdentityOpts),
+        realms       => maps:get(realms, IdentityOpts, []),
+        capabilities => maps:get(capabilities, IdentityOpts, 0)
+    },
+    add_announcer_optionals(Base, IdentityOpts).
+
+add_announcer_optionals(Base, Src) ->
+    Optional = [city, country, lat, lng, endpoint, ttl_ms,
+                display_name, caps_hint],
+    lists:foldl(fun(K, Acc) ->
+        case maps:find(K, Src) of
+            {ok, V} -> Acc#{K => V};
+            error   -> Acc
+        end
+    end, Base, Optional).
 
 observer_spec(DhtPid, SwimPid, IdentityOpts) ->
     Opts = #{

@@ -1,0 +1,186 @@
+%% @doc Per-identity station announcer.
+%%
+%% Each station identity advertises itself in the mesh by publishing
+%% a signed `node_record' (`macula_record', type tag `0x01') into
+%% its own DHT on init. The record carries the identity's public
+%% key (which IS the record key per the spec), realm list,
+%% capabilities, and optional display metadata.
+%%
+%% Records are refreshed before TTL expires (default: refresh at 75%
+%% of TTL). On graceful shutdown the announcer publishes a signed
+%% `tombstone' (`type=0x0C') so peers learn the identity is gone
+%% without waiting for the TTL.
+%%
+%% == Lifecycle (per identity_sup) ==
+%%
+%% Started by `hecate_station_identity_sup' as a procedural child
+%% AFTER both `hecate_handler_registry' (Track 2) and
+%% `hecate_station_dht_handlers' (Track 2.5) are up. On any
+%% one_for_all restart the announcer is recreated and re-publishes
+%% the node_record on init — peers see a fresh record with a new
+%% UUIDv7 version.
+%%
+%% == Why not "heartbeat" pubsub? ==
+%%
+%% Spec records are state, not events. A signed `node_record'
+%% with `expires_at' tells subscribers "I'm here for the next N
+%% minutes" without re-broadcasting every 30s. Late-joining
+%% subscribers query `find_records_by_type/2' for the snapshot.
+%% Refresh interval is operator-tunable but defaults to 75% of
+%% TTL — well above the floor where TTL gaps would cause the
+%% record to disappear from peer caches.
+-module(hecate_station_announcer).
+-behaviour(gen_server).
+
+-export([start_link/1, stop/1]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+         terminate/2, code_change/3]).
+
+-export_type([opts/0]).
+
+-type opts() :: #{
+    dht          := pid(),
+    identity     := macula_identity:key_pair(),
+    %% Optional metadata propagated into the node_record payload.
+    realms       => [macula_identity:pubkey()],
+    capabilities => non_neg_integer(),
+    display_name => binary(),
+    caps_hint    => binary(),
+    ttl_ms       => pos_integer(),
+    %% Fraction of TTL after which to refresh (default 0.75).
+    refresh_at_fraction => float(),
+    %% Logger metadata.
+    identity_key => term()
+}.
+
+-define(DEFAULT_TTL_MS, 600_000).             %% 10 min
+-define(DEFAULT_REFRESH_FRACTION, 0.75).      %% refresh at 75% of TTL
+
+-record(state, {
+    dht          :: pid(),
+    identity     :: macula_identity:key_pair(),
+    record_opts  :: macula_record:node_record_opts(),
+    realms       :: [macula_identity:pubkey()],
+    capabilities :: non_neg_integer(),
+    ttl_ms       :: pos_integer(),
+    refresh_ms   :: pos_integer(),
+    timer_ref    :: reference() | undefined
+}).
+
+%%====================================================================
+%% Public API
+%%====================================================================
+
+-spec start_link(opts()) -> {ok, pid()} | {error, term()}.
+start_link(#{dht := _, identity := _} = Opts) ->
+    gen_server:start_link(?MODULE, Opts, []).
+
+-spec stop(pid()) -> ok.
+stop(Pid) ->
+    gen_server:stop(Pid, shutdown, 5_000).
+
+%%====================================================================
+%% gen_server
+%%====================================================================
+
+init(Opts) ->
+    process_flag(trap_exit, true),
+    set_logger_identity(Opts),
+    State = build_state(Opts),
+    %% Publish on init — re-runs on every one_for_all restart cycle.
+    publish_node_record(State),
+    {ok, schedule_refresh(State)}.
+
+build_state(#{dht := Dht, identity := Kp} = Opts) ->
+    Ttl       = maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS),
+    Fraction  = maps:get(refresh_at_fraction, Opts, ?DEFAULT_REFRESH_FRACTION),
+    RefreshMs = max(1_000, round(Ttl * Fraction)),
+    #state{
+        dht          = Dht,
+        identity     = Kp,
+        record_opts  = node_record_opts(Opts),
+        realms       = maps:get(realms, Opts, []),
+        capabilities = maps:get(capabilities, Opts, 0),
+        ttl_ms       = Ttl,
+        refresh_ms   = RefreshMs,
+        timer_ref    = undefined
+    }.
+
+node_record_opts(Opts) ->
+    Base = #{ttl_ms => maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS)},
+    add_optional([display_name, caps_hint, station_id], Opts, Base).
+
+add_optional([], _Src, Acc) -> Acc;
+add_optional([K | Rest], Src, Acc) ->
+    add_optional(Rest, Src, maybe_put(K, Src, Acc)).
+
+maybe_put(K, Src, Acc) ->
+    case maps:find(K, Src) of
+        {ok, V} -> Acc#{K => V};
+        error   -> Acc
+    end.
+
+set_logger_identity(#{identity_key := Key}) ->
+    logger:set_process_metadata(#{identity_id => Key});
+set_logger_identity(_) ->
+    ok.
+
+handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
+handle_cast(_Msg, S)        -> {noreply, S}.
+
+handle_info({refresh, Ref}, #state{timer_ref = Ref} = S) ->
+    publish_node_record(S),
+    {noreply, schedule_refresh(S)};
+handle_info(_, S) ->
+    {noreply, S}.
+
+terminate(Reason, S) ->
+    publish_tombstone_if_graceful(Reason, S),
+    ok.
+
+code_change(_OldVsn, S, _Extra) -> {ok, S}.
+
+%%====================================================================
+%% Publish + tombstone
+%%====================================================================
+
+publish_node_record(#state{dht = Dht, identity = Kp,
+                           record_opts = RecOpts,
+                           realms = Realms,
+                           capabilities = Caps}) ->
+    Pub      = macula_identity:public(Kp),
+    Unsigned = macula_record:node_record(Pub, Realms, Caps, RecOpts),
+    Signed   = macula_record:sign(Unsigned, Kp),
+    ok = hecate_dht:put_record(Dht, Signed),
+    ok.
+
+%% Reasons that mean "we're going away on purpose" — tombstone the
+%% node_record so peers can clear their caches without waiting for
+%% TTL. Crashes (`{error, _}', `killed', etc.) intentionally skip
+%% the tombstone — letting TTL handle abnormal exits is safer than
+%% having a half-broken process publish a confusing tombstone.
+publish_tombstone_if_graceful(shutdown, S) ->
+    publish_tombstone(S, shutdown);
+publish_tombstone_if_graceful({shutdown, _}, S) ->
+    publish_tombstone(S, shutdown);
+publish_tombstone_if_graceful(normal, S) ->
+    publish_tombstone(S, normal);
+publish_tombstone_if_graceful(_, _S) ->
+    ok.
+
+publish_tombstone(#state{dht = Dht, identity = Kp}, Reason) ->
+    Pub      = macula_identity:public(Kp),
+    Unsigned = macula_record:tombstone(Pub, _NodeRecordType = 16#01,
+                                        Reason),
+    Signed   = macula_record:sign(Unsigned, Kp),
+    _ = catch hecate_dht:put_record(Dht, Signed),
+    ok.
+
+%%====================================================================
+%% Refresh timer
+%%====================================================================
+
+schedule_refresh(#state{refresh_ms = Ms} = S) ->
+    Ref = make_ref(),
+    erlang:send_after(Ms, self(), {refresh, Ref}),
+    S#state{timer_ref = Ref}.
