@@ -22,7 +22,7 @@
 %%
 %% Wire format is handled by the undocumented-but-stable `inet_dns'
 %% OTP module. No DNSSEC — trust is earned at the record layer
-%% (`macula_foundation:verify_record/1') and corroboration layer
+%% (`hecate_foundation:verify_record/1') and corroboration layer
 %% (`hecate_bootstrap_tier_a'), not at the DNS layer.
 -module(hecate_bootstrap_doh).
 
@@ -69,7 +69,7 @@
 
 %% @doc Build the DoH query name for `Pubkey' under `ZoneBase'.
 %% Returns a plain Erlang string (what `inet_dns' wants for domains).
--spec query_domain(macula_identity:pubkey(), binary() | string()) ->
+-spec query_domain(hecate_identity:pubkey(), binary() | string()) ->
           string().
 query_domain(Pubkey, ZoneBase)
   when is_binary(Pubkey), byte_size(Pubkey) =:= 32 ->
@@ -148,7 +148,7 @@ names_equal(A, B) when is_list(A), is_list(B) ->
 %% `SendFun', parse the response, and return the foundation record
 %% bytes.
 -spec resolve(hecate_bootstrap_resolver:url(),
-              macula_identity:pubkey(),
+              hecate_identity:pubkey(),
               resolve_opts(),
               send_fun()) -> {ok, binary()} | {error, resolve_error()}.
 resolve(Url, Pubkey, Opts, SendFun)

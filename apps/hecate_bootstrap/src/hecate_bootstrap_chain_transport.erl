@@ -6,7 +6,7 @@
 %% implement this callback; Tier D queries each configured chain in
 %% parallel and accepts the first valid answer.
 %%
-%% The anchor bytes MUST be a `macula_record:encode/1' byte string of
+%% The anchor bytes MUST be a `hecate_record:encode/1' byte string of
 %% a foundation-signed record (typically `foundation_seed_list',
 %% 0x0D). This keeps Tier D verification identical to Tier A — the
 %% chain adapter is responsible solely for locating and returning the

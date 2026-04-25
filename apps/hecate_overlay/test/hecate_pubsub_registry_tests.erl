@@ -9,7 +9,7 @@
 
 realm()   -> crypto:strong_rand_bytes(32).
 id(N)     -> <<N:256>>.
-keypair() -> macula_identity:generate().
+keypair() -> hecate_identity:generate().
 
 setup() ->
     {ok, Sup} = hecate_overlay_sup:start_link(),
@@ -110,10 +110,10 @@ dispatch_subscribe_routes_to_server() ->
     R     = realm(),
     Kp    = keypair(),
     SubKp = keypair(),
-    SubId = macula_identity:public(SubKp),
+    SubId = hecate_identity:public(SubKp),
     {ok, Pid} = hecate_pubsub_registry:register(R, Kp),
 
-    Frame = macula_frame:sign(macula_frame:subscribe(#{
+    Frame = hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => <<"news">>,
         realm      => R,
         subscriber => SubId
@@ -127,11 +127,11 @@ dispatch_event_returns_local_subscribers() ->
     R     = realm(),
     Kp    = keypair(),
     SubKp = keypair(),
-    SubId = macula_identity:public(SubKp),
+    SubId = hecate_identity:public(SubKp),
     {ok, _Pid} = hecate_pubsub_registry:register(R, Kp),
 
     %% Subscribe via the registry's dispatch path.
-    SubF = macula_frame:sign(macula_frame:subscribe(#{
+    SubF = hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => <<"news">>,
         realm      => R,
         subscriber => SubId
@@ -139,24 +139,24 @@ dispatch_event_returns_local_subscribers() ->
     {ok, []} = hecate_pubsub_registry:dispatch_frame(R, SubId, SubF),
 
     %% Now an inbound EVENT must match the local subscriber.
-    EventF = macula_frame:sign(macula_frame:event(#{
+    EventF = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"news">>,
         realm         => R,
-        publisher     => macula_identity:public(Kp),
+        publisher     => hecate_identity:public(Kp),
         seq           => 1,
         payload       => <<"hello">>,
         delivered_via => plumtree
     }), Kp),
 
     {ok, Matched} = hecate_pubsub_registry:dispatch_frame(
-                      R, macula_identity:public(Kp), EventF),
+                      R, hecate_identity:public(Kp), EventF),
     ?assertEqual([SubId], Matched).
 
 dispatch_unknown_realm_returns_not_found() ->
     R   = realm(),
     Kp  = keypair(),
-    Pub = macula_identity:public(Kp),
-    Frame = macula_frame:sign(macula_frame:subscribe(#{
+    Pub = hecate_identity:public(Kp),
+    Frame = hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => <<"x">>,
         realm      => R,
         subscriber => Pub
@@ -172,8 +172,8 @@ dispatch_after_child_death_returns_not_found() ->
     wait_until(fun() ->
         hecate_pubsub_registry:lookup(R) =:= {error, not_found}
     end, 1000),
-    Pub = macula_identity:public(Kp),
-    Frame = macula_frame:sign(macula_frame:subscribe(#{
+    Pub = hecate_identity:public(Kp),
+    Frame = hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => <<"x">>,
         realm      => R,
         subscriber => Pub
@@ -198,16 +198,16 @@ distinct_realms_isolated() ->
     ?assertEqual(0, hecate_pubsub_server:subscriber_count(P2)),
 
     %% Event tagged with R2 must not match P1's subscribers.
-    EventF = macula_frame:sign(macula_frame:event(#{
+    EventF = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"t">>,
         realm         => R2,
-        publisher     => macula_identity:public(Kp),
+        publisher     => hecate_identity:public(Kp),
         seq           => 1,
         payload       => <<"x">>,
         delivered_via => plumtree
     }), Kp),
     {ok, Matched} = hecate_pubsub_registry:dispatch_frame(
-                      R2, macula_identity:public(Kp), EventF),
+                      R2, hecate_identity:public(Kp), EventF),
     ?assertEqual([], Matched).
 
 %%---------------------------------------------------------------------

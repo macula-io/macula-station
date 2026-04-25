@@ -17,14 +17,14 @@
     %% when the operator does not override it).
     identity_file  :: file:name_all(),
     %% Loaded identity (filled by the loader after disk I/O).
-    identity       :: macula_identity:key_pair() | undefined,
+    identity       :: hecate_identity:key_pair() | undefined,
     %% QUIC listener.
     bind           :: inet:ip_address() | string(),
     port           :: inet:port_number(),
     certfile       :: file:name_all(),
     keyfile        :: file:name_all(),
     %% Peering capability bits advertised in the CONNECT handshake
-    %% (`macula_frame' feature negotiation). Stations are
+    %% (`hecate_frame' feature negotiation). Stations are
     %% realm-agnostic infrastructure per the railroad mental model —
     %% realm identity, admission, and overlay belong to a separate
     %% `hecate-realm' / `macula-realm' service — so no realm

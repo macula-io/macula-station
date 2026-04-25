@@ -2,19 +2,19 @@
 %%
 %% Tier A queries a panel of independent DoH resolvers in parallel
 %% for the foundation-signed `foundation_seed_list' record at each
-%% firmware-embedded foundation pubkey (`macula_foundation:pubkeys/0').
+%% firmware-embedded foundation pubkey (`hecate_foundation:pubkeys/0').
 %% A record is accepted only when at least `corroboration' resolvers
 %% return byte-identical payloads — defending against single-resolver
 %% hijack (Part 5 §4.3).
 %%
 %% Per-response verification chain:
 %% <ol>
-%%   <li>Decode bytes via `macula_record:decode/1'.</li>
+%%   <li>Decode bytes via `hecate_record:decode/1'.</li>
 %%   <li>Confirm the record's storage key matches the expected
 %%       `sha256("foundation_seed_list" || FoundationKey)' (defends
 %%       against substitution to a different foundation domain).</li>
 %%   <li>Verify type / signer / signature / expiry via
-%%       `macula_foundation:verify_record/1'.</li>
+%%       `hecate_foundation:verify_record/1'.</li>
 %% </ol>
 %%
 %% Once a record clears corroboration, every seed in its payload is
@@ -29,7 +29,7 @@
 %%       endpoint it should query. Multiple distinct providers are
 %%       required for any meaningful corroboration.</li>
 %%   <li>`pubkeys' :: [pubkey()] — defaults to
-%%       `macula_foundation:pubkeys/0'.</li>
+%%       `hecate_foundation:pubkeys/0'.</li>
 %%   <li>`corroboration' :: pos_integer() — minimum resolvers that
 %%       must return identical bytes for a given pubkey
 %%       (default 2).</li>
@@ -49,7 +49,7 @@
 
 -type probe_opts() :: #{
     resolvers     := [resolver_spec()],
-    pubkeys       => [macula_identity:pubkey()],
+    pubkeys       => [hecate_identity:pubkey()],
     corroboration => pos_integer(),
     timeout_ms    => pos_integer()
 }.
@@ -64,7 +64,7 @@ stagger_ms() -> 0.
 -spec probe(probe_opts()) -> hecate_bootstrap_tier:probe_result().
 probe(Opts) ->
     Resolvers = maps:get(resolvers,     Opts, []),
-    Pubkeys   = maps:get(pubkeys,       Opts, macula_foundation:pubkeys()),
+    Pubkeys   = maps:get(pubkeys,       Opts, hecate_foundation:pubkeys()),
     Threshold = maps:get(corroboration, Opts, ?DEFAULT_CORROBORATION),
     Timeout   = maps:get(timeout_ms,    Opts, ?DEFAULT_TIMEOUT_MS),
     run(Resolvers, Pubkeys, Threshold, Timeout).
@@ -145,7 +145,7 @@ decode_and_verify(Pk, Bytes) ->
     chain([
         fun() -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
         fun(R) -> check_storage_key(Pk, R) end,
-        fun(R) -> macula_foundation:verify_record(R) end
+        fun(R) -> hecate_foundation:verify_record(R) end
     ]).
 
 %% Sequential `>>=' over `{ok, _} | {error, _}'.
@@ -158,7 +158,7 @@ chain({ok, V},        [Step | Rest]) -> chain(Step(V), Rest).
 check_storage_key(Pk, Record) ->
     Expected = crypto:hash(sha256,
                            <<?STORAGE_DOMAIN_FOUND_SEED/binary, Pk/binary>>),
-    case macula_record:storage_key(Record) =:= Expected of
+    case hecate_record:storage_key(Record) =:= Expected of
         true  -> {ok, Record};
         false -> {error, wrong_storage_key}
     end.

@@ -71,22 +71,22 @@
     overall_timeout_ms     => pos_integer()
 }.
 
--type result() :: {ok, [macula_frame:station_ref()]}.
+-type result() :: {ok, [hecate_frame:station_ref()]}.
 
 -type path_id() :: non_neg_integer().
 
 -type path() :: #{
     id        := path_id(),
-    shortlist := [macula_frame:station_ref()],
-    queried   := sets:set(macula_identity:pubkey()),
-    in_flight := sets:set(macula_identity:pubkey())
+    shortlist := [hecate_frame:station_ref()],
+    queried   := sets:set(hecate_identity:pubkey()),
+    in_flight := sets:set(hecate_identity:pubkey())
 }.
 
 -type state() :: #{
     dht          := hecate_dht:dht(),
     key          := hecate_dht_xor:id(),
     paths        := [path()],
-    claimed      := sets:set(macula_identity:pubkey()),
+    claimed      := sets:set(hecate_identity:pubkey()),
     target_count := pos_integer(),
     alpha        := pos_integer(),
     per_req      := pos_integer(),
@@ -133,14 +133,14 @@ build_state(Dht, Key, Opts) ->
     }.
 
 -spec seed_refs(hecate_dht:dht(), hecate_dht_xor:id(), pos_integer(),
-                macula_identity:pubkey()) ->
-          [macula_frame:station_ref()].
+                hecate_identity:pubkey()) ->
+          [hecate_frame:station_ref()].
 seed_refs(Dht, Key, MaxCount, Self) ->
     Entries = hecate_dht:k_closest(Dht, Key, MaxCount),
     [hecate_dht_protocol:entry_to_station_ref(E)
      || E <- Entries, hecate_dht_entry:node_id(E) =/= Self].
 
--spec distribute([macula_frame:station_ref()], pos_integer(),
+-spec distribute([hecate_frame:station_ref()], pos_integer(),
                  hecate_dht_xor:id()) -> [path()].
 distribute(Refs, D, Key) ->
     Sorted = sort_by_distance(Refs, Key),
@@ -191,7 +191,7 @@ dispatch_slots(Path, _State, 0) ->
 dispatch_slots(Path, State, Remaining) ->
     advance(next_unqueried(Path), Path, State, Remaining).
 
--spec advance({ok, macula_frame:station_ref()} | none, path(),
+-spec advance({ok, hecate_frame:station_ref()} | none, path(),
               state(), pos_integer()) -> path().
 advance(none, Path, _State, _Remaining) ->
     Path;
@@ -199,25 +199,25 @@ advance({ok, Ref}, Path, State, Remaining) ->
     Path1 = send_query(Ref, Path, State),
     dispatch_slots(Path1, State, Remaining - 1).
 
--spec next_unqueried(path()) -> {ok, macula_frame:station_ref()} | none.
+-spec next_unqueried(path()) -> {ok, hecate_frame:station_ref()} | none.
 next_unqueried(#{shortlist := Short, queried := Q}) ->
     scan_unqueried(Short, Q).
 
--spec scan_unqueried([macula_frame:station_ref()],
-                     sets:set(macula_identity:pubkey())) ->
-          {ok, macula_frame:station_ref()} | none.
+-spec scan_unqueried([hecate_frame:station_ref()],
+                     sets:set(hecate_identity:pubkey())) ->
+          {ok, hecate_frame:station_ref()} | none.
 scan_unqueried([], _Q) -> none;
 scan_unqueried([Ref | Rest], Q) ->
     resume_scan(sets:is_element(id_of(Ref), Q), Ref, Rest, Q).
 
--spec resume_scan(boolean(), macula_frame:station_ref(),
-                  [macula_frame:station_ref()],
-                  sets:set(macula_identity:pubkey())) ->
-          {ok, macula_frame:station_ref()} | none.
+-spec resume_scan(boolean(), hecate_frame:station_ref(),
+                  [hecate_frame:station_ref()],
+                  sets:set(hecate_identity:pubkey())) ->
+          {ok, hecate_frame:station_ref()} | none.
 resume_scan(true,  _Ref, Rest, Q) -> scan_unqueried(Rest, Q);
 resume_scan(false, Ref,  _Rest, _Q) -> {ok, Ref}.
 
--spec send_query(macula_frame:station_ref(), path(), state()) -> path().
+-spec send_query(hecate_frame:station_ref(), path(), state()) -> path().
 send_query(Ref, Path, State) ->
     PathId = maps:get(id, Path),
     PeerId = id_of(Ref),
@@ -270,7 +270,7 @@ await_result(State) ->
         State
     end.
 
--spec absorb(state(), path_id(), macula_identity:pubkey(),
+-spec absorb(state(), path_id(), hecate_identity:pubkey(),
              hecate_dht:find_node_result()) -> state().
 absorb(State, PathId, PeerId, {ok, Refs}) ->
     State1 = clear_in_flight(State, PathId, PeerId),
@@ -278,7 +278,7 @@ absorb(State, PathId, PeerId, {ok, Refs}) ->
 absorb(State, PathId, PeerId, {error, _}) ->
     clear_in_flight(State, PathId, PeerId).
 
--spec clear_in_flight(state(), path_id(), macula_identity:pubkey()) ->
+-spec clear_in_flight(state(), path_id(), hecate_identity:pubkey()) ->
           state().
 clear_in_flight(State, PathId, PeerId) ->
     Paths = update_path(maps:get(paths, State), PathId,
@@ -289,7 +289,7 @@ clear_in_flight(State, PathId, PeerId) ->
                         end),
     State#{paths := Paths}.
 
--spec merge_fresh(state(), path_id(), [macula_frame:station_ref()]) ->
+-spec merge_fresh(state(), path_id(), [hecate_frame:station_ref()]) ->
           state().
 merge_fresh(State, PathId, Refs) ->
     Claimed = maps:get(claimed, State),
@@ -302,7 +302,7 @@ merge_fresh(State, PathId, Refs) ->
                            [id_of(R) || R <- Fresh]),
     State#{paths := Paths, claimed := Claimed1}.
 
--spec add_to_shortlist(path(), [macula_frame:station_ref()],
+-spec add_to_shortlist(path(), [hecate_frame:station_ref()],
                        hecate_dht_xor:id()) -> path().
 add_to_shortlist(#{shortlist := Short} = Path, Fresh, Key) ->
     Path#{shortlist := sort_by_distance(Short ++ Fresh, Key)}.
@@ -332,17 +332,17 @@ finalise(State) ->
 %% Small helpers
 %%=====================================================================
 
--spec id_of(macula_frame:station_ref()) -> macula_identity:pubkey().
+-spec id_of(hecate_frame:station_ref()) -> hecate_identity:pubkey().
 id_of(#{node_id := Id}) -> Id.
 
--spec sort_by_distance([macula_frame:station_ref()], hecate_dht_xor:id()) ->
-          [macula_frame:station_ref()].
+-spec sort_by_distance([hecate_frame:station_ref()], hecate_dht_xor:id()) ->
+          [hecate_frame:station_ref()].
 sort_by_distance(Refs, Key) ->
     Keyed = [{hecate_dht_xor:distance_int(Key, id_of(R)), R} || R <- Refs],
     [R || {_, R} <- lists:keysort(1, Keyed)].
 
--spec dedup_by_id([macula_frame:station_ref()]) ->
-          [macula_frame:station_ref()].
+-spec dedup_by_id([hecate_frame:station_ref()]) ->
+          [hecate_frame:station_ref()].
 dedup_by_id(Refs) ->
     Map = lists:foldl(fun(R, Acc) -> Acc#{id_of(R) => R} end, #{}, Refs),
     maps:values(Map).

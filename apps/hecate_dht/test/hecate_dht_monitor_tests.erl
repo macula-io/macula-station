@@ -1,5 +1,5 @@
 %% EUnit tests for hecate_dht_monitor — bucket + replica diversity
-%% reports and macula_diagnostics gauge emission.
+%% reports and hecate_diagnostics gauge emission.
 -module(hecate_dht_monitor_tests).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -63,15 +63,15 @@ bucket_below_member_threshold_skips_tier_constraint_test() ->
 
 replica_summary_emitted_for_owned_records_test() ->
     {Dht, Kp} = start_dht(),
-    SelfId = macula_identity:public(Kp),
+    SelfId = hecate_identity:public(Kp),
     %% Owner-signed record (envelope key matches self_id).
-    Record = macula_record:sign(macula_record:node_record(SelfId, [], 0), Kp),
+    Record = hecate_record:sign(hecate_record:node_record(SelfId, [], 0), Kp),
     ok = hecate_dht:put_record(Dht, Record),
     Mon = start_monitor(Dht, #{self_id => SelfId}),
     Replicas = maps:get(replicas, hecate_dht_monitor:report(Mon)),
     ?assertEqual(1, maps:get(owned_records, Replicas)),
     [Summary] = maps:get(placement_summaries, Replicas),
-    ?assertEqual(macula_record:storage_key(Record),
+    ?assertEqual(hecate_record:storage_key(Record),
                  maps:get(storage_key, Summary)),
     %% No peers in the RT → degraded.
     ?assert(maps:get(degraded, Summary)),
@@ -80,11 +80,11 @@ replica_summary_emitted_for_owned_records_test() ->
 
 replica_summary_skips_records_owned_by_others_test() ->
     {Dht, Kp} = start_dht(),
-    SelfId = macula_identity:public(Kp),
+    SelfId = hecate_identity:public(Kp),
     %% Stranger-signed record.
-    KpStranger = macula_identity:generate(),
-    Record = macula_record:sign(
-               macula_record:node_record(macula_identity:public(KpStranger),
+    KpStranger = hecate_identity:generate(),
+    Record = hecate_record:sign(
+               hecate_record:node_record(hecate_identity:public(KpStranger),
                                          [], 0),
                KpStranger),
     ok = hecate_dht:put_record(Dht, Record),
@@ -148,8 +148,8 @@ interval_drives_auto_ticks_test() ->
 %%=====================================================================
 
 start_dht() ->
-    Kp = macula_identity:generate(),
-    {ok, D} = hecate_dht:start_link(#{self_id  => macula_identity:public(Kp),
+    Kp = hecate_identity:generate(),
+    {ok, D} = hecate_dht:start_link(#{self_id  => hecate_identity:public(Kp),
                                       identity => Kp}),
     {D, Kp}.
 

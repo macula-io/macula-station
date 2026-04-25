@@ -39,7 +39,7 @@
 
 -type opts() :: #{
     dht         := hecate_dht:dht(),
-    identity    := macula_identity:key_pair(),
+    identity    := hecate_identity:key_pair(),
     interval_ms => pos_integer(),
     store_opts  => hecate_dht_store:opts()
 }.
@@ -60,8 +60,8 @@
 
 -record(state, {
     dht         :: hecate_dht:dht(),
-    identity    :: macula_identity:key_pair(),
-    self_id     :: macula_identity:pubkey(),
+    identity    :: hecate_identity:key_pair(),
+    self_id     :: hecate_identity:pubkey(),
     interval_ms :: pos_integer(),
     store_opts  :: hecate_dht_store:opts(),
     ticks       :: non_neg_integer(),
@@ -95,7 +95,7 @@ init(#{dht := Dht, identity := Identity} = Opts) ->
     State = #state{
         dht         = Dht,
         identity    = Identity,
-        self_id     = macula_identity:public(Identity),
+        self_id     = hecate_identity:public(Identity),
         interval_ms = Interval,
         store_opts  = maps:get(store_opts, Opts, default_store_opts()),
         ticks       = 0,
@@ -145,21 +145,21 @@ run_tick(#state{dht = Dht, self_id = SelfId} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec process_record(macula_record:record(), macula_identity:pubkey(),
+-spec process_record(hecate_record:record(), hecate_identity:pubkey(),
                      #state{}, outcome()) -> outcome().
 process_record(Record, SelfId, State, Acc0) ->
     Acc = bump(Acc0, records_seen),
-    maybe_republish(macula_record:key(Record) =:= SelfId,
+    maybe_republish(hecate_record:key(Record) =:= SelfId,
                     Record, State, Acc).
 
--spec maybe_republish(boolean(), macula_record:record(),
+-spec maybe_republish(boolean(), hecate_record:record(),
                       #state{}, outcome()) -> outcome().
 maybe_republish(false, _Record, _State, Acc) ->
     Acc;
 maybe_republish(true, Record,
                 #state{dht = Dht, identity = Identity,
                        store_opts = StoreOpts}, Acc) ->
-    Fresh = macula_record:refresh(Record, Identity),
+    Fresh = hecate_record:refresh(Record, Identity),
     ok    = hecate_dht:put_record(Dht, Fresh),
     account(hecate_dht:store(Dht, Fresh, StoreOpts), bump(Acc, owned)).
 

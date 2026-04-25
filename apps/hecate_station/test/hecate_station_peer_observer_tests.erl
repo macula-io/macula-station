@@ -48,7 +48,7 @@ duplicate_connected_touches_test_() ->
         fun() ->
             NodeId  = random_node_id(),
             ConnPid = spawn_dummy(),
-            Obs ! {macula_peering, connected, ConnPid, NodeId},
+            Obs ! {hecate_peering, connected, ConnPid, NodeId},
             wait_for(fun() -> hecate_dht:size(Dht) =:= 1 end, 500),
             %% A direct call confirms the DHT's own idempotence and
             %% matches what the observer's next event would do.
@@ -68,7 +68,7 @@ disconnected_removes_from_swim_test_() ->
         fun() ->
             {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
             wait_for(fun() -> has_member(Swim, NodeId) end, 500),
-            Obs ! {macula_peering, disconnected, ConnPid, operator_stop},
+            Obs ! {hecate_peering, disconnected, ConnPid, operator_stop},
             wait_for(fun() -> not has_member(Swim, NodeId) end, 500),
             ?assertEqual([], hecate_station_peer_observer:peers(Obs))
         end
@@ -84,11 +84,11 @@ signed_swim_ping_reaches_swim_test_() ->
         fun() ->
             {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
             Kp = maps:get(peer_kp, Ctx),
-            Ping = macula_frame:swim_ping(#{round => 1,
+            Ping = hecate_frame:swim_ping(#{round => 1,
                                             incarnation => 0,
                                             piggyback => []}),
-            Signed = macula_frame:sign(Ping, Kp),
-            Obs ! {macula_peering, frame, ConnPid, Signed},
+            Signed = hecate_frame:sign(Ping, Kp),
+            Obs ! {hecate_peering, frame, ConnPid, Signed},
             %% There is no synchronous observer on SWIM receipt; let
             %% the cast land. On a bad signature the assertion below
             %% would fail because SWIM would never have replied.
@@ -102,13 +102,13 @@ unsigned_frame_is_dropped_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
             {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
-            %% Build an unsigned frame — `macula_frame:verify/2'
+            %% Build an unsigned frame — `hecate_frame:verify/2'
             %% returns `{error, _}', so the observer must drop it
             %% silently without crashing.
-            Unsigned = macula_frame:swim_ping(#{round => 99,
+            Unsigned = hecate_frame:swim_ping(#{round => 99,
                                                 incarnation => 0,
                                                 piggyback => []}),
-            Obs ! {macula_peering, frame, ConnPid, Unsigned},
+            Obs ! {hecate_peering, frame, ConnPid, Unsigned},
             timer:sleep(50),
             ?assert(is_process_alive(Obs))
         end
@@ -118,11 +118,11 @@ frame_from_unknown_conn_is_dropped_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(#{obs := Obs}) ->
         fun() ->
             Fake = spawn_dummy(),
-            Kp   = macula_identity:generate(),
-            Ping = macula_frame:swim_ping(#{round => 1, incarnation => 0,
+            Kp   = hecate_identity:generate(),
+            Ping = hecate_frame:swim_ping(#{round => 1, incarnation => 0,
                                             piggyback => []}),
-            Signed = macula_frame:sign(Ping, Kp),
-            Obs ! {macula_peering, frame, Fake, Signed},
+            Signed = hecate_frame:sign(Ping, Kp),
+            Obs ! {hecate_peering, frame, Fake, Signed},
             timer:sleep(50),
             ?assert(is_process_alive(Obs))
         end
@@ -134,9 +134,9 @@ frame_from_unknown_conn_is_dropped_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    SelfKp  = macula_identity:generate(),
-    PeerKp  = macula_identity:generate(),
-    SelfId  = macula_identity:public(SelfKp),
+    SelfKp  = hecate_identity:generate(),
+    PeerKp  = hecate_identity:generate(),
+    SelfId  = hecate_identity:public(SelfKp),
     {ok, Dht}  = hecate_dht:start_link(#{self_id => SelfId}),
     {ok, Swim} = hecate_swim:start_link(#{
         self_node_id    => SelfId,
@@ -156,9 +156,9 @@ teardown(#{obs := Obs, swim := Swim, dht := Dht}) ->
 
 one_connected_peer(#{obs := Obs, dht := Dht, swim := Swim,
                      peer_kp := PeerKp}) ->
-    NodeId  = macula_identity:public(PeerKp),
+    NodeId  = hecate_identity:public(PeerKp),
     ConnPid = spawn_dummy(),
-    Obs ! {macula_peering, connected, ConnPid, NodeId},
+    Obs ! {hecate_peering, connected, ConnPid, NodeId},
     wait_for(fun() -> hecate_dht:size(Dht) =:= 1 end, 500),
     {Obs, Dht, Swim, NodeId, ConnPid}.
 

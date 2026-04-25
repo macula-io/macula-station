@@ -2,7 +2,7 @@
     {description, "Hecate Station — realm directory cache"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, macula]},
+    {applications, [kernel, stdlib]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

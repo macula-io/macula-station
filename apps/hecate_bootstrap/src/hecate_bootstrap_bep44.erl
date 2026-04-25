@@ -43,7 +43,7 @@
 -export_type([item/0, verify_error/0]).
 
 -type item() :: #{
-    pubkey := macula_identity:pubkey(),
+    pubkey := hecate_identity:pubkey(),
     seq    := non_neg_integer(),
     value  := binary(),
     sig    := <<_:512>>,
@@ -60,11 +60,11 @@
 %% Target id
 %%==================================================================
 
--spec target_id(macula_identity:pubkey()) -> <<_:160>>.
+-spec target_id(hecate_identity:pubkey()) -> <<_:160>>.
 target_id(Pubkey) when is_binary(Pubkey), byte_size(Pubkey) =:= 32 ->
     crypto:hash(sha, Pubkey).
 
--spec target_id(macula_identity:pubkey(), binary()) -> <<_:160>>.
+-spec target_id(hecate_identity:pubkey(), binary()) -> <<_:160>>.
 target_id(Pubkey, Salt)
   when is_binary(Pubkey), byte_size(Pubkey) =:= 32,
        is_binary(Salt) ->
@@ -94,22 +94,22 @@ bencode_binary(Bin) ->
 %% Sign (test / tooling convenience — production signing uses FROST)
 %%==================================================================
 
--spec sign(non_neg_integer(), binary(), macula_identity:key_pair()) ->
+-spec sign(non_neg_integer(), binary(), hecate_identity:key_pair()) ->
           item().
 sign(Seq, Value, KeyPair) ->
     Payload = signed_payload(Seq, Value),
-    Sig     = macula_identity:sign(Payload, KeyPair),
-    #{pubkey => macula_identity:public(KeyPair),
+    Sig     = hecate_identity:sign(Payload, KeyPair),
+    #{pubkey => hecate_identity:public(KeyPair),
       seq    => Seq,
       value  => Value,
       sig    => Sig}.
 
 -spec sign(non_neg_integer(), binary(), binary(),
-           macula_identity:key_pair()) -> item().
+           hecate_identity:key_pair()) -> item().
 sign(Seq, Value, Salt, KeyPair) ->
     Payload = signed_payload(Seq, Value, Salt),
-    Sig     = macula_identity:sign(Payload, KeyPair),
-    #{pubkey => macula_identity:public(KeyPair),
+    Sig     = hecate_identity:sign(Payload, KeyPair),
+    #{pubkey => hecate_identity:public(KeyPair),
       seq    => Seq,
       value  => Value,
       salt   => Salt,
@@ -143,10 +143,10 @@ shape(_) ->
 
 do_verify(#{pubkey := Pk, seq := S, value := V, sig := Sig,
             salt := Salt}) ->
-    check(macula_identity:verify(
+    check(hecate_identity:verify(
             signed_payload(S, V, Salt), Sig, Pk));
 do_verify(#{pubkey := Pk, seq := S, value := V, sig := Sig}) ->
-    check(macula_identity:verify(
+    check(hecate_identity:verify(
             signed_payload(S, V), Sig, Pk)).
 
 check(true)  -> ok;

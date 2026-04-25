@@ -63,7 +63,7 @@
 -define(DEFAULT_ACTIVE_CAP,     5).
 -define(DEFAULT_PASSIVE_RATIO,  4).
 
--type peer() :: macula_identity:pubkey().
+-type peer() :: hecate_identity:pubkey().
 
 -type opts() :: #{
     active_cap   => pos_integer(),

@@ -2,7 +2,7 @@
 %%
 %% Reads the foundation's latest anchor from a Blockstream/Esplora
 %% HTTP API (`GET /address/<addr>/txs'). Bitcoin's 80-byte OP_RETURN
-%% standardness limit cannot hold a full `macula_record' envelope, so
+%% standardness limit cannot hold a full `hecate_record' envelope, so
 %% the foundation publishes a <em>pointer</em>: a 32-byte SHA-256 of
 %% the record plus an HTTPS URL where the record is hosted. The
 %% adapter fetches the URL, verifies the hash, and returns the

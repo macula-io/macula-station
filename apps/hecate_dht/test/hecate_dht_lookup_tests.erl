@@ -24,7 +24,7 @@ lookup_on_empty_dht_returns_empty_test() ->
 lookup_finds_refs_from_single_peer_test() ->
     Net = start_network([a, b]),
     #{a := {A, KpA}, b := {B, KpB}} = Net,
-    BId = macula_identity:public(KpB),
+    BId = hecate_identity:public(KpB),
 
     %% A knows B.
     admitted = hecate_dht:observe(A, spec(BId)),
@@ -53,9 +53,9 @@ lookup_finds_refs_from_single_peer_test() ->
 lookup_traverses_multi_hop_chain_test() ->
     Net = start_network([a, b, c, d]),
     #{a := {A, _}, b := {B, KpB}, c := {C, KpC}, d := {D, KpD}} = Net,
-    BId = macula_identity:public(KpB),
-    CId = macula_identity:public(KpC),
-    DId = macula_identity:public(KpD),
+    BId = hecate_identity:public(KpB),
+    CId = hecate_identity:public(KpC),
+    DId = hecate_identity:public(KpD),
 
     %% A only knows B; B only knows C; C only knows D.
     admitted = hecate_dht:observe(A, spec(BId)),
@@ -83,7 +83,7 @@ lookup_traverses_multi_hop_chain_test() ->
 lookup_respects_target_count_test() ->
     Net = start_network([a, b]),
     #{a := {A, _}, b := {B, KpB}} = Net,
-    BId = macula_identity:public(KpB),
+    BId = hecate_identity:public(KpB),
     admitted = hecate_dht:observe(A, spec(BId)),
     [admitted = hecate_dht:observe(B, spec(<<N:256>>)) || N <- lists:seq(1, 10)],
     {ok, Refs} = hecate_dht:lookup_nodes(A, <<1:256>>,
@@ -98,8 +98,8 @@ lookup_respects_target_count_test() ->
 lookup_result_is_deduped_and_ordered_by_distance_test() ->
     Net = start_network([a, b, c]),
     #{a := {A, _}, b := {B, KpB}, c := {C, KpC}} = Net,
-    BId = macula_identity:public(KpB),
-    CId = macula_identity:public(KpC),
+    BId = hecate_identity:public(KpB),
+    CId = hecate_identity:public(KpC),
     %% Both B and C share two common peers — dedup must not double-count.
     Shared = <<42:256>>,
     admitted = hecate_dht:observe(A, spec(BId)),
@@ -122,9 +122,9 @@ lookup_result_is_deduped_and_ordered_by_distance_test() ->
 
 lookup_honours_overall_timeout_test() ->
     %% A has a silent transport — find_node calls will time out.
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     {ok, A} = hecate_dht:start_link(#{
-        self_id         => macula_identity:public(Kp),
+        self_id         => hecate_identity:public(Kp),
         identity        => Kp,
         send_frame      => fun(_, _) -> ok end
     }),
@@ -151,9 +151,9 @@ lookup_honours_overall_timeout_test() ->
 disjoint_paths_do_not_double_query_test() ->
     Net = start_network([a, b, c, d]),
     #{a := {A, _}, b := {B, KpB}, c := {C, KpC}, d := {_D, KpD}} = Net,
-    BId = macula_identity:public(KpB),
-    CId = macula_identity:public(KpC),
-    DId = macula_identity:public(KpD),
+    BId = hecate_identity:public(KpB),
+    CId = hecate_identity:public(KpC),
+    DId = hecate_identity:public(KpD),
     %% A knows B and C (two initial seeds — round-robin across 2 paths).
     admitted = hecate_dht:observe(A, spec(BId)),
     admitted = hecate_dht:observe(A, spec(CId)),
@@ -176,17 +176,17 @@ disjoint_paths_do_not_double_query_test() ->
 
 start_network(Names) ->
     Router = spawn_router(),
-    Kps = [{N, macula_identity:generate()} || N <- Names],
+    Kps = [{N, hecate_identity:generate()} || N <- Names],
     Pairs = [{N, make_server(Kp, Router)} || {N, Kp} <- Kps],
     Net = maps:from_list([{N, {P, Kp}} || {N, {P, Kp}} <- Pairs]),
-    RouteMap = maps:from_list([{macula_identity:public(Kp), P}
+    RouteMap = maps:from_list([{hecate_identity:public(Kp), P}
                                || {_, {P, Kp}} <- Pairs]),
     Router ! {table, RouteMap},
     put(lookup_router, Router),
     Net.
 
 make_server(Kp, Router) ->
-    SelfId = macula_identity:public(Kp),
+    SelfId = hecate_identity:public(Kp),
     Send = fun(DstId, Frame) ->
         Router ! {route, SelfId, DstId, Frame}, ok
     end,
@@ -227,7 +227,7 @@ route_frame(Table, From, Dst, Frame) ->
     end.
 
 bump_stat(Stats, Dst, Frame) ->
-    Key = {Dst, macula_frame:frame_type(Frame)},
+    Key = {Dst, hecate_frame:frame_type(Frame)},
     maps:update_with(Key, fun(N) -> N + 1 end, 1, Stats).
 
 router_stats() ->

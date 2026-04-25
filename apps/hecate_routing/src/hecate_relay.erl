@@ -23,7 +23,7 @@
 %%
 %% <ol>
 %%   <li>Source-route header decodes + path_hash verifies (handled
-%%       by `macula_source_route:decode/1' inline).</li>
+%%       by `hecate_source_route:decode/1' inline).</li>
 %%   <li>Deadline not expired — else `expiry_too_soon'.</li>
 %%   <li>No duplicate hops — else `loop_detected'.</li>
 %%   <li>`current_hop_id(SR)' matches our 16-byte NodeId prefix —
@@ -49,28 +49,28 @@
 -export_type([context/0, action/0]).
 
 -type alive_predicate() ::
-        fun((macula_identity:pubkey()) -> boolean()).
+        fun((hecate_identity:pubkey()) -> boolean()).
 
 -type context() :: #{
-    self_id  := macula_identity:pubkey(),
-    identity := macula_identity:key_pair(),
+    self_id  := hecate_identity:pubkey(),
+    identity := hecate_identity:key_pair(),
     is_alive := alive_predicate(),
     now_ms   => non_neg_integer()
 }.
 
 -type action() ::
-      {forward, NextHop :: macula_identity:pubkey(),
-                macula_frame:frame()}
-    | {deliver_local, macula_frame:frame()}
-    | {reply_error, macula_frame:frame(),
-                    OriginatorId :: macula_identity:pubkey() | undefined}.
+      {forward, NextHop :: hecate_identity:pubkey(),
+                hecate_frame:frame()}
+    | {deliver_local, hecate_frame:frame()}
+    | {reply_error, hecate_frame:frame(),
+                    OriginatorId :: hecate_identity:pubkey() | undefined}.
 
 %%=====================================================================
 %% Public API
 %%=====================================================================
 
 %% @doc Process an inbound CALL frame and return the next action.
--spec process_call(macula_frame:frame(), context()) -> action().
+-spec process_call(hecate_frame:frame(), context()) -> action().
 process_call(#{frame_type := call} = Frame, Context) ->
     process_source_route(maps:get(source_route, Frame, <<>>),
                          Frame, Context).
@@ -79,76 +79,76 @@ process_call(#{frame_type := call} = Frame, Context) ->
 %% Pipeline
 %%=====================================================================
 
--spec process_source_route(binary(), macula_frame:frame(), context()) ->
+-spec process_source_route(binary(), hecate_frame:frame(), context()) ->
         action().
 process_source_route(<<>>, Frame, Context) ->
     reply_error(Frame, invalid_path_header, undefined, Context);
 process_source_route(SrBin, Frame, Context) ->
-    process_decoded(macula_source_route:decode(SrBin), Frame, Context).
+    process_decoded(hecate_source_route:decode(SrBin), Frame, Context).
 
--spec process_decoded({ok, macula_source_route:header()}
-                    | {error, macula_source_route:decode_error()},
-                      macula_frame:frame(), context()) -> action().
+-spec process_decoded({ok, hecate_source_route:header()}
+                    | {error, hecate_source_route:decode_error()},
+                      hecate_frame:frame(), context()) -> action().
 process_decoded({error, _Reason}, Frame, Context) ->
     reply_error(Frame, invalid_path_header, undefined, Context);
 process_decoded({ok, SR}, Frame, Context) ->
     check_deadline(SR, Frame, Context).
 
--spec check_deadline(macula_source_route:header(), macula_frame:frame(),
+-spec check_deadline(hecate_source_route:header(), hecate_frame:frame(),
                      context()) -> action().
 check_deadline(SR, Frame, Context) ->
     Now = maps:get(now_ms, Context, erlang:system_time(millisecond)),
-    advance_after_deadline(macula_source_route:deadline(SR) =< Now,
+    advance_after_deadline(hecate_source_route:deadline(SR) =< Now,
                            SR, Frame, Context).
 
--spec advance_after_deadline(boolean(), macula_source_route:header(),
-                             macula_frame:frame(), context()) -> action().
+-spec advance_after_deadline(boolean(), hecate_source_route:header(),
+                             hecate_frame:frame(), context()) -> action().
 advance_after_deadline(true, _SR, Frame, Context) ->
     reply_error(Frame, expiry_too_soon, undefined, Context);
 advance_after_deadline(false, SR, Frame, Context) ->
     check_loop(SR, Frame, Context).
 
--spec check_loop(macula_source_route:header(), macula_frame:frame(),
+-spec check_loop(hecate_source_route:header(), hecate_frame:frame(),
                  context()) -> action().
 check_loop(SR, Frame, Context) ->
-    Hops = macula_source_route:hops(SR),
+    Hops = hecate_source_route:hops(SR),
     detect_loop(Hops, length(Hops), length(lists:usort(Hops)),
                 SR, Frame, Context).
 
--spec detect_loop([macula_source_route:hop_id()], non_neg_integer(),
-                  non_neg_integer(), macula_source_route:header(),
-                  macula_frame:frame(), context()) -> action().
+-spec detect_loop([hecate_source_route:hop_id()], non_neg_integer(),
+                  non_neg_integer(), hecate_source_route:header(),
+                  hecate_frame:frame(), context()) -> action().
 detect_loop(_Hops, N, U, _SR, Frame, Context) when N =/= U ->
     reply_error(Frame, loop_detected, undefined, Context);
 detect_loop(_Hops, _N, _U, SR, Frame, Context) ->
     check_position(SR, Frame, Context).
 
--spec check_position(macula_source_route:header(), macula_frame:frame(),
+-spec check_position(hecate_source_route:header(), hecate_frame:frame(),
                      context()) -> action().
 check_position(SR, Frame, Context) ->
-    SelfPrefix = macula_source_route:truncate_hop(maps:get(self_id, Context)),
-    inspect_current_hop(macula_source_route:current_hop_id(SR),
+    SelfPrefix = hecate_source_route:truncate_hop(maps:get(self_id, Context)),
+    inspect_current_hop(hecate_source_route:current_hop_id(SR),
                         SelfPrefix, SR, Frame, Context).
 
--spec inspect_current_hop({ok, macula_source_route:hop_id()} | error,
-                          macula_source_route:hop_id(),
-                          macula_source_route:header(),
-                          macula_frame:frame(), context()) -> action().
+-spec inspect_current_hop({ok, hecate_source_route:hop_id()} | error,
+                          hecate_source_route:hop_id(),
+                          hecate_source_route:header(),
+                          hecate_frame:frame(), context()) -> action().
 inspect_current_hop(error, _SelfPrefix, _SR, Frame, Context) ->
     reply_error(Frame, invalid_path_header, undefined, Context);
 inspect_current_hop({ok, Expected}, SelfPrefix, _SR, Frame, Context)
   when Expected =/= SelfPrefix ->
     reply_error(Frame, invalid_path_header, undefined, Context);
 inspect_current_hop({ok, _Match}, _SelfPrefix, SR, Frame, Context) ->
-    dispatch_or_forward(macula_source_route:is_final_hop(SR),
+    dispatch_or_forward(hecate_source_route:is_final_hop(SR),
                         SR, Frame, Context).
 
--spec dispatch_or_forward(boolean(), macula_source_route:header(),
-                          macula_frame:frame(), context()) -> action().
+-spec dispatch_or_forward(boolean(), hecate_source_route:header(),
+                          hecate_frame:frame(), context()) -> action().
 dispatch_or_forward(true, _SR, Frame, _Context) ->
     {deliver_local, Frame};
 dispatch_or_forward(false, SR, Frame, Context) ->
-    {ok, NextHopPrefix} = macula_source_route:next_hop_id(SR),
+    {ok, NextHopPrefix} = hecate_source_route:next_hop_id(SR),
     %% The source-route header carries truncated 16-byte prefixes,
     %% but the alive-predicate works on full 32-byte NodeIds. The
     %% caller's `is_alive' callback is responsible for resolving
@@ -157,44 +157,44 @@ dispatch_or_forward(false, SR, Frame, Context) ->
     AliveFn = maps:get(is_alive, Context),
     forward_if_alive(AliveFn(NextHopPrefix), NextHopPrefix, SR, Frame, Context).
 
--spec forward_if_alive(boolean(), macula_source_route:hop_id(),
-                       macula_source_route:header(),
-                       macula_frame:frame(), context()) -> action().
+-spec forward_if_alive(boolean(), hecate_source_route:hop_id(),
+                       hecate_source_route:header(),
+                       hecate_frame:frame(), context()) -> action().
 forward_if_alive(false, NextHop, _SR, Frame, Context) ->
     reply_error(Frame, unknown_next_peer, NextHop, Context);
 forward_if_alive(true, NextHop, SR, Frame, _Context) ->
-    SR1    = macula_source_route:advance(SR),
-    SrBin1 = macula_source_route:encode(SR1),
+    SR1    = hecate_source_route:advance(SR),
+    SrBin1 = hecate_source_route:encode(SR1),
     {forward, NextHop, Frame#{source_route := SrBin1}}.
 
 %%=====================================================================
 %% Signed BOLT#4 error responses
 %%=====================================================================
 
--spec reply_error(macula_frame:frame(), macula_bolt4:name(),
-                  macula_source_route:hop_id() | undefined,
+-spec reply_error(hecate_frame:frame(), hecate_bolt4:name(),
+                  hecate_source_route:hop_id() | undefined,
                   context()) -> action().
 reply_error(CallFrame, Code, OffendingHop, Context) ->
     ErrorFrame = build_signed_error(CallFrame, Code, OffendingHop, Context),
     Originator = maps:get(caller, CallFrame, undefined),
     {reply_error, ErrorFrame, Originator}.
 
--spec build_signed_error(macula_frame:frame(), macula_bolt4:name(),
-                         macula_source_route:hop_id() | undefined,
-                         context()) -> macula_frame:frame().
+-spec build_signed_error(hecate_frame:frame(), hecate_bolt4:name(),
+                         hecate_source_route:hop_id() | undefined,
+                         context()) -> hecate_frame:frame().
 build_signed_error(CallFrame, Code, OffendingHop, Context) ->
     SelfId   = maps:get(self_id, Context),
     Identity = maps:get(identity, Context),
     Base = #{
         call_id     => maps:get(call_id, CallFrame, <<0:128>>),
-        code        => macula_bolt4:code(Code),
+        code        => hecate_bolt4:code(Code),
         reported_by => SelfId
     },
     WithHop  = maybe_add_hop(Base, OffendingHop),
     WithSr   = maybe_add_partial(WithHop, CallFrame),
-    macula_frame:sign(macula_frame:call_error(WithSr), Identity).
+    hecate_frame:sign(hecate_frame:call_error(WithSr), Identity).
 
--spec maybe_add_hop(map(), macula_source_route:hop_id() | undefined) -> map().
+-spec maybe_add_hop(map(), hecate_source_route:hop_id() | undefined) -> map().
 maybe_add_hop(Spec, undefined) -> Spec;
 maybe_add_hop(Spec, <<_:128>> = Hop) ->
     %% The SDK ERROR frame demands a full 32-byte offending_hop;
@@ -203,7 +203,7 @@ maybe_add_hop(Spec, <<_:128>> = Hop) ->
     %% without further decoding work.
     Spec#{offending_hop => <<Hop/binary, 0:128>>}.
 
--spec maybe_add_partial(map(), macula_frame:frame()) -> map().
+-spec maybe_add_partial(map(), hecate_frame:frame()) -> map().
 maybe_add_partial(Spec, CallFrame) ->
     case maps:get(source_route, CallFrame, undefined) of
         undefined -> Spec;

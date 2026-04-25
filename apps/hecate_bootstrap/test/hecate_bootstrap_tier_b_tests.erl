@@ -131,18 +131,18 @@ probe(Handshake) ->
 %%==================================================================
 
 make_peer() ->
-    Kp  = macula_identity:generate(),
-    Pub = macula_identity:public(Kp),
-    Rec = macula_record:sign(
-            macula_record:node_record(Pub, [], 0), Kp),
+    Kp  = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Rec = hecate_record:sign(
+            hecate_record:node_record(Pub, [], 0), Kp),
     #{kp => Kp, pub => Pub, signed_record => Rec,
       port => 7000, tier => 0, addr => rand_addr()}.
 
 make_expired_peer() ->
-    Kp  = macula_identity:generate(),
-    Pub = macula_identity:public(Kp),
-    Rec = macula_record:sign(
-            macula_record:node_record(Pub, [], 0, #{ttl_ms => 1}), Kp),
+    Kp  = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Rec = hecate_record:sign(
+            hecate_record:node_record(Pub, [], 0, #{ttl_ms => 1}), Kp),
     timer:sleep(5),
     #{kp => Kp, pub => Pub, signed_record => Rec,
       port => 7000, tier => 0, addr => rand_addr()}.

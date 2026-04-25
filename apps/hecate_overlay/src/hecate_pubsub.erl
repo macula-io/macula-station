@@ -52,7 +52,7 @@
 -export_type([state/0, topic/0, subscriber/0]).
 
 -type topic()      :: binary().
--type subscriber() :: macula_identity:pubkey().
+-type subscriber() :: hecate_identity:pubkey().
 
 -type state() :: #{
     realm         := <<_:256>>,
@@ -133,7 +133,7 @@ drop_or_keep(Map, Topic, Set) ->
 %% an empty list if the realm doesn't match (defensive — the
 %% transport should already route by realm) or no-one is
 %% subscribed.
--spec deliver_event(state(), macula_frame:frame()) ->
+-spec deliver_event(state(), hecate_frame:frame()) ->
         [subscriber()].
 deliver_event(#{realm := R} = State,
               #{frame_type := event, realm := Eventr,
@@ -150,13 +150,13 @@ deliver_event(_State, _Frame) ->
 %% Plumtree.
 %%=====================================================================
 
--spec build_event(state(), macula_frame:publish_spec(),
-                  macula_identity:key_pair()) ->
-        macula_frame:frame().
+-spec build_event(state(), hecate_frame:publish_spec(),
+                  hecate_identity:key_pair()) ->
+        hecate_frame:frame().
 build_event(#{realm := R}, #{topic := T, publisher := Pub,
                               seq := Seq, payload := Payload},
             Identity) ->
-    macula_frame:sign(macula_frame:event(#{
+    hecate_frame:sign(hecate_frame:event(#{
         topic         => T,
         realm         => R,
         publisher     => Pub,
@@ -169,8 +169,8 @@ build_event(#{realm := R}, #{topic := T, publisher := Pub,
 %% Inbound dispatch
 %%=====================================================================
 
--spec process(state(), macula_identity:pubkey(),
-              macula_frame:frame()) ->
+-spec process(state(), hecate_identity:pubkey(),
+              hecate_frame:frame()) ->
         {state(), [subscriber()]}.
 process(State, _From, #{frame_type := subscribe} = F) ->
     on_subscribe(State, F);
@@ -181,7 +181,7 @@ process(State, _From, #{frame_type := event} = F) ->
 process(State, _From, _Frame) ->
     {State, []}.
 
--spec on_subscribe(state(), macula_frame:frame()) ->
+-spec on_subscribe(state(), hecate_frame:frame()) ->
         {state(), []}.
 on_subscribe(#{realm := R} = State,
              #{realm := Eventr, topic := T, subscriber := Sub})
@@ -190,7 +190,7 @@ on_subscribe(#{realm := R} = State,
 on_subscribe(State, _Frame) ->
     {State, []}.
 
--spec on_unsubscribe(state(), macula_frame:frame()) ->
+-spec on_unsubscribe(state(), hecate_frame:frame()) ->
         {state(), []}.
 on_unsubscribe(#{realm := R} = State,
                #{realm := Eventr, topic := T, subscriber := Sub})

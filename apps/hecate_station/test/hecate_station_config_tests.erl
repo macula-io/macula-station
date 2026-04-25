@@ -7,7 +7,7 @@
 %%==================================================================
 
 load_with_inline_identity_test() ->
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     Spec = #{bind => "127.0.0.1", port => 9000,
              certfile => "c.pem", keyfile => "k.pem",
              identity => Kp},
@@ -17,7 +17,7 @@ load_with_inline_identity_test() ->
     ?assertEqual(0,              maps:get(capabilities, Opts)).
 
 load_missing_bind_reports_missing_test() ->
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     Spec = #{port => 9000, certfile => "c", keyfile => "k",
              identity => Kp},
     ?assertEqual({error, {missing, bind}},
@@ -33,8 +33,8 @@ load_with_identity_file_generates_on_demand_test_() ->
             {ok, Opts}  = hecate_station_config:load(Spec),
             {ok, Opts2} = hecate_station_config:load(Spec),
             %% Warm-boot opts share identity bytes.
-            Pub1 = macula_identity:public(maps:get(identity, Opts)),
-            Pub2 = macula_identity:public(maps:get(identity, Opts2)),
+            Pub1 = hecate_identity:public(maps:get(identity, Opts)),
+            Pub2 = hecate_identity:public(maps:get(identity, Opts2)),
             ?assertEqual(Pub1, Pub2)
         end
     end}.
@@ -136,8 +136,8 @@ from_env_preserves_identity_across_warm_boots_test_() ->
                 set_all(Dir, "127.0.0.1", 9000),
                 {ok, Cfg1} = hecate_station_config:from_env(),
                 {ok, Cfg2} = hecate_station_config:from_env(),
-                Pub1 = macula_identity:public(Cfg1#station_cfg.identity),
-                Pub2 = macula_identity:public(Cfg2#station_cfg.identity),
+                Pub1 = hecate_identity:public(Cfg1#station_cfg.identity),
+                Pub2 = hecate_identity:public(Cfg2#station_cfg.identity),
                 ?assertEqual(Pub1, Pub2)
             after
                 rm_rf(Dir)

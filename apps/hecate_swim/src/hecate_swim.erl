@@ -38,8 +38,8 @@
 -define(DEFAULT_SUSPECT_TIMEOUT_MS, 6_000).
 
 -type opts() :: #{
-    self_node_id       := macula_identity:pubkey(),
-    identity           := macula_identity:key_pair(),
+    self_node_id       := hecate_identity:pubkey(),
+    identity           := hecate_identity:key_pair(),
     controlling_pid    := pid(),
     period_ms          => pos_integer(),
     ping_timeout_ms    => pos_integer(),
@@ -49,7 +49,7 @@
 -type member_state() :: alive | suspect | confirmed_failed.
 
 -type member() :: #{
-    node_id   := macula_identity:pubkey(),
+    node_id   := hecate_identity:pubkey(),
     state     := member_state(),
     last_seen := pos_integer(),
     since     := pos_integer(),
@@ -58,7 +58,7 @@
 
 -type probe() :: #{
     round     := non_neg_integer(),
-    target    := macula_identity:pubkey(),
+    target    := hecate_identity:pubkey(),
     timer_ref := reference()
 }.
 
@@ -69,13 +69,13 @@
 }.
 
 -record(state, {
-    self_node_id     :: macula_identity:pubkey(),
-    identity         :: macula_identity:key_pair(),
+    self_node_id     :: hecate_identity:pubkey(),
+    identity         :: hecate_identity:key_pair(),
     controlling_pid  :: pid(),
     round = 0        :: non_neg_integer(),
-    members = #{}    :: #{macula_identity:pubkey() => member()},
+    members = #{}    :: #{hecate_identity:pubkey() => member()},
     probes = #{}     :: #{non_neg_integer() => probe()},
-    suspect_timers = #{} :: #{macula_identity:pubkey() => reference()},
+    suspect_timers = #{} :: #{hecate_identity:pubkey() => reference()},
     config           :: config()
 }).
 
@@ -91,17 +91,17 @@ start_link(Opts) ->
 stop(Pid) ->
     gen_server:stop(Pid).
 
--spec add_peer(pid(), macula_identity:pubkey(), pid()) -> ok.
+-spec add_peer(pid(), hecate_identity:pubkey(), pid()) -> ok.
 add_peer(Pid, NodeId, ConnPid)
   when is_binary(NodeId), byte_size(NodeId) =:= 32, is_pid(ConnPid) ->
     gen_server:cast(Pid, {add_peer, NodeId, ConnPid}).
 
--spec remove_peer(pid(), macula_identity:pubkey()) -> ok.
+-spec remove_peer(pid(), hecate_identity:pubkey()) -> ok.
 remove_peer(Pid, NodeId)
   when is_binary(NodeId), byte_size(NodeId) =:= 32 ->
     gen_server:cast(Pid, {remove_peer, NodeId}).
 
--spec handle_frame(pid(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
+-spec handle_frame(pid(), hecate_identity:pubkey(), hecate_frame:frame()) -> ok.
 handle_frame(Pid, FromNodeId, Frame)
   when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32, is_map(Frame) ->
     gen_server:cast(Pid, {swim_frame, FromNodeId, Frame}).
@@ -266,10 +266,10 @@ pick_one(L)  ->
 send_ping(Round, Target, ConnPid,
           #state{identity = Id, config = #{ping_timeout_ms := Ms},
                  probes = P} = S) ->
-    Ping = macula_frame:swim_ping(#{round => Round, incarnation => 0,
+    Ping = hecate_frame:swim_ping(#{round => Round, incarnation => 0,
                                     piggyback => []}),
-    Signed = macula_frame:sign(Ping, Id),
-    _ = macula_peering:send_frame(ConnPid, Signed),
+    Signed = hecate_frame:sign(Ping, Id),
+    _ = hecate_peering:send_frame(ConnPid, Signed),
     Ref = erlang:send_after(Ms, self(), {ping_timeout, Round, Target}),
     Probe = #{round => Round, target => Target, timer_ref => Ref},
     S#state{probes = P#{Round => Probe}}.
@@ -301,14 +301,14 @@ on_ping(From, #{round := Round}, #state{identity = Id} = S) ->
     S1 = maybe_touch_alive(From, S),
     case maps:get(From, S1#state.members, undefined) of
         #{conn_pid := ConnPid} when is_pid(ConnPid) ->
-            Ack = macula_frame:swim_ack(#{
+            Ack = hecate_frame:swim_ack(#{
                 round       => Round,
                 responder   => S1#state.self_node_id,
                 incarnation => 0,
                 piggyback   => []
             }),
-            Signed = macula_frame:sign(Ack, Id),
-            _ = macula_peering:send_frame(ConnPid, Signed),
+            Signed = hecate_frame:sign(Ack, Id),
+            _ = hecate_peering:send_frame(ConnPid, Signed),
             S1;
         _ ->
             S1

@@ -1,0 +1,73 @@
+%% @doc Macula peering — connection state machine API.
+%%
+%% Each peer connection is one `hecate_peering_conn' gen_statem under the
+%% `hecate_peering_conn_sup' simple_one_for_one supervisor.
+%%
+%% Two entry points:
+%% <ul>
+%%   <li>`connect/1' — outbound dial; worker drives the QUIC connect.</li>
+%%   <li>`accept/2' — inbound; caller transfers ownership of an
+%%       already-established `macula_transport:connection()' to a new worker.</li>
+%% </ul>
+%%
+%% The caller passes a `controlling_pid' in opts; that pid receives
+%% peering events as messages:
+%% <ul>
+%%   <li>`{hecate_peering, connected, ConnPid, PeerNodeId}'</li>
+%%   <li>`{hecate_peering, frame, ConnPid, Frame}' (post-handshake)</li>
+%%   <li>`{hecate_peering, disconnected, ConnPid, Reason}'</li>
+%% </ul>
+-module(hecate_peering).
+
+-export([
+    connect/1,
+    accept/2,
+    close/1, close/2,
+    send_frame/2
+]).
+
+-type opts() :: hecate_peering_conn:opts().
+-export_type([opts/0]).
+
+%%------------------------------------------------------------------
+%% Public API
+%%------------------------------------------------------------------
+
+%% @doc Outbound connect. Spawns a worker that opens a QUIC connection to
+%% `target' and runs the CONNECT/HELLO handshake.
+-spec connect(opts()) -> {ok, pid()} | {error, term()}.
+connect(Opts) ->
+    hecate_peering_conn_sup:start_conn(Opts#{role => client}).
+
+%% @doc Inbound accept. Caller currently owns `Conn' (e.g. it's the listener
+%% owner that just received `{quic, new_conn, Conn, _}'). The transfer of
+%% ownership and the handshake start are sequenced atomically.
+-spec accept(macula_transport:connection(), opts()) ->
+    {ok, pid()} | {error, term()}.
+accept(Conn, Opts) ->
+    start_server_worker(Conn, Opts#{role => server, quic_conn => Conn}).
+
+start_server_worker(Conn, Opts) ->
+    handle_started(hecate_peering_conn_sup:start_conn(Opts), Conn).
+
+handle_started({ok, Pid}, Conn) ->
+    ok = macula_transport:controlling_process_conn(Conn, Pid),
+    ok = gen_statem:cast(Pid, start_handshake),
+    {ok, Pid};
+handle_started(Err, _Conn) ->
+    Err.
+
+%% @doc Initiate a graceful close (sends GOODBYE, drains 5s, terminates).
+-spec close(pid()) -> ok.
+close(Pid) ->
+    close(Pid, operator_stop).
+
+-spec close(pid(), atom()) -> ok.
+close(Pid, Reason) ->
+    gen_statem:cast(Pid, {close, Reason}).
+
+%% @doc Send a frame through the peer connection. Signs the frame with
+%% the local identity if it isn't already signed. Fire-and-forget.
+-spec send_frame(pid(), hecate_frame:frame()) -> ok.
+send_frame(Pid, Frame) when is_map(Frame) ->
+    gen_statem:cast(Pid, {send_frame, Frame}).

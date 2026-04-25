@@ -5,7 +5,7 @@
                   hecate_pubsub_server_sup,
                   hecate_pubsub_registry]},
     {mod, {hecate_overlay_app, []}},
-    {applications, [kernel, stdlib, macula]},
+    {applications, [kernel, stdlib]},
     {env, []},
     {modules, [hecate_overlay_view, hecate_overlay_proto,
                hecate_plumtree, hecate_or_set, hecate_pubsub,

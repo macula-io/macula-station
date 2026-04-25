@@ -118,13 +118,13 @@ run_tick(#state{dht = Dht} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec process_record(macula_record:record(), integer(),
+-spec process_record(hecate_record:record(), integer(),
                      hecate_dht:dht(), outcome()) -> outcome().
 process_record(Record, Now, Dht, Acc) ->
-    reap_or_keep(macula_record:expires_at(Record) =< Now,
+    reap_or_keep(hecate_record:expires_at(Record) =< Now,
                  Record, Dht, bump(Acc, records_seen)).
 
--spec reap_or_keep(boolean(), macula_record:record(),
+-spec reap_or_keep(boolean(), hecate_record:record(),
                    hecate_dht:dht(), outcome()) -> outcome().
 reap_or_keep(true, Record, Dht, Acc) ->
     ok = hecate_dht:delete_record(Dht, Record),

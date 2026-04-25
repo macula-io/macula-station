@@ -15,7 +15,7 @@
 %%
 %% Each implementation is responsible for issuing the lookup, parsing
 %% the DoH response, extracting the PKARR/CBOR payload, and returning
-%% the raw `macula_record' bytes. Decoding, signature verification,
+%% the raw `hecate_record' bytes. Decoding, signature verification,
 %% and corroboration are done by the orchestrator — resolvers MUST
 %% NOT verify signatures themselves (a single trusted resolver is a
 %% trust-anchor failure mode).
@@ -38,5 +38,5 @@
 %% @doc Resolve the foundation seed-list record for `FoundationKey'
 %% from the resolver's `Url'. Return raw record bytes for the
 %% orchestrator to decode and verify, or an `{error, Reason}'.
--callback resolve(url(), macula_identity:pubkey(), resolve_opts()) ->
+-callback resolve(url(), hecate_identity:pubkey(), resolve_opts()) ->
             resolve_result().

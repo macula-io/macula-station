@@ -23,7 +23,7 @@ probe_yields_single_peer_test() ->
     {Url, Kp} = build_url([]),
     {ok, [Peer]} = hecate_bootstrap_tier_e:probe(
                      #{peer_urls => [Url]}),
-    ?assertEqual(macula_identity:public(Kp), maps:get(node_id, Peer)),
+    ?assertEqual(hecate_identity:public(Kp), maps:get(node_id, Peer)),
     ?assertEqual(e, maps:get(tier, Peer)),
     ?assertEqual(hecate_bootstrap_tier_e, maps:get(via, Peer)),
     ?assertEqual([], maps:get(addresses, Peer)).
@@ -57,8 +57,8 @@ probe_preserves_address_hints_test() ->
 %%------------------------------------------------------------------
 
 build_url(Addrs) ->
-    Kp = macula_identity:generate(),
-    Record = macula_record:sign(
-        macula_record:node_record(macula_identity:public(Kp), [], 0),
+    Kp = hecate_identity:generate(),
+    Record = hecate_record:sign(
+        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
         Kp),
     {hecate_bootstrap_peer_url:encode(Record, Addrs), Kp}.

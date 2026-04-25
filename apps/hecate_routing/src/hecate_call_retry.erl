@@ -18,7 +18,7 @@
 %% On `{ok, _}' — return immediately.
 %%
 %% On `{error, Code, _Detail}' — consult
-%% `macula_bolt4:is_retryable(Code)':
+%% `hecate_bolt4:is_retryable(Code)':
 %% <ul>
 %%   <li>Non-retryable (`ok' / `application' / `crypto_drop'
 %%       policies) → return immediately.</li>
@@ -53,7 +53,7 @@
 -define(BULK_RETRY_BUDGET,                100).
 -define(BULK_OVERALL_TIMEOUT_MS,    3_600_000).
 
--type path()    :: [macula_identity:pubkey()].
+-type path()    :: [hecate_identity:pubkey()].
 -type try_fn()  :: fun((path()) -> hecate_call:outcome()).
 
 -type opts() :: #{
@@ -140,9 +140,9 @@ follow_retry(false, Outcome, _Rest, _Fn, _Budget, State) ->
 follow_retry(true, _Outcome, Rest, Fn, Budget, State) ->
     walk(Rest, Fn, Budget - 1, State).
 
--spec retryable(macula_bolt4:name()) -> boolean().
+-spec retryable(hecate_bolt4:name()) -> boolean().
 retryable(Code) ->
-    macula_bolt4:is_retryable(Code).
+    hecate_bolt4:is_retryable(Code).
 
 %%=====================================================================
 %% State helpers

@@ -20,7 +20,7 @@ shutdown_publishes_tombstone_and_flushes_cache_test_() ->
              #{dht := Dht,
                kp  := Kp,
                cache_dir := CacheDir} = Ctx,
-             Pub = macula_identity:public(Kp),
+             Pub = hecate_identity:public(Kp),
              %% Snapshot the tombstone key before we shut down — the
              %% DHT process is about to exit, so we need the public
              %% key ahead of time.
@@ -78,7 +78,7 @@ prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
          fun() ->
              process_flag(trap_exit, true),
              {ok, Dht} = hecate_station:dht(),
-             Pub       = macula_identity:public(Kp),
+             Pub       = hecate_identity:public(Kp),
              %% No prior tombstone for our NodeId.
              ?assertEqual([],
                  hecate_dht:find_local_record(Dht, Pub)),
@@ -88,7 +88,7 @@ prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
              _State = hecate_station_app:prep_stop(#{}),
              %% Tombstone now in the local DHT.
              [Tomb] = hecate_dht:find_local_record(Dht, Pub),
-             ?assertEqual(16#0C, macula_record:type(Tomb)),
+             ?assertEqual(16#0C, hecate_record:type(Tomb)),
              %% Cache file on disk.
              CacheDir = maps:get(cache_dir, Ctx),
              ?assert(filelib:is_regular(
@@ -113,7 +113,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
          fun() ->
              process_flag(trap_exit, true),
             {ok, Dht} = hecate_station:dht(),
-            Pub       = macula_identity:public(Kp),
+            Pub       = hecate_identity:public(Kp),
             %% No prior tombstone for the self-pub key.
             ?assertEqual([],
                 hecate_dht:find_local_record(Dht, Pub)),
@@ -129,7 +129,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
             %% tag (0x0C); its payload carries the superseded
             %% node_record tag (0x01 — what `tombstone_type/0'
             %% reports).
-            ?assertEqual(16#0C, macula_record:type(Stored)),
+            ?assertEqual(16#0C, hecate_record:type(Stored)),
             _ = Ctx
          end}
     end}.
@@ -142,7 +142,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
 setup_app() ->
     process_flag(trap_exit, true),
     {ok, _} = application:ensure_all_started(crypto),
-    {ok, _} = application:ensure_all_started(macula_peering),
+    {ok, _} = application:ensure_all_started(hecate_peering),
     %% Guard against a previous test's half-dead sup.
     _ = kill_if_alive(hecate_station_sup),
     _ = hecate_station:forget_dial_opts(),
@@ -175,11 +175,11 @@ teardown_dir(#{dir := Dir, saved := Saved}) ->
 teardown_app(Ctx) -> teardown_dir(Ctx).
 
 tombstone(Kp, Reason) ->
-    Pub = macula_identity:public(Kp),
-    Unsigned = macula_record:tombstone(Pub,
+    Pub = hecate_identity:public(Kp),
+    Unsigned = hecate_record:tombstone(Pub,
                                        hecate_station:tombstone_type(),
                                        Reason),
-    macula_record:sign(Unsigned, Kp).
+    hecate_record:sign(Unsigned, Kp).
 
 %%------------------------------------------------------------------
 %% Env + dir helpers — mirror hecate_station_admin_tests shapes so

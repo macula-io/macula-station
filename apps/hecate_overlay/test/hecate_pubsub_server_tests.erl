@@ -9,7 +9,7 @@
 
 realm()   -> crypto:strong_rand_bytes(32).
 id(N)     -> <<N:256>>.
-keypair() -> macula_identity:generate().
+keypair() -> hecate_identity:generate().
 
 start() ->
     {ok, Pid} = hecate_pubsub_server:start_link(
@@ -91,7 +91,7 @@ publish_returns_local_matched_subscribers_test() ->
     [ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(N))
      || N <- [1, 2]],
     {Frame, Matched} = hecate_pubsub_server:publish(Pid, <<"t">>, <<"hello">>),
-    ?assertEqual(event, macula_frame:frame_type(Frame)),
+    ?assertEqual(event, hecate_frame:frame_type(Frame)),
     ?assertEqual(lists:sort([id(1), id(2)]), lists:sort(Matched)),
     stop_(Pid).
 
@@ -112,12 +112,12 @@ publish_increments_seq_test() ->
 publish_signs_with_server_identity_test() ->
     R   = realm(),
     Kp  = keypair(),
-    Pub = macula_identity:public(Kp),
+    Pub = hecate_identity:public(Kp),
     {ok, Pid} = hecate_pubsub_server:start_link(
                   #{realm => R, identity => Kp}),
     ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
     {Frame, _} = hecate_pubsub_server:publish(Pid, <<"t">>, <<"hello">>),
-    ?assertMatch({ok, _}, macula_frame:verify(Frame, Pub)),
+    ?assertMatch({ok, _}, hecate_frame:verify(Frame, Pub)),
     hecate_pubsub_server:stop(Pid).
 
 %%---------------------------------------------------------------------
@@ -131,10 +131,10 @@ deliver_event_returns_subscribers_test() ->
                   #{realm => R, identity => Kp}),
     ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
     %% Build an event frame externally with the same realm.
-    External = macula_frame:sign(macula_frame:event(#{
+    External = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"t">>,
         realm         => R,
-        publisher     => macula_identity:public(Kp),
+        publisher     => hecate_identity:public(Kp),
         seq           => 42,
         payload       => <<"x">>,
         delivered_via => plumtree
@@ -151,10 +151,10 @@ deliver_event_for_other_realm_returns_empty_test() ->
                   #{realm => R1, identity => Kp}),
     ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
     %% Event frame tagged with a different realm — must NOT deliver.
-    External = macula_frame:sign(macula_frame:event(#{
+    External = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"t">>,
         realm         => R2,
-        publisher     => macula_identity:public(Kp),
+        publisher     => hecate_identity:public(Kp),
         seq           => 1,
         payload       => <<"x">>,
         delivered_via => plumtree

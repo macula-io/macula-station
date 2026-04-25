@@ -2,7 +2,7 @@
 %%
 %% Owns one `macula_transport:listener()' reference and drives an
 %% async accept loop. Each `{quic, new_conn, ConnRef, _Info}' message
-%% spawns a `macula_peering' handshake worker (under the peering
+%% spawns a `hecate_peering' handshake worker (under the peering
 %% library's own `simple_one_for_one' supervisor) whose
 %% `controlling_pid' is the station's single
 %% `hecate_station_peer_observer'. Peering events therefore land at
@@ -30,8 +30,8 @@
     port         := inet:port_number(),
     certfile     := file:name_all(),
     keyfile      := file:name_all(),
-    identity     := macula_identity:key_pair(),
-    realms       := [macula_identity:pubkey()],
+    identity     := hecate_identity:key_pair(),
+    realms       := [hecate_identity:pubkey()],
     capabilities := non_neg_integer(),
     observer     := pid()
 }.
@@ -105,7 +105,7 @@ listen_opts(#{bind := Bind, port := Port, certfile := C, keyfile := K}) ->
 derive_addr(#{bind := Bind, port := Port}) -> {Bind, Port}.
 
 accept_conn(Conn, #state{opts = Opts, listener = L} = S) ->
-    _ = macula_peering:accept(Conn, peering_opts(Opts)),
+    _ = hecate_peering:accept(Conn, peering_opts(Opts)),
     %% Re-arm the listener for the next inbound connection. Ignoring
     %% the result is safe: on a broken listener we would receive no
     %% further `new_conn' messages; supervisor restart re-binds.

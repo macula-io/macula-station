@@ -34,12 +34,12 @@
     listen_addr  :: {inet:ip_address() | string(), inet:port_number()},
     swim         :: pid(),
     peers        :: #{pid() => peer_entry()},
-    tombstones   :: [macula_record:record()]
+    tombstones   :: [hecate_record:record()]
 }).
 
 -type peer_entry() :: #{
     role         := client | server,
-    peer_node_id => macula_identity:pubkey(),
+    peer_node_id => hecate_identity:pubkey(),
     connected_at => integer()
 }.
 
@@ -57,13 +57,13 @@
 start_link(Spec) ->
     gen_server:start_link(?MODULE, Spec, []).
 
--spec stop(pid()) -> {ok, [macula_record:record()]}.
+-spec stop(pid()) -> {ok, [hecate_record:record()]}.
 stop(Pid) -> stop(Pid, operator_stop).
 
--spec stop(pid(), atom()) -> {ok, [macula_record:record()]}.
+-spec stop(pid(), atom()) -> {ok, [hecate_record:record()]}.
 stop(Pid, Reason) -> gen_server:call(Pid, {stop, Reason}, 10_000).
 
--spec identity(pid()) -> macula_identity:key_pair().
+-spec identity(pid()) -> hecate_identity:key_pair().
 identity(Pid) -> gen_server:call(Pid, identity).
 
 -spec listen_addr(pid()) -> {inet:ip_address() | string(), inet:port_number()}.
@@ -75,7 +75,7 @@ connect_to(Pid, Target) -> gen_server:call(Pid, {connect_to, Target}, 10_000).
 -spec peers(pid()) -> [{pid(), peer_entry()}].
 peers(Pid) -> gen_server:call(Pid, peers).
 
--spec tombstones(pid()) -> [macula_record:record()].
+-spec tombstones(pid()) -> [hecate_record:record()].
 tombstones(Pid) -> gen_server:call(Pid, tombstones).
 
 -spec swim_members(pid()) -> [hecate_swim:member()].
@@ -96,7 +96,7 @@ on_config_loaded({ok, Cfg}) ->
 
 start_swim(#{identity := Kp} = Cfg) ->
     SwimOpts0 = #{
-        self_node_id    => macula_identity:public(Kp),
+        self_node_id    => hecate_identity:public(Kp),
         identity        => Kp,
         controlling_pid => self()
     },
@@ -157,7 +157,7 @@ handle_call(_Msg, _From, S) ->
 
 handle_connect(Target, #state{config = Cfg, peers = Peers} = S) ->
     Opts = peer_opts(Cfg, Target, client),
-    on_outbound_started(macula_peering:connect(Opts), Peers, S).
+    on_outbound_started(hecate_peering:connect(Opts), Peers, S).
 
 on_outbound_started({ok, Pid}, Peers, S) ->
     Entry = #{role => client, connected_at => erlang:system_time(millisecond)},
@@ -177,11 +177,11 @@ handle_cast(_Msg, S) -> {noreply, S}.
 
 handle_info({quic, new_conn, Conn, _Info}, S) ->
     handle_inbound(Conn, S);
-handle_info({macula_peering, connected, Pid, PeerNodeId}, S) ->
+handle_info({hecate_peering, connected, Pid, PeerNodeId}, S) ->
     {noreply, on_peer_connected(Pid, PeerNodeId, S)};
-handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
+handle_info({hecate_peering, frame, ConnPid, Frame}, S) ->
     {noreply, dispatch_peer_frame(ConnPid, Frame, S)};
-handle_info({macula_peering, disconnected, Pid, _Reason}, S) ->
+handle_info({hecate_peering, disconnected, Pid, _Reason}, S) ->
     {noreply, on_peer_disconnected(Pid, S)};
 handle_info({hecate_swim, member_state, _NodeId, _State}, S) ->
     %% Phase 2: bubble SWIM events as diagnostics. Phase 3+ wires to DHT.
@@ -193,7 +193,7 @@ handle_info(_Other, S) ->
 
 handle_inbound(Conn, #state{config = Cfg, listener = Listener, peers = Peers} = S) ->
     Opts = peer_opts(Cfg, undefined, server),
-    Result = macula_peering:accept(Conn, Opts),
+    Result = hecate_peering:accept(Conn, Opts),
     ok = macula_transport:accept(Listener),
     on_inbound_started(Result, Peers, S).
 
@@ -218,12 +218,12 @@ maybe_remove_swim_peer(ConnPid, Peers, Swim) ->
     end.
 
 dispatch_peer_frame(ConnPid, Frame, #state{swim = Swim, peers = Peers} = S) ->
-    case {macula_frame:frame_type(Frame), maps:get(ConnPid, Peers, undefined)} of
+    case {hecate_frame:frame_type(Frame), maps:get(ConnPid, Peers, undefined)} of
         {Type, #{peer_node_id := From}} when Type =:= swim_ping;
                                               Type =:= swim_ack;
                                               Type =:= swim_suspect;
                                               Type =:= swim_confirm ->
-            case macula_frame:verify(Frame, From) of
+            case hecate_frame:verify(Frame, From) of
                 {ok, _}         -> hecate_swim:handle_frame(Swim, From, Frame);
                 {error, _Reason} -> ok
             end,
@@ -278,13 +278,13 @@ drain_and_tombstone(Reason, #state{config = #{identity := Kp}, peers = Peers,
                                    tombstones = Tombs, listener = L,
                                    swim = Swim} = S) ->
     Tombstone = build_tombstone(Kp, Reason),
-    [macula_peering:close(P, Reason) || P <- maps:keys(Peers)],
+    [hecate_peering:close(P, Reason) || P <- maps:keys(Peers)],
     catch hecate_swim:stop(Swim),
     catch macula_transport:close_listener(L),
     S#state{tombstones = [Tombstone | Tombs], peers = #{}}.
 
 build_tombstone(Kp, Reason) ->
-    Pub = macula_identity:public(Kp),
+    Pub = hecate_identity:public(Kp),
     %% Tombstone the node_record (type 0x01).
-    Unsigned = macula_record:tombstone(Pub, 16#01, Reason),
-    macula_record:sign(Unsigned, Kp).
+    Unsigned = hecate_record:tombstone(Pub, 16#01, Reason),
+    hecate_record:sign(Unsigned, Kp).

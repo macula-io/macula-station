@@ -26,41 +26,41 @@ signed_payload_with_salt_exact_test() ->
                  Payload).
 
 sign_and_verify_no_salt_test() ->
-    Kp     = macula_identity:generate(),
+    Kp     = hecate_identity:generate(),
     Value  = <<"payload-bytes">>,
     Item   = hecate_bootstrap_bep44:sign(1, Value, Kp),
     ?assertEqual(ok, hecate_bootstrap_bep44:verify(Item)).
 
 sign_and_verify_with_salt_test() ->
-    Kp     = macula_identity:generate(),
+    Kp     = hecate_identity:generate(),
     Salt   = <<"realm-a">>,
     Value  = <<"payload-bytes">>,
     Item   = hecate_bootstrap_bep44:sign(3, Value, Salt, Kp),
     ?assertEqual(ok, hecate_bootstrap_bep44:verify(Item)).
 
 tampered_value_rejected_test() ->
-    Kp     = macula_identity:generate(),
+    Kp     = hecate_identity:generate(),
     Item0  = hecate_bootstrap_bep44:sign(5, <<"original">>, Kp),
     Tampered = Item0#{value := <<"modified">>},
     ?assertEqual({error, signature_invalid},
                  hecate_bootstrap_bep44:verify(Tampered)).
 
 tampered_seq_rejected_test() ->
-    Kp     = macula_identity:generate(),
+    Kp     = hecate_identity:generate(),
     Item0  = hecate_bootstrap_bep44:sign(5, <<"v">>, Kp),
     ?assertEqual({error, signature_invalid},
                  hecate_bootstrap_bep44:verify(Item0#{seq := 6})).
 
 wrong_pubkey_rejected_test() ->
-    Kp      = macula_identity:generate(),
-    Imp     = macula_identity:generate(),
+    Kp      = hecate_identity:generate(),
+    Imp     = hecate_identity:generate(),
     Item0   = hecate_bootstrap_bep44:sign(1, <<"v">>, Kp),
-    ImpPub  = macula_identity:public(Imp),
+    ImpPub  = hecate_identity:public(Imp),
     ?assertEqual({error, signature_invalid},
                  hecate_bootstrap_bep44:verify(Item0#{pubkey := ImpPub})).
 
 salt_mismatch_rejected_test() ->
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     Item0 = hecate_bootstrap_bep44:sign(1, <<"v">>, <<"salt-a">>, Kp),
     ?assertEqual({error, signature_invalid},
                  hecate_bootstrap_bep44:verify(

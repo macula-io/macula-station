@@ -91,8 +91,8 @@ deliver_event_ignores_wrong_realm_test() ->
 
 build_event_signs_with_identity_test() ->
     R = realm(),
-    Kp = macula_identity:generate(),
-    PubId = macula_identity:public(Kp),
+    Kp = hecate_identity:generate(),
+    PubId = hecate_identity:public(Kp),
     State = hecate_pubsub:new(R),
     PubSpec = #{topic => <<"t">>,
                 realm => R,
@@ -101,9 +101,9 @@ build_event_signs_with_identity_test() ->
                 payload => <<"data">>,
                 published_at_ms => 1},
     F = hecate_pubsub:build_event(State, PubSpec, Kp),
-    ?assertEqual(event,    macula_frame:frame_type(F)),
+    ?assertEqual(event,    hecate_frame:frame_type(F)),
     ?assertEqual(plumtree, maps:get(delivered_via, F)),
-    ?assertMatch({ok, _},  macula_frame:verify(F, PubId)).
+    ?assertMatch({ok, _},  hecate_frame:verify(F, PubId)).
 
 %%---------------------------------------------------------------------
 %% Inbound dispatch via process/3
@@ -149,27 +149,27 @@ realm() -> crypto:strong_rand_bytes(32).
 id(N) -> <<N:256>>.
 
 event_frame(Realm, Topic) ->
-    Kp = macula_identity:generate(),
-    macula_frame:sign(macula_frame:event(#{
+    Kp = hecate_identity:generate(),
+    hecate_frame:sign(hecate_frame:event(#{
         topic         => Topic,
         realm         => Realm,
-        publisher     => macula_identity:public(Kp),
+        publisher     => hecate_identity:public(Kp),
         seq           => 0,
         payload       => <<"data">>,
         delivered_via => plumtree
     }), Kp).
 
 sign_subscribe(Realm, Topic, Sub) ->
-    Kp = macula_identity:generate(),
-    macula_frame:sign(macula_frame:subscribe(#{
+    Kp = hecate_identity:generate(),
+    hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => Topic,
         realm      => Realm,
         subscriber => Sub
     }), Kp).
 
 sign_unsubscribe(Realm, Topic, Sub) ->
-    Kp = macula_identity:generate(),
-    macula_frame:sign(macula_frame:unsubscribe(#{
+    Kp = hecate_identity:generate(),
+    hecate_frame:sign(hecate_frame:unsubscribe(#{
         topic      => Topic,
         realm      => Realm,
         subscriber => Sub

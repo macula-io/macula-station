@@ -42,7 +42,7 @@
 -export_type([realm/0, identity/0]).
 
 -type realm()    :: <<_:256>>.
--type identity() :: macula_identity:key_pair().
+-type identity() :: hecate_identity:key_pair().
 
 -record(state, {
     by_realm = #{} :: #{realm() => pid()},
@@ -78,7 +78,7 @@ lookup(<<_:256>> = Realm) ->
 %% if no server is registered for `Realm'. The realm tag is supplied
 %% explicitly — the caller is responsible for extracting it from
 %% the frame and confirming the dispatch target.
--spec dispatch_frame(realm(), <<_:256>>, macula_frame:frame()) ->
+-spec dispatch_frame(realm(), <<_:256>>, hecate_frame:frame()) ->
         {ok, [<<_:256>>]} | {error, not_found}.
 dispatch_frame(<<_:256>> = Realm, From, Frame) ->
     gen_server:call(?MODULE, {dispatch_frame, Realm, From, Frame}).

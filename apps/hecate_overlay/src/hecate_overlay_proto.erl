@@ -52,12 +52,12 @@
 -define(DEFAULT_SHUFFLE_ACTIVE,       3).
 -define(DEFAULT_SHUFFLE_PASSIVE,      4).
 
--type peer() :: macula_identity:pubkey().
+-type peer() :: hecate_identity:pubkey().
 
 -type ctx() :: #{
     self_id              := peer(),
     realm                := <<_:256>>,
-    identity             := macula_identity:key_pair(),
+    identity             := hecate_identity:key_pair(),
     arwl                 => non_neg_integer(),
     prwl                 => non_neg_integer(),
     shuffle_ttl          => non_neg_integer(),
@@ -65,27 +65,27 @@
     shuffle_passive_size => non_neg_integer()
 }.
 
--type action() :: {send, peer(), macula_frame:frame()}.
+-type action() :: {send, peer(), hecate_frame:frame()}.
 
 %%=====================================================================
 %% Outbound builders for events the local process initiates
 %%=====================================================================
 
 %% @doc Build a signed JOIN frame to send to a contact peer.
--spec build_join(ctx()) -> macula_frame:frame().
+-spec build_join(ctx()) -> hecate_frame:frame().
 build_join(#{self_id := Self, realm := R, identity := Id}) ->
-    sign_with(macula_frame:hyparview_join(
+    sign_with(hecate_frame:hyparview_join(
                 #{realm => R, new_member => Self}), Id).
 
 %% @doc Build a signed SHUFFLE frame for a periodic shuffle round.
 %% The orchestrator picks a random active neighbour to send it to.
--spec build_shuffle(ctx()) -> {ok, macula_frame:frame()}.
+-spec build_shuffle(ctx()) -> {ok, hecate_frame:frame()}.
 build_shuffle(#{self_id := Self, realm := R, identity := Id} = Ctx) ->
     Ttl = maps:get(shuffle_ttl, Ctx, ?DEFAULT_SHUFFLE_TTL),
     %% Sample drawn from our own view by the caller — keep this
     %% function pure of the view structure. Caller computes the
     %% sample list and passes it in via process/4 if needed.
-    F = macula_frame:hyparview_shuffle(
+    F = hecate_frame:hyparview_shuffle(
           #{realm => R, origin => Self, ttl => Ttl,
             peer_sample => []}),
     {ok, sign_with(F, Id)}.
@@ -94,7 +94,7 @@ build_shuffle(#{self_id := Self, realm := R, identity := Id} = Ctx) ->
 %% Process incoming frame
 %%=====================================================================
 
--spec process(hecate_overlay_view:view(), peer(), macula_frame:frame(),
+-spec process(hecate_overlay_view:view(), peer(), hecate_frame:frame(),
               ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 process(View, FromId, #{frame_type := hyparview_join} = F, Ctx) ->
@@ -117,7 +117,7 @@ process(View, _FromId, _Frame, _Ctx) ->
 %%=====================================================================
 
 -spec on_join(hecate_overlay_view:view(), peer(),
-              macula_frame:frame(), ctx()) ->
+              hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 on_join(View, FromId, _Frame, Ctx) ->
     NewMember = FromId,
@@ -144,7 +144,7 @@ forward_join_to_others(View, NewMember, Origin, Ctx) ->
     Arwl = arwl(Ctx),
     Prwl = prwl(Ctx),
     [{send, T,
-      sign_with(macula_frame:hyparview_forward_join(
+      sign_with(hecate_frame:hyparview_forward_join(
                   #{realm      => realm(Ctx),
                     new_member => NewMember,
                     ttl        => Arwl,
@@ -157,7 +157,7 @@ forward_join_to_others(View, NewMember, Origin, Ctx) ->
 %%=====================================================================
 
 -spec on_forward_join(hecate_overlay_view:view(), peer(),
-                      macula_frame:frame(), ctx()) ->
+                      hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 on_forward_join(View, FromId, Frame, Ctx) ->
     NewMember = maps:get(new_member, Frame),
@@ -168,7 +168,7 @@ on_forward_join(View, FromId, Frame, Ctx) ->
 -spec classify_forward_join(peer(), peer(), non_neg_integer(),
                             non_neg_integer(),
                             hecate_overlay_view:view(),
-                            macula_frame:frame(), ctx()) ->
+                            hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 classify_forward_join(NewMember, _From, 0, _Prwl, View, _Frame, Ctx) ->
     accept_into_active(View, NewMember, Ctx);
@@ -197,7 +197,7 @@ maybe_add_passive(_NewMember, _Ttl, _Prwl, View) ->
     View.
 
 -spec forward_to_random(hecate_overlay_view:view(), peer(), peer(),
-                        non_neg_integer(), macula_frame:frame(),
+                        non_neg_integer(), hecate_frame:frame(),
                         ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 forward_to_random(View, From, NewMember, NewTtl, Frame, Ctx) ->
@@ -206,14 +206,14 @@ forward_to_random(View, From, NewMember, NewTtl, Frame, Ctx) ->
     pick_forward_target(Candidates, View, NewMember, NewTtl, Frame, Ctx).
 
 -spec pick_forward_target([peer()], hecate_overlay_view:view(), peer(),
-                          non_neg_integer(), macula_frame:frame(),
+                          non_neg_integer(), hecate_frame:frame(),
                           ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 pick_forward_target([], View, NewMember, _NewTtl, _Frame, Ctx) ->
     accept_into_active(View, NewMember, Ctx);
 pick_forward_target(Cands, View, _NewMember, NewTtl, Frame, Ctx) ->
     Target = lists:nth(rand:uniform(length(Cands)), Cands),
-    Forward = sign_with(macula_frame:hyparview_forward_join(
+    Forward = sign_with(hecate_frame:hyparview_forward_join(
                           #{realm      => realm(Ctx),
                             new_member => maps:get(new_member, Frame),
                             ttl        => NewTtl,
@@ -227,7 +227,7 @@ pick_forward_target(Cands, View, _NewMember, NewTtl, Frame, Ctx) ->
 %%=====================================================================
 
 -spec on_neighbor(hecate_overlay_view:view(), peer(),
-                  macula_frame:frame(), ctx()) ->
+                  hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 on_neighbor(View, FromId, #{priority := high}, Ctx) ->
     {View1, Evictions} = absorb_active(View, FromId, Ctx),
@@ -253,7 +253,7 @@ on_disconnect(View, FromId) ->
 %%=====================================================================
 
 -spec on_shuffle(hecate_overlay_view:view(), peer(),
-                 macula_frame:frame(), ctx()) ->
+                 hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 on_shuffle(View, FromId, Frame, Ctx) ->
     Ttl = maps:get(ttl, Frame),
@@ -263,7 +263,7 @@ on_shuffle(View, FromId, Frame, Ctx) ->
     end.
 
 -spec shuffle_forward(hecate_overlay_view:view(), peer(),
-                      macula_frame:frame(), ctx()) ->
+                      hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 shuffle_forward(View, From, Frame, Ctx) ->
     Origin = maps:get(origin, Frame),
@@ -272,14 +272,14 @@ shuffle_forward(View, From, Frame, Ctx) ->
     pick_shuffle_target(Cands, View, From, Frame, Ctx).
 
 -spec pick_shuffle_target([peer()], hecate_overlay_view:view(), peer(),
-                          macula_frame:frame(), ctx()) ->
+                          hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 pick_shuffle_target([], View, From, Frame, Ctx) ->
     %% No-one to forward to — answer ourselves.
     shuffle_reply(View, From, Frame, Ctx);
 pick_shuffle_target(Cands, View, _From, Frame, Ctx) ->
     Target = lists:nth(rand:uniform(length(Cands)), Cands),
-    NewFrame = sign_with(macula_frame:hyparview_shuffle(
+    NewFrame = sign_with(hecate_frame:hyparview_shuffle(
                            #{realm      => realm(Ctx),
                              origin     => maps:get(origin, Frame),
                              ttl        => maps:get(ttl, Frame) - 1,
@@ -289,13 +289,13 @@ pick_shuffle_target(Cands, View, _From, Frame, Ctx) ->
     {View, [{send, Target, NewFrame}]}.
 
 -spec shuffle_reply(hecate_overlay_view:view(), peer(),
-                    macula_frame:frame(), ctx()) ->
+                    hecate_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
 shuffle_reply(View, _FromId, Frame, Ctx) ->
     Origin = maps:get(origin, Frame),
     Sample = maps:get(peer_sample, Frame),
     LocalSample = collect_sample(View, Ctx),
-    Reply = sign_with(macula_frame:hyparview_shuffle_reply(
+    Reply = sign_with(hecate_frame:hyparview_shuffle_reply(
                         #{realm => realm(Ctx),
                           peer_sample => LocalSample}),
                       identity(Ctx)),
@@ -304,7 +304,7 @@ shuffle_reply(View, _FromId, Frame, Ctx) ->
     {View1, [{send, Origin, Reply}]}.
 
 -spec on_shuffle_reply(hecate_overlay_view:view(), peer(),
-                       macula_frame:frame()) ->
+                       hecate_frame:frame()) ->
         {hecate_overlay_view:view(), [action()]}.
 on_shuffle_reply(View, _FromId, Frame) ->
     Sample = maps:get(peer_sample, Frame),
@@ -321,23 +321,23 @@ collect_sample(View, Ctx) ->
 %% Frame helpers
 %%=====================================================================
 
--spec neighbor(peer(), macula_frame:neighbor_priority(), ctx()) ->
+-spec neighbor(peer(), hecate_frame:neighbor_priority(), ctx()) ->
         action().
 neighbor(Target, Priority, Ctx) ->
-    F = macula_frame:hyparview_neighbor(
+    F = hecate_frame:hyparview_neighbor(
           #{realm => realm(Ctx), priority => Priority}),
     {send, Target, sign_with(F, identity(Ctx))}.
 
--spec build_disconnect(ctx()) -> macula_frame:frame().
+-spec build_disconnect(ctx()) -> hecate_frame:frame().
 build_disconnect(Ctx) ->
-    sign_with(macula_frame:hyparview_disconnect(
+    sign_with(hecate_frame:hyparview_disconnect(
                 #{realm => realm(Ctx)}),
               identity(Ctx)).
 
--spec sign_with(macula_frame:frame(), macula_identity:key_pair()) ->
-        macula_frame:frame().
+-spec sign_with(hecate_frame:frame(), hecate_identity:key_pair()) ->
+        hecate_frame:frame().
 sign_with(Frame, Identity) ->
-    macula_frame:sign(Frame, Identity).
+    hecate_frame:sign(Frame, Identity).
 
 %%=====================================================================
 %% Context accessors with defaults

@@ -4,7 +4,7 @@
 %% packet) from the public Mainline DHT at `SHA-1(foundation_pubkey)'.
 %% Treats the DHT as a bootstrap <em>signal</em> only: every returned
 %% item is verified against a firmware-embedded foundation pubkey
-%% and its wrapped record is re-checked by `macula_foundation' — the
+%% and its wrapped record is re-checked by `hecate_foundation' — the
 %% DHT never becomes a trust anchor.
 %%
 %% == Pipeline ==
@@ -19,7 +19,7 @@
 %%       payload shape.</li>
 %%   <li>Item's `value' is a DNS packet; concat every TXT
 %%       character-string into a binary.</li>
-%%   <li>`macula_record:decode/1' + `macula_foundation:verify_record/1'
+%%   <li>`hecate_record:decode/1' + `hecate_foundation:verify_record/1'
 %%       — the inner Macula record must be a foundation-signed type
 %%       and still valid.</li>
 %%   <li>Emit one `verified_peer()' per seed.</li>
@@ -46,7 +46,7 @@
 
 -type probe_opts() :: #{
     dht_transport := module(),
-    pubkeys       => [macula_identity:pubkey()],
+    pubkeys       => [hecate_identity:pubkey()],
     timeout_ms    => pos_integer()
 }.
 
@@ -58,7 +58,7 @@ stagger_ms() -> 500.
 -spec probe(probe_opts()) -> hecate_bootstrap_tier:probe_result().
 probe(Opts) ->
     DhtMod  = maps:get(dht_transport, Opts, undefined),
-    Pubkeys = maps:get(pubkeys,       Opts, macula_foundation:pubkeys()),
+    Pubkeys = maps:get(pubkeys,       Opts, hecate_foundation:pubkeys()),
     Timeout = maps:get(timeout_ms,    Opts, ?DEFAULT_TIMEOUT),
     run(DhtMod, Pubkeys, Timeout).
 
@@ -107,7 +107,7 @@ fetch_and_verify(Mod, Pubkey, Timeout) ->
         fun(Item)   -> check_bep44(Item) end,
         fun(Item)   -> extract_record_bytes(Item) end,
         fun(Bytes)  -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
-        fun(Record) -> macula_foundation:verify_record(Record) end,
+        fun(Record) -> hecate_foundation:verify_record(Record) end,
         fun(Record) ->
                 {ok, hecate_bootstrap_foundation:peers_from_record(
                        Record, c, ?MODULE)}

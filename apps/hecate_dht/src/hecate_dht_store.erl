@@ -39,7 +39,7 @@
 -type opts() :: #{
     k                   => pos_integer(),
     quorum              => pos_integer(),
-    candidates          => [macula_frame:station_ref()],
+    candidates          => [hecate_frame:station_ref()],
     constraints         => hecate_dht_placement:constraints(),
     placement_factor    => pos_integer(),
     store_timeout_ms    => pos_integer(),
@@ -47,7 +47,7 @@
 }.
 
 -type outcome() :: #{
-    chosen   := [macula_frame:station_ref()],
+    chosen   := [hecate_frame:station_ref()],
     acks     := non_neg_integer(),
     nacks    := non_neg_integer(),
     timeouts := non_neg_integer(),
@@ -62,13 +62,13 @@
 %% Public API
 %%=====================================================================
 
--spec store(hecate_dht:dht(), macula_record:record()) -> result().
+-spec store(hecate_dht:dht(), hecate_record:record()) -> result().
 store(Dht, Record) ->
     store(Dht, Record, #{}).
 
--spec store(hecate_dht:dht(), macula_record:record(), opts()) -> result().
+-spec store(hecate_dht:dht(), hecate_record:record(), opts()) -> result().
 store(Dht, Record, Opts) when is_map(Record), is_map(Opts) ->
-    Key         = macula_record:storage_key(Record),
+    Key         = hecate_record:storage_key(Record),
     K           = maps:get(k, Opts, ?DEFAULT_K),
     Quorum      = maps:get(quorum, Opts, ?DEFAULT_QUORUM),
     Constraints = resolve_constraints(Opts, K),
@@ -89,14 +89,14 @@ resolve_constraints(Opts, K) ->
 
 -spec resolve_candidates(hecate_dht:dht(), hecate_dht_xor:id(),
                          pos_integer(), opts()) ->
-          [macula_frame:station_ref()].
+          [hecate_frame:station_ref()].
 resolve_candidates(Dht, Key, K, Opts) ->
     pick_candidates(maps:find(candidates, Opts), Dht, Key, K, Opts).
 
--spec pick_candidates({ok, [macula_frame:station_ref()]} | error,
+-spec pick_candidates({ok, [hecate_frame:station_ref()]} | error,
                       hecate_dht:dht(), hecate_dht_xor:id(),
                       pos_integer(), opts()) ->
-          [macula_frame:station_ref()].
+          [hecate_frame:station_ref()].
 pick_candidates({ok, Explicit}, _Dht, _Key, _K, _Opts) ->
     Explicit;
 pick_candidates(error, Dht, Key, K, Opts) ->
@@ -108,7 +108,7 @@ pick_candidates(error, Dht, Key, K, Opts) ->
 %% Dispatch + ack collection
 %%=====================================================================
 
--spec dispatch_placement(hecate_dht:dht(), macula_record:record(),
+-spec dispatch_placement(hecate_dht:dht(), hecate_record:record(),
                          hecate_dht_placement:placement_result(),
                          pos_integer(), opts()) -> result().
 dispatch_placement(_Dht, _Record, #{chosen := []} = Placement, _Quorum,
@@ -125,8 +125,8 @@ dispatch_placement(Dht, Record, Placement, Quorum, Opts) ->
     Outcome = outcome_of(Placement, A, N, T),
     classify(A, Quorum, Outcome).
 
--spec spawn_workers(hecate_dht:dht(), macula_record:record(),
-                    [macula_frame:station_ref()], pos_integer(),
+-spec spawn_workers(hecate_dht:dht(), hecate_record:record(),
+                    [hecate_frame:station_ref()], pos_integer(),
                     reference()) -> ok.
 spawn_workers(Dht, Record, Chosen, PerStore, Tag) ->
     Parent = self(),
@@ -193,5 +193,5 @@ classify(_Acks, _Quorum, Outcome) ->
 %% Utils
 %%=====================================================================
 
--spec id_of(macula_frame:station_ref()) -> macula_identity:pubkey().
+-spec id_of(hecate_frame:station_ref()) -> hecate_identity:pubkey().
 id_of(#{node_id := Id}) -> Id.

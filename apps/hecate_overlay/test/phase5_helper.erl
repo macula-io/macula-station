@@ -45,8 +45,8 @@
 -record(station, {
     name   :: atom(),
     pid    :: pid(),
-    kp     :: macula_identity:key_pair(),
-    pubkey :: macula_identity:pubkey()
+    kp     :: hecate_identity:key_pair(),
+    pubkey :: hecate_identity:pubkey()
 }).
 
 %%=====================================================================
@@ -71,8 +71,8 @@ stop_fleet(#{router := Router, stations := Stations}) ->
     ok.
 
 build_station(Name, Realms, Router) ->
-    Kp = macula_identity:generate(),
-    Pub = macula_identity:public(Kp),
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
     Pid = spawn(fun() ->
         station_loop(init_state(Name, Kp, Pub, Realms, Router))
     end),
@@ -103,10 +103,10 @@ pubkey_of(#{stations := Map}, Name) ->
 
 endorse(#{stations := Map}, Admin, Realm, Name) ->
     #station{pubkey = Pub} = maps:get(Name, Map),
-    R = macula_record:realm_member_endorsement(
+    R = hecate_record:realm_member_endorsement(
           Realm,
           #{realm => Realm, member_node => Pub, roles => [<<"peer">>]}),
-    macula_record:sign(R, Admin).
+    hecate_record:sign(R, Admin).
 
 %% @doc Wire A→B and B→A into each other's active view for `Realm'
 %% without going through the full hyparview handshake. Used by
@@ -200,13 +200,13 @@ control({local_publish, Realm, Topic, Payload}, State) ->
 control({send_join, Realm, SeedPub, Endorsement}, State) ->
     JKp  = maps:get(kp, State),
     JPub = maps:get(pubkey, State),
-    Frame0 = macula_frame:hyparview_join(
+    Frame0 = hecate_frame:hyparview_join(
                #{realm => Realm, new_member => JPub}),
     %% Attach endorsement in a test-only side channel so the seed can
     %% verify it — the production wire format would piggyback in the
     %% JOIN frame's endorsement field (not part of the minimal JOIN
     %% record in Phase 5.2).
-    Frame = macula_frame:sign(Frame0, JKp),
+    Frame = hecate_frame:sign(Frame0, JKp),
     Env   = #{frame => Frame, endorsement => Endorsement,
               realm => Realm, joiner => JPub},
     route(State, SeedPub, {join_envelope, Env}),
@@ -259,7 +259,7 @@ admit_joiner(_Frame, Realm, Joiner, State) ->
         Pl1 = hecate_plumtree:add_peer(Pl, Joiner),
         RS#{view := V1, plum := Pl1}
     end),
-    Reply = macula_frame:sign(macula_frame:hyparview_neighbor(
+    Reply = hecate_frame:sign(hecate_frame:hyparview_neighbor(
                                 #{realm => Realm, priority => high}),
                               maps:get(kp, State1)),
     route(State1, Joiner, Reply),

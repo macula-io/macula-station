@@ -132,9 +132,9 @@ term_to_expr(T) ->
 %%------------------------------------------------------------------
 
 url() ->
-    Kp = macula_identity:generate(),
-    Record = macula_record:sign(
-        macula_record:node_record(macula_identity:public(Kp), [], 0),
+    Kp = hecate_identity:generate(),
+    Record = hecate_record:sign(
+        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
         Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
 
@@ -144,7 +144,7 @@ fake_peers(Urls) ->
 fake_peer(Url) ->
     {ok, Record, Addrs} = hecate_bootstrap_peer_url:decode(Url),
     #{
-        node_id   => macula_record:key(Record),
+        node_id   => hecate_record:key(Record),
         record    => Record,
         addresses => Addrs,
         tier      => x,

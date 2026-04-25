@@ -20,7 +20,7 @@ cold_boot_generates_and_persists_test_() ->
             ?assertNot(filelib:is_regular(Path)),
             {ok, Kp} = hecate_station_identity:load_or_generate(Path),
             ?assert(is_map(Kp)),
-            ?assertEqual(32, byte_size(macula_identity:public(Kp))),
+            ?assertEqual(32, byte_size(hecate_identity:public(Kp))),
             ?assert(filelib:is_regular(Path))
         end
     end}.
@@ -31,10 +31,10 @@ warm_boot_returns_same_identity_test_() ->
             Path = hecate_station_identity:path_for(Dir),
             {ok, Kp1} = hecate_station_identity:load_or_generate(Path),
             {ok, Kp2} = hecate_station_identity:load_or_generate(Path),
-            ?assertEqual(macula_identity:public(Kp1),
-                         macula_identity:public(Kp2)),
-            ?assertEqual(macula_identity:private(Kp1),
-                         macula_identity:private(Kp2))
+            ?assertEqual(hecate_identity:public(Kp1),
+                         hecate_identity:public(Kp2)),
+            ?assertEqual(hecate_identity:private(Kp1),
+                         hecate_identity:private(Kp2))
         end
     end}.
 
@@ -83,11 +83,11 @@ generate_overwrites_even_when_file_exists_test_() ->
             Path       = hecate_station_identity:path_for(Dir),
             {ok, Kp1}  = hecate_station_identity:generate(Path),
             {ok, Kp2}  = hecate_station_identity:generate(Path),
-            ?assertNotEqual(macula_identity:public(Kp1),
-                            macula_identity:public(Kp2)),
+            ?assertNotEqual(hecate_identity:public(Kp1),
+                            hecate_identity:public(Kp2)),
             {ok, KpR}  = hecate_station_identity:load(Path),
-            ?assertEqual(macula_identity:public(Kp2),
-                         macula_identity:public(KpR))
+            ?assertEqual(hecate_identity:public(Kp2),
+                         hecate_identity:public(KpR))
         end
     end}.
 

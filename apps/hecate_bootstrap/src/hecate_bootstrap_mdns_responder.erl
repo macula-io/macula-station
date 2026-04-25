@@ -47,7 +47,7 @@
 -type socket_opener() :: fun(() -> {ok, gen_udp:socket()} | {error, term()}).
 
 -type start_opts() :: #{
-    node_id := macula_identity:pubkey(),
+    node_id := hecate_identity:pubkey(),
     port    := 1..65535,
     tier    := 0..4,
     silent  => boolean(),

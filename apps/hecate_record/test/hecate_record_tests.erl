@@ -1,0 +1,656 @@
+%% EUnit tests for hecate_record.
+-module(hecate_record_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+
+%%------------------------------------------------------------------
+%% node_record construction
+%%------------------------------------------------------------------
+
+build_node_record_envelope_test() ->
+    Kp = hecate_identity:generate(),
+    NodeId = hecate_identity:public(Kp),
+    Realm  = crypto:strong_rand_bytes(32),
+    R = hecate_record:node_record(NodeId, [Realm], 1),
+    ?assertEqual(16#01, hecate_record:type(R)),
+    ?assertEqual(NodeId, hecate_record:key(R)),
+    ?assertEqual(16, byte_size(hecate_record:version(R))),
+    ?assert(hecate_record:expires_at(R) > hecate_record:created_at(R)).
+
+node_record_default_station_id_is_node_id_test() ->
+    Kp = hecate_identity:generate(),
+    NodeId = hecate_identity:public(Kp),
+    R = hecate_record:node_record(NodeId, [], 0),
+    P = hecate_record:payload(R),
+    ?assertEqual(NodeId, maps:get({text, <<"station_id">>}, P)).
+
+node_record_with_custom_station_id_test() ->
+    Kp = hecate_identity:generate(),
+    NodeId    = hecate_identity:public(Kp),
+    StationId = crypto:strong_rand_bytes(32),
+    R = hecate_record:node_record(NodeId, [], 0, #{station_id => StationId}),
+    P = hecate_record:payload(R),
+    ?assertEqual(StationId, maps:get({text, <<"station_id">>}, P)).
+
+node_record_with_optional_text_fields_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:node_record(
+        hecate_identity:public(Kp), [], 0,
+        #{caps_hint => <<"hint">>, display_name => <<"Alice">>}),
+    P = hecate_record:payload(R),
+    ?assertEqual({text, <<"hint">>}, maps:get({text, <<"caps_hint">>}, P)),
+    ?assertEqual({text, <<"Alice">>}, maps:get({text, <<"display_name">>}, P)).
+
+node_record_omits_unset_optional_fields_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    P = hecate_record:payload(R),
+    ?assertNot(maps:is_key({text, <<"caps_hint">>}, P)),
+    ?assertNot(maps:is_key({text, <<"display_name">>}, P)).
+
+%%------------------------------------------------------------------
+%% Sign / verify
+%%------------------------------------------------------------------
+
+sign_attaches_signature_test() ->
+    Kp = hecate_identity:generate(),
+    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Signed = hecate_record:sign(R, Kp),
+    ?assertEqual(64, byte_size(hecate_record:signature(Signed))).
+
+verify_signed_record_test() ->
+    Kp = hecate_identity:generate(),
+    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Signed = hecate_record:sign(R, Kp),
+    ?assertMatch({ok, _}, hecate_record:verify(Signed)).
+
+verify_rejects_tampered_payload_test() ->
+    Kp = hecate_identity:generate(),
+    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Signed = hecate_record:sign(R, Kp),
+    P = hecate_record:payload(Signed),
+    Tampered = Signed#{payload => P#{ {text, <<"capabilities">>} => 999 }},
+    ?assertEqual({error, signature_invalid}, hecate_record:verify(Tampered)).
+
+verify_rejects_wrong_signer_test() ->
+    Kp1 = hecate_identity:generate(),
+    Kp2 = hecate_identity:generate(),
+    %% Build record with Kp1's pubkey as `key` but sign with Kp2.
+    R  = hecate_record:node_record(hecate_identity:public(Kp1), [], 0),
+    Signed = hecate_record:sign(R, Kp2),
+    ?assertEqual({error, signature_invalid}, hecate_record:verify(Signed)).
+
+verify_rejects_expired_test() ->
+    Kp = hecate_identity:generate(),
+    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Past = R#{expires_at => erlang:system_time(millisecond) - 1},
+    Signed = hecate_record:sign(Past, Kp),
+    ?assertEqual({error, expired}, hecate_record:verify(Signed)).
+
+verify_rejects_record_without_signature_test() ->
+    Kp = hecate_identity:generate(),
+    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    ?assertEqual({error, bad_record}, hecate_record:verify(R)).
+
+%%------------------------------------------------------------------
+%% Wire encode / decode
+%%------------------------------------------------------------------
+
+encode_decode_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:node_record(
+        hecate_identity:public(Kp),
+        [crypto:strong_rand_bytes(32), crypto:strong_rand_bytes(32)],
+        16#DEADBEEF,
+        #{caps_hint => <<"some hint">>, display_name => <<"a node">>}
+    ),
+    Signed = hecate_record:sign(R, Kp),
+    Wire = hecate_record:encode(Signed),
+    ?assertMatch({ok, _}, hecate_record:decode(Wire)),
+    {ok, Decoded} = hecate_record:decode(Wire),
+    %% Verify the decoded record (signature still valid over wire bytes).
+    ?assertMatch({ok, _}, hecate_record:verify(Decoded)).
+
+decode_rejects_garbage_test() ->
+    %% A non-CBOR sequence either fails to decode or yields a non-record value.
+    Result = catch hecate_record:decode(<<255, 255, 255, 255>>),
+    case Result of
+        {ok, _} -> ?assert(false);
+        _       -> ok
+    end.
+
+decode_returns_missing_signature_when_unsigned_test() ->
+    Map = #{
+        {text, <<"t">>} => 1,
+        {text, <<"k">>} => crypto:strong_rand_bytes(32),
+        {text, <<"v">>} => crypto:strong_rand_bytes(16),
+        {text, <<"c">>} => erlang:system_time(millisecond),
+        {text, <<"x">>} => erlang:system_time(millisecond) + 60_000,
+        {text, <<"p">>} => #{}
+    },
+    Wire = hecate_record_cbor:encode(Map),
+    ?assertEqual({error, missing_signature}, hecate_record:decode(Wire)).
+
+decode_rejects_short_signature_test() ->
+    Map = #{
+        {text, <<"t">>} => 1,
+        {text, <<"k">>} => crypto:strong_rand_bytes(32),
+        {text, <<"v">>} => crypto:strong_rand_bytes(16),
+        {text, <<"c">>} => erlang:system_time(millisecond),
+        {text, <<"x">>} => erlang:system_time(millisecond) + 60_000,
+        {text, <<"p">>} => #{},
+        {text, <<"s">>} => crypto:strong_rand_bytes(32)   %% wrong size
+    },
+    Wire = hecate_record_cbor:encode(Map),
+    ?assertEqual({error, bad_record}, hecate_record:decode(Wire)).
+
+%%------------------------------------------------------------------
+%% Tombstone
+%%------------------------------------------------------------------
+
+build_tombstone_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, retired),
+    ?assertEqual(16#0C, hecate_record:type(Tomb)),
+    ?assertEqual(Pub, hecate_record:key(Tomb)).
+
+sign_verify_tombstone_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, retired),
+    Signed = hecate_record:sign(Tomb, Kp),
+    ?assertMatch({ok, _}, hecate_record:verify(Signed)).
+
+tombstone_default_detail_is_null_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, expired),
+    P = hecate_record:payload(Tomb),
+    ?assertEqual(null, maps:get({text, <<"detail">>}, P)).
+
+tombstone_with_detail_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, revoked,
+                                   #{detail => <<"key compromise">>}),
+    P = hecate_record:payload(Tomb),
+    ?assertEqual({text, <<"key compromise">>},
+                 maps:get({text, <<"detail">>}, P)).
+
+tombstone_reason_serialised_as_text_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, moved),
+    P = hecate_record:payload(Tomb),
+    ?assertEqual({text, <<"moved">>},
+                 maps:get({text, <<"reason">>}, P)).
+
+tombstone_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, revoked,
+                                   #{detail => <<"reason here">>}),
+    Signed = hecate_record:sign(Tomb, Kp),
+    Wire = hecate_record:encode(Signed),
+    {ok, Decoded} = hecate_record:decode(Wire),
+    {ok, _} = hecate_record:verify(Decoded),
+    ?assertEqual(16#0C, hecate_record:type(Decoded)),
+    ?assertEqual(Pub, hecate_record:key(Decoded)).
+
+%%------------------------------------------------------------------
+%% realm_directory
+%%------------------------------------------------------------------
+
+realm_directory_shape_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    AdminKey = crypto:strong_rand_bytes(32),
+    R = hecate_record:realm_directory(RealmId, <<"my realm">>, AdminKey),
+    ?assertEqual(16#03, hecate_record:type(R)),
+    ?assertEqual(RealmId, hecate_record:key(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual(RealmId, maps:get({text, <<"realm_id">>}, P)),
+    ?assertEqual({text, <<"my realm">>}, maps:get({text, <<"name">>}, P)),
+    ?assertEqual(AdminKey, maps:get({text, <<"admin_key">>}, P)),
+    ?assert(maps:is_key({text, <<"created_at">>}, P)),
+    ?assertNot(maps:is_key({text, <<"policy_url">>}, P)).
+
+realm_directory_with_policy_url_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    AdminKey = crypto:strong_rand_bytes(32),
+    R = hecate_record:realm_directory(RealmId, <<"r">>, AdminKey,
+                                      #{policy_url => <<"https://ex.io">>}),
+    ?assertEqual({text, <<"https://ex.io">>},
+                 maps:get({text, <<"policy_url">>}, hecate_record:payload(R))).
+
+realm_directory_sign_verify_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    R = hecate_record:realm_directory(RealmId, <<"r">>,
+                                      crypto:strong_rand_bytes(32)),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+realm_directory_rejects_non_32_byte_realm_id_test() ->
+    ?assertError(function_clause,
+        hecate_record:realm_directory(<<0:64>>, <<"r">>,
+                                      crypto:strong_rand_bytes(32))).
+
+%%------------------------------------------------------------------
+%% realm_stations
+%%------------------------------------------------------------------
+
+realm_stations_shape_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    S1 = crypto:strong_rand_bytes(32),
+    S2 = crypto:strong_rand_bytes(32),
+    Entries = [
+        #{station_id => S1, roles => [<<"directory">>]},
+        #{station_id => S2, roles => [<<"replica">>, <<"relay">>]}
+    ],
+    R = hecate_record:realm_stations(RealmId, Entries),
+    ?assertEqual(16#04, hecate_record:type(R)),
+    ?assertEqual(RealmId, hecate_record:key(R)),
+    P = hecate_record:payload(R),
+    [E1, E2] = maps:get({text, <<"stations">>}, P),
+    ?assertEqual(S1, maps:get({text, <<"station_id">>}, E1)),
+    ?assertEqual([{text, <<"replica">>}, {text, <<"relay">>}],
+                 maps:get({text, <<"roles">>}, E2)).
+
+realm_stations_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    R = hecate_record:realm_stations(
+          RealmId,
+          [#{station_id => crypto:strong_rand_bytes(32),
+             roles      => [<<"directory">>]}]),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#04, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+realm_stations_accepts_empty_list_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:realm_stations(hecate_identity:public(Kp), []),
+    ?assertEqual([], maps:get({text, <<"stations">>},
+                              hecate_record:payload(R))).
+
+%%------------------------------------------------------------------
+%% realm_member_endorsement
+%%------------------------------------------------------------------
+
+realm_member_endorsement_shape_test() ->
+    AdminKp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(AdminKp),
+    Member  = crypto:strong_rand_bytes(32),
+    R = hecate_record:realm_member_endorsement(
+          RealmId,
+          #{realm => RealmId, member_node => Member,
+            roles => [<<"peer">>]}),
+    ?assertEqual(16#05, hecate_record:type(R)),
+    ?assertEqual(RealmId, hecate_record:key(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual(RealmId, maps:get({text, <<"realm">>}, P)),
+    ?assertEqual(Member,  maps:get({text, <<"member_node">>}, P)),
+    ?assertEqual([{text, <<"peer">>}],
+                 maps:get({text, <<"roles">>}, P)),
+    ?assert(is_integer(maps:get({text, <<"valid_from">>}, P))),
+    ?assert(is_integer(maps:get({text, <<"valid_until">>}, P))),
+    ValidFrom  = maps:get({text, <<"valid_from">>}, P),
+    ValidUntil = maps:get({text, <<"valid_until">>}, P),
+    ?assert(ValidUntil > ValidFrom).
+
+realm_member_endorsement_custom_validity_window_test() ->
+    AdminKp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(AdminKp),
+    Member  = crypto:strong_rand_bytes(32),
+    R = hecate_record:realm_member_endorsement(
+          RealmId,
+          #{realm => RealmId, member_node => Member, roles => []},
+          #{valid_from => 1000, valid_until => 5000}),
+    P = hecate_record:payload(R),
+    ?assertEqual(1000, maps:get({text, <<"valid_from">>}, P)),
+    ?assertEqual(5000, maps:get({text, <<"valid_until">>}, P)).
+
+realm_member_endorsement_sign_verify_roundtrip_test() ->
+    AdminKp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(AdminKp),
+    Member  = crypto:strong_rand_bytes(32),
+    R = hecate_record:realm_member_endorsement(
+          RealmId,
+          #{realm => RealmId, member_node => Member,
+            roles => [<<"peer">>, <<"directory">>]}),
+    Signed = hecate_record:sign(R, AdminKp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#05, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+realm_member_endorsement_storage_key_binds_realm_and_member_test() ->
+    AdminKp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(AdminKp),
+    M1 = crypto:strong_rand_bytes(32),
+    M2 = crypto:strong_rand_bytes(32),
+    R1 = hecate_record:realm_member_endorsement(
+           RealmId,
+           #{realm => RealmId, member_node => M1, roles => []}),
+    R2 = hecate_record:realm_member_endorsement(
+           RealmId,
+           #{realm => RealmId, member_node => M2, roles => []}),
+    K1 = hecate_record:storage_key(R1),
+    K2 = hecate_record:storage_key(R2),
+    ?assertEqual(32, byte_size(K1)),
+    ?assertEqual(32, byte_size(K2)),
+    %% Different members → different keys even for same realm.
+    ?assertNotEqual(K1, K2),
+    %% Key differs from realm envelope key and from realm_stations hash.
+    ?assertNotEqual(RealmId, K1),
+    RStations = hecate_record:realm_stations(RealmId, []),
+    ?assertNotEqual(hecate_record:storage_key(RStations), K1).
+
+realm_member_endorsement_rejects_non_32_byte_member_test() ->
+    RealmId = crypto:strong_rand_bytes(32),
+    ?assertError(function_clause,
+                 hecate_record:realm_member_endorsement(
+                   RealmId,
+                   #{realm => RealmId, member_node => <<1,2,3>>,
+                     roles => []})).
+
+%%------------------------------------------------------------------
+%% procedure_advertisement
+%%------------------------------------------------------------------
+
+procedure_advertisement_shape_test() ->
+    Kp = hecate_identity:generate(),
+    NodeId = hecate_identity:public(Kp),
+    Station = crypto:strong_rand_bytes(32),
+    R = hecate_record:procedure_advertisement(NodeId,
+                                              <<"mcp://weather/forecast">>,
+                                              Station),
+    ?assertEqual(16#06, hecate_record:type(R)),
+    ?assertEqual(NodeId, hecate_record:key(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual({text, <<"mcp://weather/forecast">>},
+                 maps:get({text, <<"procedure_uri">>}, P)),
+    ?assertEqual(NodeId, maps:get({text, <<"advertiser_node">>}, P)),
+    ?assertEqual(Station, maps:get({text, <<"serving_station">>}, P)).
+
+procedure_advertisement_with_capacity_hints_test() ->
+    Kp = hecate_identity:generate(),
+    Station = crypto:strong_rand_bytes(32),
+    R = hecate_record:procedure_advertisement(
+          hecate_identity:public(Kp),
+          <<"mcp://x/y">>,
+          Station,
+          #{rate_limit_qps => 100, max_concurrency => 8}),
+    P = hecate_record:payload(R),
+    ?assertEqual(100, maps:get({text, <<"rate_limit_qps">>}, P)),
+    ?assertEqual(8,   maps:get({text, <<"max_concurrency">>}, P)).
+
+procedure_advertisement_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:procedure_advertisement(
+          hecate_identity:public(Kp),
+          <<"mcp://weather/forecast">>,
+          crypto:strong_rand_bytes(32)),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+%%------------------------------------------------------------------
+%% storage_key/1 — DHT storage key derivation (Part 3 §3.3)
+%%------------------------------------------------------------------
+
+storage_key_node_record_is_envelope_key_test() ->
+    Kp = hecate_identity:generate(),
+    NodeId = hecate_identity:public(Kp),
+    R = hecate_record:node_record(NodeId, [], 0),
+    ?assertEqual(NodeId, hecate_record:storage_key(R)).
+
+storage_key_realm_directory_is_realm_id_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    R = hecate_record:realm_directory(RealmId, <<"r">>,
+                                      crypto:strong_rand_bytes(32)),
+    ?assertEqual(RealmId, hecate_record:storage_key(R)).
+
+storage_key_realm_stations_is_hashed_test() ->
+    Kp = hecate_identity:generate(),
+    RealmId = hecate_identity:public(Kp),
+    Expected = crypto:hash(sha256, <<"station_set", RealmId/binary>>),
+    R = hecate_record:realm_stations(RealmId, []),
+    ?assertEqual(Expected, hecate_record:storage_key(R)),
+    ?assertNotEqual(RealmId, hecate_record:storage_key(R)).
+
+storage_key_procedure_advertisement_is_uri_hash_test() ->
+    Kp = hecate_identity:generate(),
+    Uri = <<"mcp://weather/forecast">>,
+    R = hecate_record:procedure_advertisement(hecate_identity:public(Kp),
+                                              Uri,
+                                              crypto:strong_rand_bytes(32)),
+    ?assertEqual(crypto:hash(sha256, Uri), hecate_record:storage_key(R)),
+    %% The envelope key (advertiser NodeId) differs from the storage key.
+    ?assertNotEqual(hecate_record:key(R), hecate_record:storage_key(R)).
+
+storage_key_tombstone_is_superseded_key_test() ->
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Tomb = hecate_record:tombstone(Pub, 16#01, revoked),
+    ?assertEqual(Pub, hecate_record:storage_key(Tomb)).
+
+%%------------------------------------------------------------------
+%% refresh/2 — owner republish
+%%------------------------------------------------------------------
+
+refresh_preserves_type_key_payload_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:sign(
+          hecate_record:node_record(hecate_identity:public(Kp), [], 7),
+          Kp),
+    timer:sleep(2),
+    Fresh = hecate_record:refresh(R, Kp),
+    ?assertEqual(hecate_record:type(R),    hecate_record:type(Fresh)),
+    ?assertEqual(hecate_record:key(R),     hecate_record:key(Fresh)),
+    ?assertEqual(hecate_record:payload(R), hecate_record:payload(Fresh)).
+
+refresh_bumps_version_and_timestamps_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:sign(
+          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          Kp),
+    timer:sleep(2),
+    Fresh = hecate_record:refresh(R, Kp),
+    ?assertNotEqual(hecate_record:version(R), hecate_record:version(Fresh)),
+    ?assert(hecate_record:created_at(Fresh) >= hecate_record:created_at(R)),
+    ?assert(hecate_record:expires_at(Fresh) >= hecate_record:expires_at(R)).
+
+refresh_preserves_ttl_duration_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:sign(
+          hecate_record:node_record(hecate_identity:public(Kp), [], 0,
+                                    #{ttl_ms => 60_000}),
+          Kp),
+    Fresh = hecate_record:refresh(R, Kp),
+    Ttl  = hecate_record:expires_at(R)     - hecate_record:created_at(R),
+    Ttl2 = hecate_record:expires_at(Fresh) - hecate_record:created_at(Fresh),
+    ?assertEqual(Ttl, Ttl2).
+
+refresh_produces_verifiable_record_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:sign(
+          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          Kp),
+    Fresh = hecate_record:refresh(R, Kp),
+    ?assertMatch({ok, _}, hecate_record:verify(Fresh)).
+
+refresh_round_trip_over_wire_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:sign(
+          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          Kp),
+    Fresh = hecate_record:refresh(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Fresh)),
+    ?assertEqual(Fresh, Decoded).
+
+%%------------------------------------------------------------------
+%% foundation_seed_list (§9.14)
+%%------------------------------------------------------------------
+
+foundation_seed_list_shape_test() ->
+    Kp = hecate_identity:generate(),
+    Fk = hecate_identity:public(Kp),
+    Seed1 = #{node_id => crypto:strong_rand_bytes(32),
+              addresses => [#{{text, <<"v6">>} => {text, <<"2a02::1">>},
+                              {text, <<"port">>} => 7000}],
+              tier => 4},
+    Seed2 = #{node_id => crypto:strong_rand_bytes(32),
+              addresses => [],
+              tier => 3},
+    R = hecate_record:foundation_seed_list(Fk, [Seed1, Seed2]),
+    ?assertEqual(16#0D, hecate_record:type(R)),
+    ?assertEqual(Fk, hecate_record:key(R)),
+    P = hecate_record:payload(R),
+    [E1, E2] = maps:get({text, <<"seeds">>}, P),
+    ?assertEqual(4, maps:get({text, <<"tier">>}, E1)),
+    ?assertEqual(3, maps:get({text, <<"tier">>}, E2)).
+
+foundation_seed_list_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:foundation_seed_list(
+          hecate_identity:public(Kp),
+          [#{node_id => crypto:strong_rand_bytes(32),
+             addresses => [], tier => 4}]),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#0D, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+foundation_seed_list_rejects_wrong_tier_test() ->
+    Kp = hecate_identity:generate(),
+    ?assertError(function_clause,
+                 hecate_record:foundation_seed_list(
+                   hecate_identity:public(Kp),
+                   [#{node_id => crypto:strong_rand_bytes(32),
+                      addresses => [], tier => 1}])).
+
+%%------------------------------------------------------------------
+%% foundation_parameter (§9.15)
+%%------------------------------------------------------------------
+
+foundation_parameter_shape_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:foundation_parameter(
+          hecate_identity:public(Kp), <<"puzzle_difficulty">>, 8),
+    ?assertEqual(16#0E, hecate_record:type(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual({text, <<"puzzle_difficulty">>},
+                 maps:get({text, <<"param_name">>}, P)),
+    ?assertEqual(8, maps:get({text, <<"param_value">>}, P)),
+    ?assertEqual(null, maps:get({text, <<"prior_version">>}, P)).
+
+foundation_parameter_with_prior_version_test() ->
+    Kp = hecate_identity:generate(),
+    Prior = hecate_record_uuid:v7(erlang:system_time(millisecond) - 1),
+    R = hecate_record:foundation_parameter(
+          hecate_identity:public(Kp), <<"tRepublish_ms">>, 3_600_000,
+          #{prior_version => Prior}),
+    P = hecate_record:payload(R),
+    ?assertEqual(Prior, maps:get({text, <<"prior_version">>}, P)).
+
+foundation_parameter_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:foundation_parameter(
+          hecate_identity:public(Kp), <<"tExpire_ms">>, 86_400_000),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#0E, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+%%------------------------------------------------------------------
+%% foundation_realm_trust_list (§9.16)
+%%------------------------------------------------------------------
+
+foundation_realm_trust_list_shape_test() ->
+    Kp = hecate_identity:generate(),
+    T1 = crypto:strong_rand_bytes(32),
+    T2 = crypto:strong_rand_bytes(32),
+    Rv = crypto:strong_rand_bytes(32),
+    R = hecate_record:foundation_realm_trust_list(
+          hecate_identity:public(Kp), [T1, T2],
+          #{realms_revoked => [Rv]}),
+    ?assertEqual(16#0F, hecate_record:type(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual([T1, T2], maps:get({text, <<"realms_trusted">>}, P)),
+    ?assertEqual([Rv],     maps:get({text, <<"realms_revoked">>}, P)).
+
+foundation_realm_trust_list_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:foundation_realm_trust_list(
+          hecate_identity:public(Kp),
+          [crypto:strong_rand_bytes(32)]),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#0F, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+%%------------------------------------------------------------------
+%% foundation_t3_attestation (§9.17)
+%%------------------------------------------------------------------
+
+foundation_t3_attestation_shape_test() ->
+    Kp = hecate_identity:generate(),
+    Station = crypto:strong_rand_bytes(32),
+    Audit = erlang:system_time(millisecond),
+    R = hecate_record:foundation_t3_attestation(
+          hecate_identity:public(Kp), Station, Audit,
+          #{notes => <<"audited Q2-2026">>}),
+    ?assertEqual(16#10, hecate_record:type(R)),
+    P = hecate_record:payload(R),
+    ?assertEqual(Station, maps:get({text, <<"station_id">>}, P)),
+    ?assertEqual(3, maps:get({text, <<"tier_attested">>}, P)),
+    ?assertEqual({text, <<"audited Q2-2026">>},
+                 maps:get({text, <<"notes">>}, P)).
+
+foundation_t3_attestation_wire_roundtrip_test() ->
+    Kp = hecate_identity:generate(),
+    R = hecate_record:foundation_t3_attestation(
+          hecate_identity:public(Kp),
+          crypto:strong_rand_bytes(32),
+          erlang:system_time(millisecond)),
+    Signed = hecate_record:sign(R, Kp),
+    {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
+    ?assertEqual(16#10, hecate_record:type(Decoded)),
+    {ok, _} = hecate_record:verify(Decoded).
+
+%%------------------------------------------------------------------
+%% storage_key for foundation types
+%%------------------------------------------------------------------
+
+storage_key_foundation_seed_list_is_hashed_test() ->
+    Kp = hecate_identity:generate(),
+    Fk = hecate_identity:public(Kp),
+    R = hecate_record:foundation_seed_list(Fk, []),
+    ?assertEqual(32, byte_size(hecate_record:storage_key(R))),
+    ?assertNotEqual(Fk, hecate_record:storage_key(R)).
+
+storage_key_foundation_parameter_varies_by_name_test() ->
+    Kp = hecate_identity:generate(),
+    Fk = hecate_identity:public(Kp),
+    R1 = hecate_record:foundation_parameter(Fk, <<"a">>, 1),
+    R2 = hecate_record:foundation_parameter(Fk, <<"b">>, 1),
+    ?assertNotEqual(hecate_record:storage_key(R1),
+                    hecate_record:storage_key(R2)).
+
+storage_key_foundation_t3_attestation_varies_by_station_test() ->
+    Kp = hecate_identity:generate(),
+    Fk = hecate_identity:public(Kp),
+    S1 = crypto:strong_rand_bytes(32),
+    S2 = crypto:strong_rand_bytes(32),
+    Now = erlang:system_time(millisecond),
+    R1 = hecate_record:foundation_t3_attestation(Fk, S1, Now),
+    R2 = hecate_record:foundation_t3_attestation(Fk, S2, Now),
+    ?assertNotEqual(hecate_record:storage_key(R1),
+                    hecate_record:storage_key(R2)).

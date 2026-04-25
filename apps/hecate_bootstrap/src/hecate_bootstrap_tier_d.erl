@@ -94,7 +94,7 @@ fetch_and_verify(Mod, ChainOpts, Timeout) ->
     chain([
         fun() -> Mod:latest_anchor(ChainOpts, Timeout) end,
         fun(Bytes)  -> hecate_bootstrap_foundation:decode_record_bytes(Bytes) end,
-        fun(Record) -> macula_foundation:verify_record(Record) end,
+        fun(Record) -> hecate_foundation:verify_record(Record) end,
         fun(Record) ->
                 {ok, hecate_bootstrap_foundation:peers_from_record(
                        Record, d, ?MODULE)}

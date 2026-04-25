@@ -33,9 +33,9 @@
     port          => inet:port_number(),
     certfile      => file:name_all(),
     keyfile       => file:name_all(),
-    identity      => macula_identity:key_pair(),
+    identity      => hecate_identity:key_pair(),
     identity_file => file:name_all(),
-    realms        => [macula_identity:pubkey()],
+    realms        => [hecate_identity:pubkey()],
     capabilities  => non_neg_integer()
 }.
 
@@ -44,8 +44,8 @@
     port         := inet:port_number(),
     certfile     := file:name_all(),
     keyfile      := file:name_all(),
-    identity     := macula_identity:key_pair(),
-    realms       := [macula_identity:pubkey()],
+    identity     := hecate_identity:key_pair(),
+    realms       := [hecate_identity:pubkey()],
     capabilities := non_neg_integer()
 }.
 
@@ -91,7 +91,7 @@ require_one(false,  Key, _Rest, _Spec, _K) -> {error, {missing, Key}}.
 
 %% @doc Back-compat shim — delegates to `hecate_station_identity'.
 -spec load_or_create_identity(file:name_all()) ->
-    {ok, macula_identity:key_pair()} | {error, term()}.
+    {ok, hecate_identity:key_pair()} | {error, term()}.
 load_or_create_identity(Path) ->
     hecate_station_identity:load_or_generate(Path).
 

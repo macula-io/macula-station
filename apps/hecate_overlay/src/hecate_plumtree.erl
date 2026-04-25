@@ -70,30 +70,30 @@
 
 -export_type([state/0, peer/0, msg_id/0, action/0, delivery/0]).
 
--type peer()     :: macula_identity:pubkey().
+-type peer()     :: hecate_identity:pubkey().
 -type msg_id()   :: <<_:128>>.
 
 -type state() :: #{
     self_id    := peer(),
     realm      := <<_:256>>,
-    identity   := macula_identity:key_pair(),
+    identity   := hecate_identity:key_pair(),
     eager_push := sets:set(peer()),
     lazy_push  := sets:set(peer()),
     received   := #{msg_id() => term()},
     missing    := #{msg_id() => sets:set(peer())}
 }.
 
--type action()   :: {send, peer(), macula_frame:frame()}.
+-type action()   :: {send, peer(), hecate_frame:frame()}.
 -type delivery() :: {msg_id(), term()}.
 
 %%=====================================================================
 %% Construction + view changes
 %%=====================================================================
 
--spec new(macula_identity:key_pair(), <<_:256>>) -> state().
+-spec new(hecate_identity:key_pair(), <<_:256>>) -> state().
 new(Identity, Realm) when is_binary(Realm), byte_size(Realm) =:= 32 ->
     #{
-        self_id    => macula_identity:public(Identity),
+        self_id    => hecate_identity:public(Identity),
         realm      => Realm,
         identity   => Identity,
         eager_push => sets:new(),
@@ -150,7 +150,7 @@ publish(State, <<_:128>> = MsgId, Payload) ->
 %% Inbound dispatch
 %%=====================================================================
 
--spec process(state(), peer(), macula_frame:frame()) ->
+-spec process(state(), peer(), hecate_frame:frame()) ->
         {state(), [action()], [delivery()]}.
 process(State, From, #{frame_type := plumtree_gossip} = F) ->
     on_gossip(From, F, State);
@@ -167,7 +167,7 @@ process(State, _From, _Frame) ->
 %% Handlers
 %%=====================================================================
 
--spec on_gossip(peer(), macula_frame:frame(), state()) ->
+-spec on_gossip(peer(), hecate_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_gossip(From, Frame, State) ->
     MsgId   = maps:get(msg_id, Frame),
@@ -191,7 +191,7 @@ classify_gossip(false, From, MsgId, Round, Payload, State) ->
     Pushes   = build_pushes(State3, MsgId, Round + 1, Payload, From),
     {State3, Pushes, [{MsgId, Payload}]}.
 
--spec on_ihave(peer(), macula_frame:frame(), state()) ->
+-spec on_ihave(peer(), hecate_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_ihave(From, Frame, State) ->
     MsgId = maps:get(msg_id, Frame),
@@ -210,7 +210,7 @@ classify_ihave(false, From, MsgId, Round, State) ->
     Graft  = signed_graft(State, MsgId, Round + 1),
     {State1, [{send, From, Graft}], []}.
 
--spec on_graft(peer(), macula_frame:frame(), state()) ->
+-spec on_graft(peer(), hecate_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_graft(From, Frame, State) ->
     MsgId = maps:get(msg_id, Frame),
@@ -267,20 +267,20 @@ build_pushes(#{eager_push := E, lazy_push := L} = State,
         ++ [{send, P, signed_ihave(State, MsgId, Round)} || P <- Lazy].
 
 signed_gossip(#{realm := R, identity := Id}, MsgId, Round, Payload) ->
-    macula_frame:sign(macula_frame:plumtree_gossip(
+    hecate_frame:sign(hecate_frame:plumtree_gossip(
                         #{realm => R, msg_id => MsgId,
                           round => Round, payload => Payload}), Id).
 
 signed_ihave(#{realm := R, identity := Id}, MsgId, Round) ->
-    macula_frame:sign(macula_frame:plumtree_ihave(
+    hecate_frame:sign(hecate_frame:plumtree_ihave(
                         #{realm => R, msg_id => MsgId,
                           round => Round}), Id).
 
 signed_graft(#{realm := R, identity := Id}, MsgId, Round) ->
-    macula_frame:sign(macula_frame:plumtree_graft(
+    hecate_frame:sign(hecate_frame:plumtree_graft(
                         #{realm => R, msg_id => MsgId,
                           round => Round}), Id).
 
 signed_prune(#{realm := R, identity := Id}) ->
-    macula_frame:sign(macula_frame:plumtree_prune(
+    hecate_frame:sign(hecate_frame:plumtree_prune(
                         #{realm => R}), Id).

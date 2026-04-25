@@ -10,25 +10,25 @@
 
 send_store_records_replica_on_custodian_test() ->
     #{a := {A, _}, b := {B, KpB}} = Net = start_pair(),
-    BId = macula_identity:public(KpB),
+    BId = hecate_identity:public(KpB),
     Record = signed_record(),
     {ok, #{stored := true, reason := undefined}} =
         hecate_dht:send_store(A, BId, Record),
-    [Stored] = hecate_dht:find_local_record(B, macula_record:storage_key(Record)),
-    ?assertEqual(macula_record:key(Record), macula_record:key(Stored)),
+    [Stored] = hecate_dht:find_local_record(B, hecate_record:storage_key(Record)),
+    ?assertEqual(hecate_record:key(Record), hecate_record:key(Stored)),
     stop_net(Net).
 
 send_store_no_transport_returns_error_test() ->
-    Kp = macula_identity:generate(),
-    {ok, D} = hecate_dht:start_link(#{self_id => macula_identity:public(Kp)}),
+    Kp = hecate_identity:generate(),
+    {ok, D} = hecate_dht:start_link(#{self_id => hecate_identity:public(Kp)}),
     ?assertEqual({error, no_transport},
                  hecate_dht:send_store(D, <<1:256>>, signed_record())),
     hecate_dht:stop(D).
 
 send_store_timeout_on_silent_peer_test() ->
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     {ok, D} = hecate_dht:start_link(#{
-        self_id    => macula_identity:public(Kp),
+        self_id    => hecate_identity:public(Kp),
         identity   => Kp,
         send_frame => fun(_, _) -> ok end
     }),
@@ -97,9 +97,9 @@ store_propagates_placement_degraded_flag_test() ->
     stop_net(Net).
 
 store_no_candidates_returns_error_test() ->
-    Kp = macula_identity:generate(),
+    Kp = hecate_identity:generate(),
     {ok, D} = hecate_dht:start_link(#{
-        self_id    => macula_identity:public(Kp),
+        self_id    => hecate_identity:public(Kp),
         identity   => Kp,
         send_frame => fun(_, _) -> ok end
     }),
@@ -121,15 +121,15 @@ start_net(Names) ->
     Router = spawn_router(),
     Entries = [{N, make_server(Router)} || N <- Names],
     Net = maps:from_list([{N, {P, Kp}} || {N, {P, Kp}} <- Entries]),
-    Table = maps:from_list([{macula_identity:public(Kp), P}
+    Table = maps:from_list([{hecate_identity:public(Kp), P}
                             || {_, {P, Kp}} <- Entries]),
     Router ! {table, Table},
     put(store_router, Router),
     Net.
 
 make_server(Router) ->
-    Kp = macula_identity:generate(),
-    SelfId = macula_identity:public(Kp),
+    Kp = hecate_identity:generate(),
+    SelfId = hecate_identity:public(Kp),
     Send = fun(DstId, Frame) ->
         Router ! {route, SelfId, DstId, Frame}, ok
     end,
@@ -170,7 +170,7 @@ route_frame(Table, From, Dst, Frame) ->
 
 ref_for(Net, Name) ->
     #{Name := {_, Kp}} = Net,
-    NodeId = macula_identity:public(Kp),
+    NodeId = hecate_identity:public(Kp),
     #{node_id      => NodeId,
       station_id   => NodeId,
       addresses    => [],
@@ -189,9 +189,9 @@ dummy_ref(NodeId) ->
       last_seen_at => 1}.
 
 signed_record() ->
-    Kp = macula_identity:generate(),
-    macula_record:sign(
-        macula_record:node_record(macula_identity:public(Kp), [], 0),
+    Kp = hecate_identity:generate(),
+    hecate_record:sign(
+        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
         Kp).
 
 diverse_constraints(K) ->

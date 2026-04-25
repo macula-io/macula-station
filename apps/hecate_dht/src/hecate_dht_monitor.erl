@@ -16,7 +16,7 @@
 %%       plus the diversity counts. This is the §13 "replica
 %%       diversity score" metric.</li>
 %%   <li>Emits a single `_hecate.dht.metrics' event via
-%%       `macula_diagnostics' carrying the full report, plus
+%%       `hecate_diagnostics' carrying the full report, plus
 %%       individual gauges for the headline numbers so dashboards
 %%       can track them directly.</li>
 %% </ol>
@@ -47,7 +47,7 @@
     dht         := hecate_dht:dht(),
     interval_ms => pos_integer(),
     k           => pos_integer(),
-    self_id     => macula_identity:pubkey()
+    self_id     => hecate_identity:pubkey()
 }.
 
 -type bucket_report() :: #{
@@ -71,7 +71,7 @@
 }.
 
 -type report() :: #{
-    self_id       := macula_identity:pubkey(),
+    self_id       := hecate_identity:pubkey(),
     rt_size       := non_neg_integer(),
     bucket_count  := non_neg_integer(),
     sibling_count := non_neg_integer(),
@@ -87,7 +87,7 @@
 
 -record(state, {
     dht         :: hecate_dht:dht(),
-    self_id     :: macula_identity:pubkey(),
+    self_id     :: hecate_identity:pubkey(),
     interval_ms :: pos_integer(),
     k           :: pos_integer(),
     ticks       :: non_neg_integer(),
@@ -116,7 +116,7 @@ report(Pid) -> gen_server:call(Pid, report).
 
 %% @doc Snapshot the gauge values held in the monitor's process
 %% dictionary.
--spec gauges(pid()) -> [macula_diagnostics:sample()].
+-spec gauges(pid()) -> [hecate_diagnostics:sample()].
 gauges(Pid) -> gen_server:call(Pid, gauges).
 
 -spec stats(pid()) -> stats().
@@ -146,7 +146,7 @@ handle_call(tick, _From, State) ->
 handle_call(report, _From, State) ->
     {reply, build_report(State), State};
 handle_call(gauges, _From, State) ->
-    {reply, macula_diagnostics:snapshot(), State};
+    {reply, hecate_diagnostics:snapshot(), State};
 handle_call(stats, _From, State) ->
     {reply, build_stats(State), State};
 handle_call(_Msg, _From, State) ->
@@ -231,15 +231,15 @@ count(Match, Field, Reports) ->
 -spec replica_report(#state{}) -> replica_report().
 replica_report(#state{dht = Dht, self_id = SelfId, k = K}) ->
     Records = hecate_dht:list_records(Dht),
-    Owned   = [R || R <- Records, macula_record:key(R) =:= SelfId],
+    Owned   = [R || R <- Records, hecate_record:key(R) =:= SelfId],
     Summaries = [replica_summary(R, Dht, K) || R <- Owned],
     #{owned_records => length(Owned),
       placement_summaries => Summaries}.
 
--spec replica_summary(macula_record:record(), hecate_dht:dht(),
+-spec replica_summary(hecate_record:record(), hecate_dht:dht(),
                       pos_integer()) -> replica_summary().
 replica_summary(Record, Dht, K) ->
-    StorageKey = macula_record:storage_key(Record),
+    StorageKey = hecate_record:storage_key(Record),
     Entries    = hecate_dht:k_closest(Dht, StorageKey, K),
     Refs       = [hecate_dht_protocol:entry_to_station_ref(E) || E <- Entries],
     Placement  = hecate_dht_placement:place(
@@ -258,7 +258,7 @@ replica_summary(Record, Dht, K) ->
 
 -spec publish(report()) -> ok.
 publish(Report) ->
-    macula_diagnostics:event(?EVENT_TOPIC, Report),
+    hecate_diagnostics:event(?EVENT_TOPIC, Report),
     set_gauges(Report).
 
 -spec set_gauges(report()) -> ok.
@@ -285,4 +285,4 @@ set_gauges(Report) ->
     ok.
 
 -spec gauge(binary(), number()) -> ok.
-gauge(Name, V) -> macula_diagnostics:metric(Name, gauge, V).
+gauge(Name, V) -> hecate_diagnostics:metric(Name, gauge, V).

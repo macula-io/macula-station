@@ -65,7 +65,7 @@
 }.
 
 -type placement_result() :: #{
-    chosen   := [macula_frame:station_ref()],
+    chosen   := [hecate_frame:station_ref()],
     degraded := boolean(),
     counts   := counts()
 }.
@@ -82,13 +82,13 @@ default_constraints() ->
       tier_min     => ?DEFAULT_TIER_MIN,
       operator_max => ?DEFAULT_OPERATOR_MAX}.
 
--spec place(hecate_dht_xor:id(), [macula_frame:station_ref()]) ->
+-spec place(hecate_dht_xor:id(), [hecate_frame:station_ref()]) ->
         placement_result().
 place(Key, Candidates) ->
     place(Key, Candidates, default_constraints()).
 
 -spec place(hecate_dht_xor:id(),
-            [macula_frame:station_ref()],
+            [hecate_frame:station_ref()],
             constraints()) -> placement_result().
 place(<<_:256>> = Key, Candidates, Constraints) ->
     Sorted     = sort_by_distance(Candidates, Key),
@@ -106,17 +106,17 @@ place(<<_:256>> = Key, Candidates, Constraints) ->
 %% chosen set under-sized because the pool cannot satisfy the
 %% diversity minimums. The resulting set is returned as-is with the
 %% `degraded' flag set.
--spec fill_remaining([macula_frame:station_ref()],
-                     [macula_frame:station_ref()],
-                     constraints()) -> [macula_frame:station_ref()].
+-spec fill_remaining([hecate_frame:station_ref()],
+                     [hecate_frame:station_ref()],
+                     constraints()) -> [hecate_frame:station_ref()].
 fill_remaining(Sorted, Chosen, #{k := K} = Constraints) ->
     Pool = [R || R <- Sorted, not already_chosen(R, Chosen)],
     fill_loop(Pool, Chosen, K - length(Chosen), Constraints).
 
--spec fill_loop([macula_frame:station_ref()],
-                [macula_frame:station_ref()],
+-spec fill_loop([hecate_frame:station_ref()],
+                [hecate_frame:station_ref()],
                 non_neg_integer(), constraints()) ->
-          [macula_frame:station_ref()].
+          [hecate_frame:station_ref()].
 fill_loop(_Pool, Chosen, 0, _Constraints) ->
     Chosen;
 fill_loop([], Chosen, _Slots, _Constraints) ->
@@ -125,11 +125,11 @@ fill_loop([Cand | Rest], Chosen, Slots, Constraints) ->
     take_or_skip(within_operator_cap(Cand, Chosen, Constraints),
                  Cand, Rest, Chosen, Slots, Constraints).
 
--spec take_or_skip(boolean(), macula_frame:station_ref(),
-                   [macula_frame:station_ref()],
-                   [macula_frame:station_ref()],
+-spec take_or_skip(boolean(), hecate_frame:station_ref(),
+                   [hecate_frame:station_ref()],
+                   [hecate_frame:station_ref()],
                    non_neg_integer(), constraints()) ->
-          [macula_frame:station_ref()].
+          [hecate_frame:station_ref()].
 take_or_skip(true,  Cand, Rest, Chosen, Slots, C) ->
     fill_loop(Rest, Chosen ++ [Cand], Slots - 1, C);
 take_or_skip(false, _,    Rest, Chosen, Slots, C) ->
@@ -139,9 +139,9 @@ take_or_skip(false, _,    Rest, Chosen, Slots, C) ->
 %% Greedy selection
 %%=====================================================================
 
--spec greedy([macula_frame:station_ref()],
-             [macula_frame:station_ref()],
-             constraints()) -> [macula_frame:station_ref()].
+-spec greedy([hecate_frame:station_ref()],
+             [hecate_frame:station_ref()],
+             constraints()) -> [hecate_frame:station_ref()].
 greedy(_Rest, Chosen, #{k := K}) when length(Chosen) >= K ->
     Chosen;
 greedy([], Chosen, _Constraints) ->
@@ -150,10 +150,10 @@ greedy([Cand | Rest], Chosen, Constraints) ->
     maybe_take(admissible(Cand, Chosen, Constraints),
                Cand, Rest, Chosen, Constraints).
 
--spec maybe_take(boolean(), macula_frame:station_ref(),
-                 [macula_frame:station_ref()],
-                 [macula_frame:station_ref()],
-                 constraints()) -> [macula_frame:station_ref()].
+-spec maybe_take(boolean(), hecate_frame:station_ref(),
+                 [hecate_frame:station_ref()],
+                 [hecate_frame:station_ref()],
+                 constraints()) -> [hecate_frame:station_ref()].
 maybe_take(true,  Cand, Rest, Chosen, C) -> greedy(Rest, [Cand | Chosen], C);
 maybe_take(false, _,    Rest, Chosen, C) -> greedy(Rest, Chosen, C).
 
@@ -161,22 +161,22 @@ maybe_take(false, _,    Rest, Chosen, C) -> greedy(Rest, Chosen, C).
 %% Admissibility
 %%=====================================================================
 
--spec admissible(macula_frame:station_ref(),
-                 [macula_frame:station_ref()],
+-spec admissible(hecate_frame:station_ref(),
+                 [hecate_frame:station_ref()],
                  constraints()) -> boolean().
 admissible(Cand, Chosen, Constraints) ->
     not already_chosen(Cand, Chosen)
         andalso within_operator_cap(Cand, Chosen, Constraints)
         andalso room_for_remaining_deficit(Cand, Chosen, Constraints).
 
--spec already_chosen(macula_frame:station_ref(),
-                     [macula_frame:station_ref()]) -> boolean().
+-spec already_chosen(hecate_frame:station_ref(),
+                     [hecate_frame:station_ref()]) -> boolean().
 already_chosen(Cand, Chosen) ->
     Id = id_of(Cand),
     lists:any(fun(X) -> id_of(X) =:= Id end, Chosen).
 
--spec within_operator_cap(macula_frame:station_ref(),
-                          [macula_frame:station_ref()],
+-spec within_operator_cap(hecate_frame:station_ref(),
+                          [hecate_frame:station_ref()],
                           constraints()) -> boolean().
 within_operator_cap(Cand, Chosen, #{operator_max := Max}) ->
     count_asn(asn_of(Cand), Chosen) < Max.
@@ -184,8 +184,8 @@ within_operator_cap(Cand, Chosen, #{operator_max := Max}) ->
 %% @doc After tentatively adding Cand, would we still have enough
 %% slots left to reach every diversity minimum? A slot can contribute
 %% to any dimension, so the gating figure is `max(deficits)'.
--spec room_for_remaining_deficit(macula_frame:station_ref(),
-                                 [macula_frame:station_ref()],
+-spec room_for_remaining_deficit(hecate_frame:station_ref(),
+                                 [hecate_frame:station_ref()],
                                  constraints()) -> boolean().
 room_for_remaining_deficit(Cand, Chosen,
                            #{k := K, asn_min := Am, country_min := Cm,
@@ -205,7 +205,7 @@ room_for_remaining_deficit(Cand, Chosen,
 %% Diversity counting
 %%=====================================================================
 
--spec constraints_met([macula_frame:station_ref()], constraints()) ->
+-spec constraints_met([hecate_frame:station_ref()], constraints()) ->
           boolean().
 constraints_met(Chosen,
                 #{k := K, asn_min := Am, country_min := Cm, tier_min := Tm}) ->
@@ -214,30 +214,30 @@ constraints_met(Chosen,
         andalso distinct_countries(Chosen) >= Cm
         andalso distinct_tiers(Chosen)     >= Tm.
 
--spec counts_of([macula_frame:station_ref()]) -> counts().
+-spec counts_of([hecate_frame:station_ref()]) -> counts().
 counts_of(Chosen) ->
     #{asns      => distinct_asns(Chosen),
       countries => distinct_countries(Chosen),
       tiers     => distinct_tiers(Chosen)}.
 
--spec distinct_asns([macula_frame:station_ref()]) -> non_neg_integer().
+-spec distinct_asns([hecate_frame:station_ref()]) -> non_neg_integer().
 distinct_asns(Refs) ->
     distinct(fun asn_of/1, Refs).
 
--spec distinct_countries([macula_frame:station_ref()]) -> non_neg_integer().
+-spec distinct_countries([hecate_frame:station_ref()]) -> non_neg_integer().
 distinct_countries(Refs) ->
     distinct(fun country_of/1, Refs).
 
--spec distinct_tiers([macula_frame:station_ref()]) -> non_neg_integer().
+-spec distinct_tiers([hecate_frame:station_ref()]) -> non_neg_integer().
 distinct_tiers(Refs) ->
     distinct(fun tier_of/1, Refs).
 
--spec distinct(fun((macula_frame:station_ref()) -> term()),
-               [macula_frame:station_ref()]) -> non_neg_integer().
+-spec distinct(fun((hecate_frame:station_ref()) -> term()),
+               [hecate_frame:station_ref()]) -> non_neg_integer().
 distinct(F, Refs) ->
     sets:size(sets:from_list([F(R) || R <- Refs])).
 
--spec count_asn(term(), [macula_frame:station_ref()]) -> non_neg_integer().
+-spec count_asn(term(), [hecate_frame:station_ref()]) -> non_neg_integer().
 count_asn(Asn, Refs) ->
     length([1 || R <- Refs, asn_of(R) =:= Asn]).
 
@@ -245,24 +245,24 @@ count_asn(Asn, Refs) ->
 %% Accessors
 %%=====================================================================
 
--spec id_of(macula_frame:station_ref())      -> macula_identity:pubkey().
+-spec id_of(hecate_frame:station_ref())      -> hecate_identity:pubkey().
 id_of(#{node_id := V})      -> V.
 
--spec asn_of(macula_frame:station_ref())     -> non_neg_integer() | undefined.
+-spec asn_of(hecate_frame:station_ref())     -> non_neg_integer() | undefined.
 asn_of(#{asn := V})         -> V.
 
--spec country_of(macula_frame:station_ref()) -> binary().
+-spec country_of(hecate_frame:station_ref()) -> binary().
 country_of(#{country := V}) -> V.
 
--spec tier_of(macula_frame:station_ref())    -> 0..4.
+-spec tier_of(hecate_frame:station_ref())    -> 0..4.
 tier_of(#{tier := V})       -> V.
 
 %%=====================================================================
 %% Sorting
 %%=====================================================================
 
--spec sort_by_distance([macula_frame:station_ref()], hecate_dht_xor:id()) ->
-          [macula_frame:station_ref()].
+-spec sort_by_distance([hecate_frame:station_ref()], hecate_dht_xor:id()) ->
+          [hecate_frame:station_ref()].
 sort_by_distance(Refs, Key) ->
     Keyed = [{hecate_dht_xor:distance_int(Key, id_of(R)), R} || R <- Refs],
     [R || {_, R} <- lists:keysort(1, Keyed)].

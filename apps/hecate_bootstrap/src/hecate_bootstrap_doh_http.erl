@@ -33,7 +33,7 @@
 -define(DEFAULT_TIMEOUT,  1500).
 
 -spec resolve(hecate_bootstrap_resolver:url(),
-              macula_identity:pubkey(),
+              hecate_identity:pubkey(),
               hecate_bootstrap_resolver:resolve_opts()) ->
             hecate_bootstrap_resolver:resolve_result().
 resolve(Url, Pubkey, Opts) ->

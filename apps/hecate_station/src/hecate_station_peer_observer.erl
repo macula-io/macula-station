@@ -2,17 +2,17 @@
 %%
 %% Each station has exactly one observer (when booted via the
 %% supervisor). It is the `controlling_pid' for every
-%% `macula_peering_conn' worker the listener accepts and for every
+%% `hecate_peering_conn' worker the listener accepts and for every
 %% outbound connect initiated via `hecate_station:connect_to/1'. It
 %% turns peering events into the mutations the rest of the station
 %% expects:
 %%
 %% <ul>
-%%   <li>`{macula_peering, connected, ConnPid, PeerNodeId}' →
+%%   <li>`{hecate_peering, connected, ConnPid, PeerNodeId}' →
 %%       `hecate_dht:observe/2' with an entry spec carrying
 %%       `tier = t0' and `hecate_swim:add_peer/3' so the failure
 %%       detector starts probing the new member.</li>
-%%   <li>`{macula_peering, frame, ConnPid, Frame}' — the observer
+%%   <li>`{hecate_peering, frame, ConnPid, Frame}' — the observer
 %%       verifies the signature and dispatches SWIM frames
 %%       (ping / ack / suspect / confirm) to
 %%       `hecate_swim:handle_frame/3'. Application-layer frames
@@ -24,7 +24,7 @@
 %%       station like any other peer. Unknown frame types are
 %%       dropped silently and flow end-to-end between the peering
 %%       workers of the realm service and its clients.</li>
-%%   <li>`{macula_peering, disconnected, ConnPid, _Reason}' →
+%%   <li>`{hecate_peering, disconnected, ConnPid, _Reason}' →
 %%       `hecate_swim:remove_peer/2'.</li>
 %% </ul>
 %%
@@ -51,8 +51,8 @@
 -record(state, {
     dht    :: pid(),
     swim   :: pid(),
-    peers  :: #{pid() => macula_identity:pubkey()},
-    conns  :: #{macula_identity:pubkey() => pid()}
+    peers  :: #{pid() => hecate_identity:pubkey()},
+    conns  :: #{hecate_identity:pubkey() => pid()}
 }).
 
 %%==================================================================
@@ -66,10 +66,10 @@ start_link(Opts) ->
 -spec stop(pid()) -> ok.
 stop(Pid) -> gen_server:stop(Pid).
 
--spec peers(pid()) -> [{pid(), macula_identity:pubkey()}].
+-spec peers(pid()) -> [{pid(), hecate_identity:pubkey()}].
 peers(Pid) -> gen_server:call(Pid, peers).
 
--spec conn_for(pid(), macula_identity:pubkey()) ->
+-spec conn_for(pid(), hecate_identity:pubkey()) ->
     {ok, pid()} | error.
 conn_for(Pid, <<_:256>> = NodeId) ->
     gen_server:call(Pid, {conn_for, NodeId}).
@@ -95,12 +95,12 @@ resolve(error)     -> error.
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
+handle_info({hecate_peering, connected, ConnPid, PeerNodeId}, S) ->
     {noreply, on_connected(ConnPid, PeerNodeId, S)};
-handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
+handle_info({hecate_peering, frame, ConnPid, Frame}, S) ->
     on_frame(ConnPid, Frame, S),
     {noreply, S};
-handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
+handle_info({hecate_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
@@ -143,7 +143,7 @@ route(_Frame, undefined, _S) ->
 route(Frame, NodeId, S) ->
     dispatch(frame_category(Frame), Frame, NodeId, S).
 
-frame_category(Frame) -> classify(macula_frame:frame_type(Frame)).
+frame_category(Frame) -> classify(hecate_frame:frame_type(Frame)).
 
 classify(swim_ping)    -> swim;
 classify(swim_ack)     -> swim;
@@ -152,7 +152,7 @@ classify(swim_confirm) -> swim;
 classify(_)            -> other.
 
 dispatch(swim, Frame, NodeId, #state{swim = Swim}) ->
-    deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
+    deliver_swim(hecate_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
 dispatch(other, _Frame, _NodeId, _S) ->
     ok.
 

@@ -18,8 +18,8 @@
 -type tier() :: a | b | c | d | e.
 
 -type verified_peer() :: #{
-    node_id      := macula_identity:pubkey(),
-    record       := macula_record:record(),
+    node_id      := hecate_identity:pubkey(),
+    record       := hecate_record:record(),
     addresses    := [map()],
     tier         := tier(),
     via          := module(),

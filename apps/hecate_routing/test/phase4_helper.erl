@@ -18,10 +18,10 @@
 %%
 %% This is intentionally a CT-only helper — it's not the
 %% production CALL pipeline but it exercises every Phase 4 module
-%% end to end (`hecate_routing` for paths, `macula_source_route`
+%% end to end (`hecate_routing` for paths, `hecate_source_route`
 %% for the wire header, `hecate_relay` for per-hop processing,
 %% `hecate_call_retry` for budget + path rotation,
-%% `macula_bolt4` + `macula_frame` for codes + envelopes).
+%% `hecate_bolt4` + `hecate_frame` for codes + envelopes).
 -module(phase4_helper).
 
 -export([
@@ -37,8 +37,8 @@
 -record(station, {
     name        :: atom(),
     pid         :: pid(),
-    kp          :: macula_identity:key_pair(),
-    pubkey      :: macula_identity:pubkey(),
+    kp          :: hecate_identity:key_pair(),
+    pubkey      :: hecate_identity:pubkey(),
     prefix      :: <<_:128>>
 }).
 
@@ -63,9 +63,9 @@ stop_fleet(#{router := Router, stations := Stations}) ->
     Router ! stop.
 
 build_station(Name, Router) ->
-    Kp = macula_identity:generate(),
-    Pub = macula_identity:public(Kp),
-    Prefix = macula_source_route:truncate_hop(Pub),
+    Kp = hecate_identity:generate(),
+    Pub = hecate_identity:public(Kp),
+    Prefix = hecate_source_route:truncate_hop(Pub),
     Pid = spawn(fun() ->
         State = init_state(Kp, Pub, Prefix, Router),
         station_loop(State)
@@ -105,10 +105,10 @@ call_via_path(Net, FromName, [FromName | HopNames] = _PathNames,
     From     = maps:get(FromName, maps:get(stations, Net)),
     HopIds   = [name_to_prefix(Net, N) || N <- HopNames],
     Deadline = erlang:system_time(millisecond) + T,
-    SR       = macula_source_route:new(HopIds, Deadline),
+    SR       = hecate_source_route:new(HopIds, Deadline),
     CallId   = crypto:strong_rand_bytes(16),
-    SrBin    = macula_source_route:encode(SR),
-    Frame    = macula_frame:sign(macula_frame:call(#{
+    SrBin    = hecate_source_route:encode(SR),
+    Frame    = hecate_frame:sign(hecate_frame:call(#{
                  call_id      => CallId,
                  procedure    => maps:get(procedure, Spec),
                  realm        => maps:get(realm, Spec),
@@ -201,19 +201,19 @@ apply_action({deliver_local, Frame}, _Original, State) ->
     CallId  = maps:get(call_id, Frame),
     Caller  = maps:get(caller, Frame),
     Payload = #{echoed => maps:get(payload, Frame)},
-    ResultFrame = macula_frame:sign(macula_frame:result(#{
+    ResultFrame = hecate_frame:sign(hecate_frame:result(#{
                     call_id      => CallId,
                     payload      => Payload,
                     responded_by => maps:get(pubkey, State)
                   }), maps:get(kp, State)),
-    send_via_router(State, macula_source_route:truncate_hop(Caller),
+    send_via_router(State, hecate_source_route:truncate_hop(Caller),
                     ResultFrame),
     State;
 apply_action({reply_error, ErrFrame, Originator}, _Original, State) ->
     case Originator of
         undefined -> ok;
         OrigKey   -> send_via_router(State,
-                                     macula_source_route:truncate_hop(OrigKey),
+                                     hecate_source_route:truncate_hop(OrigKey),
                                      ErrFrame)
     end,
     State.

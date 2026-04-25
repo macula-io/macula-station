@@ -9,7 +9,7 @@
 %%       HTTP transport sees the correctly-encoded `_pkarr.*' query
 %%       for the pubkey Tier A asked about.</li>
 %%   <li>TXT rdata flowing back through the codec decodes to exactly
-%%       the `macula_record:encode/1' bytes Tier A then verifies.</li>
+%%       the `hecate_record:encode/1' bytes Tier A then verifies.</li>
 %% </ul>
 -module(hecate_bootstrap_tier_a_doh_tests).
 -include_lib("eunit/include/eunit.hrl").
@@ -29,20 +29,20 @@ tier_a_over_doh_codec_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    Kp     = macula_identity:generate(),
-    Fk     = macula_identity:public(Kp),
-    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Kp     = hecate_identity:generate(),
+    Fk     = hecate_identity:public(Kp),
+    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     Seeds  = [#{node_id => crypto:strong_rand_bytes(32),
                 addresses => [], tier => 4}
               || _ <- lists:seq(1, 4)],
-    Record = macula_record:sign(
-               macula_record:foundation_seed_list(Fk, Seeds), Kp),
-    Bytes  = macula_record:encode(Record),
+    Record = hecate_record:sign(
+               hecate_record:foundation_seed_list(Fk, Seeds), Kp),
+    Bytes  = hecate_record:encode(Record),
     persistent_term:put({?MODULE, bytes}, Bytes),
     #{fk => Fk, seeds => Seeds, bytes => Bytes}.
 
 cleanup(_Ctx) ->
-    application:unset_env(macula_record, foundation_pubkeys),
+    application:unset_env(hecate_record, foundation_pubkeys),
     persistent_term:erase({?MODULE, bytes}),
     ok.
 

@@ -147,20 +147,20 @@ stats(Dht) ->
 %% Wire operations (Session 3.5)
 %%=====================================================================
 
--spec ping_peer(dht(), macula_identity:pubkey()) -> ping_result().
+-spec ping_peer(dht(), hecate_identity:pubkey()) -> ping_result().
 ping_peer(Dht, TargetId) ->
     hecate_dht_server:ping_peer(Dht, TargetId).
 
--spec ping_peer(dht(), macula_identity:pubkey(), pos_integer()) -> ping_result().
+-spec ping_peer(dht(), hecate_identity:pubkey(), pos_integer()) -> ping_result().
 ping_peer(Dht, TargetId, Timeout) ->
     hecate_dht_server:ping_peer(Dht, TargetId, Timeout).
 
--spec find_node(dht(), hecate_dht_xor:id(), macula_identity:pubkey()) ->
+-spec find_node(dht(), hecate_dht_xor:id(), hecate_identity:pubkey()) ->
         find_node_result().
 find_node(Dht, Key, PeerId) ->
     hecate_dht_server:find_node(Dht, Key, PeerId).
 
--spec find_node(dht(), hecate_dht_xor:id(), macula_identity:pubkey(),
+-spec find_node(dht(), hecate_dht_xor:id(), hecate_identity:pubkey(),
                 pos_integer()) -> find_node_result().
 find_node(Dht, Key, PeerId, Timeout) ->
     hecate_dht_server:find_node(Dht, Key, PeerId, Timeout).
@@ -178,16 +178,16 @@ lookup_nodes(Dht, Key, Opts) ->
 %% Record storage + FIND_VALUE (Session 3.7)
 %%=====================================================================
 
--spec put_record(dht(), macula_record:record()) -> ok.
+-spec put_record(dht(), hecate_record:record()) -> ok.
 put_record(Dht, Record) ->
     hecate_dht_server:put_record(Dht, Record).
 
 -spec find_local_record(dht(), hecate_dht_xor:id()) ->
-        [macula_record:record()].
+        [hecate_record:record()].
 find_local_record(Dht, Key) ->
     hecate_dht_server:find_local_record(Dht, Key).
 
--spec list_records(dht()) -> [macula_record:record()].
+-spec list_records(dht()) -> [hecate_record:record()].
 list_records(Dht) ->
     hecate_dht_server:list_records(Dht).
 
@@ -195,40 +195,40 @@ list_records(Dht) ->
 record_count(Dht) ->
     hecate_dht_server:record_count(Dht).
 
--spec delete_record(dht(), macula_record:record()) -> ok.
+-spec delete_record(dht(), hecate_record:record()) -> ok.
 delete_record(Dht, Record) ->
     hecate_dht_server:delete_record(Dht, Record).
 
--spec find_value(dht(), hecate_dht_xor:id(), macula_identity:pubkey()) ->
+-spec find_value(dht(), hecate_dht_xor:id(), hecate_identity:pubkey()) ->
         find_value_result().
 find_value(Dht, Key, PeerId) ->
     hecate_dht_server:find_value(Dht, Key, PeerId).
 
--spec find_value(dht(), hecate_dht_xor:id(), macula_identity:pubkey(),
+-spec find_value(dht(), hecate_dht_xor:id(), hecate_identity:pubkey(),
                  pos_integer()) -> find_value_result().
 find_value(Dht, Key, PeerId, Timeout) ->
     hecate_dht_server:find_value(Dht, Key, PeerId, Timeout).
 
--spec send_store(dht(), macula_identity:pubkey(),
-                 macula_record:record()) -> send_store_result().
+-spec send_store(dht(), hecate_identity:pubkey(),
+                 hecate_record:record()) -> send_store_result().
 send_store(Dht, PeerId, Record) ->
     hecate_dht_server:send_store(Dht, PeerId, Record).
 
--spec send_store(dht(), macula_identity:pubkey(), macula_record:record(),
+-spec send_store(dht(), hecate_identity:pubkey(), hecate_record:record(),
                  pos_integer()) -> send_store_result().
 send_store(Dht, PeerId, Record, Timeout) ->
     hecate_dht_server:send_store(Dht, PeerId, Record, Timeout).
 
--spec store(dht(), macula_record:record()) -> hecate_dht_store:result().
+-spec store(dht(), hecate_record:record()) -> hecate_dht_store:result().
 store(Dht, Record) ->
     hecate_dht_store:store(Dht, Record).
 
--spec store(dht(), macula_record:record(), hecate_dht_store:opts()) ->
+-spec store(dht(), hecate_record:record(), hecate_dht_store:opts()) ->
         hecate_dht_store:result().
 store(Dht, Record, Opts) ->
     hecate_dht_store:store(Dht, Record, Opts).
 
--spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
+-spec handle_frame(dht(), hecate_identity:pubkey(), hecate_frame:frame()) -> ok.
 handle_frame(Dht, FromNodeId, Frame) ->
     hecate_dht_server:handle_frame(Dht, FromNodeId, Frame).
 

@@ -26,13 +26,13 @@ tier_d_test_() ->
 setup() ->
     application:ensure_all_started(crypto),
     hecate_bootstrap_chain_fake:init(),
-    Kp = macula_identity:generate(),
-    Fk = macula_identity:public(Kp),
-    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Kp = hecate_identity:generate(),
+    Fk = hecate_identity:public(Kp),
+    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     #{kp => Kp, fk => Fk}.
 
 cleanup(_Ctx) ->
-    application:unset_env(macula_record, foundation_pubkeys),
+    application:unset_env(hecate_record, foundation_pubkeys),
     hecate_bootstrap_chain_fake:reset(),
     ok.
 
@@ -86,13 +86,13 @@ slow_chain_does_not_block_fast_one(#{kp := Kp, fk := Fk}) ->
 
 untrusted_signer_rejected(#{fk := Fk}) ->
     fun() ->
-        ImpKp = macula_identity:generate(),
-        Record = macula_record:sign(
-                   macula_record:foundation_seed_list(
+        ImpKp = hecate_identity:generate(),
+        Record = hecate_record:sign(
+                   hecate_record:foundation_seed_list(
                      Fk, sample_seeds(3)),
                    ImpKp),
         hecate_bootstrap_chain_fake:set(?BTC,
-                                        macula_record:encode(Record)),
+                                        hecate_record:encode(Record)),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}]))
     end.
@@ -106,13 +106,13 @@ garbage_bytes_rejected(_Ctx) ->
 
 expired_record_rejected(#{kp := Kp, fk := Fk}) ->
     fun() ->
-        Record = macula_record:sign(
-                   macula_record:foundation_seed_list(
+        Record = hecate_record:sign(
+                   hecate_record:foundation_seed_list(
                      Fk, sample_seeds(2), #{ttl_ms => 1}),
                    Kp),
         timer:sleep(5),
         hecate_bootstrap_chain_fake:set(?BTC,
-                                        macula_record:encode(Record)),
+                                        hecate_record:encode(Record)),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}]))
     end.
@@ -135,7 +135,7 @@ sample_seeds(N) ->
        addresses => [], tier => 4} || _ <- lists:seq(1, N)].
 
 foundation_bytes(Kp, Fk, N) ->
-    Record = macula_record:sign(
-               macula_record:foundation_seed_list(Fk, sample_seeds(N)),
+    Record = hecate_record:sign(
+               hecate_record:foundation_seed_list(Fk, sample_seeds(N)),
                Kp),
-    macula_record:encode(Record).
+    hecate_record:encode(Record).
