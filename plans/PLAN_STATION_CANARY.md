@@ -179,8 +179,8 @@ is just a compose swap.
 | Box | Decision | Cutover date | Soak result | Rolled back? |
 |---|---|---|---|---|
 | relays-linode-paris       | ✅ canary live | 2026-04-25 14:10 UTC | _soaking_ | _ |
-| relays-hetzner-helsinki   | _blocked on Paris ≥48h soak_ | _ | _ | _ |
-| relays-hetzner-nuremberg  | _blocked on Helsinki_ | _ | _ | _ |
+| relays-hetzner-helsinki   | ✅ canary live | 2026-04-25 14:35 UTC | _soaking_ | _ |
+| relays-hetzner-nuremberg  | _last to flip_ | _ | _ | _ |
 
 ## Paris cutover — initial readings (2026-04-25 14:10 UTC)
 
