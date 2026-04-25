@@ -223,9 +223,7 @@ do_process_manifest_req(#{mcid := MCID}) ->
 fetch_manifest_response({ok, Manifest}, MCID) ->
     {ok, hecate_frame:manifest_res(#{mcid => MCID, manifest => Manifest})};
 fetch_manifest_response({error, not_found}, MCID) ->
-    {ok, hecate_frame:manifest_res(#{mcid => MCID, manifest => not_found})};
-fetch_manifest_response({error, _} = E, _MCID) ->
-    E.
+    {ok, hecate_frame:manifest_res(#{mcid => MCID, manifest => not_found})}.
 
 drop_cancelled(MCIDs, S) ->
     ets:foldl(

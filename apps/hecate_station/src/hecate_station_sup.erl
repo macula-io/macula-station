@@ -9,12 +9,27 @@
 %%   <li>`hecate_swim' — SWIM failure detector.</li>
 %% </ul>
 %%
-%% The children are NOT listed in `init/1'. They are added at boot
+%% These children are NOT listed in `init/1'. They are added at boot
 %% time by `hecate_station_app:start/2', which enforces strict
 %% bootstrap ordering (DHT → cascade ingest → SWIM) per
 %% PLAN_STATION_INTEGRATION §8.2. Starting them via
 %% `supervisor:start_child/2' from the application callback is what
 %% lets us refuse to bring SWIM up when the cascade yields zero peers.
+%%
+%% From the multi-identity refactor (PLAN_MULTI_IDENTITY_RELAY §Phase 1)
+%% onwards the supervisor also owns one always-on infrastructure
+%% child:
+%%
+%% <ul>
+%%   <li>`hecate_station_identity_registry' — yellow pages
+%%       `{IdentityKey =&gt; identity_sup_pid}'.</li>
+%% </ul>
+%%
+%% The registry is config-independent (running it under the disabled
+%% station env costs an idle gen_server with an empty map) so it
+%% lives in `init/1' rather than the boot pipeline. Subsequent phases
+%% will reparent the per-identity workers under
+%% `hecate_station_identity_sup' children — which the registry tracks.
 %%
 %% The walking-skeleton / chaos CT suites drive `hecate_station_server'
 %% directly via `hecate_station:start_link/1' and never touch this
@@ -45,7 +60,17 @@ start_link() ->
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
-    {ok, {SupFlags, []}}.
+    {ok, {SupFlags, [identity_registry_child()]}}.
+
+identity_registry_child() ->
+    #{
+        id       => hecate_station_identity_registry,
+        start    => {hecate_station_identity_registry, start_link, []},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [hecate_station_identity_registry]
+    }.
 
 %%==================================================================
 %% Name-registering start wrappers.

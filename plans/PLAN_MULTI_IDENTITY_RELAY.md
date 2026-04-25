@@ -1,8 +1,20 @@
 # Plan: Multi-Identity Relay Support
 
-**Status:** Planning
+**Status:** Phase 1 shipped — see "Progress" below
 **Created:** 2026-04-25
 **Last Updated:** 2026-04-25
+
+## Progress
+
+| Phase | Status | Notes |
+|---|---|---|
+| 1 | ✅ shipped | identity registry + identity_sup skeleton; rebar3 override for macula debug_info |
+| 2 | pending | de-singleton high-level gen_servers |
+| 3 | pending | per-identity QUIC bind + routing |
+| 4 | pending | identity config loader + boot |
+| 5 | pending | admin API |
+| 6 | pending | operational tooling |
+| 7 | pending | cutover ops |
 
 ## Overview
 

@@ -15,16 +15,23 @@
 -include_lib("hecate_station/include/hecate_station_cfg.hrl").
 
 %%==================================================================
-%% Disabled env — sup comes up with no children.
+%% Disabled env — sup comes up with the always-on identity registry
+%% but no boot-pipeline children.
 %%==================================================================
 
-disabled_env_yields_empty_sup_test_() ->
+disabled_env_yields_registry_only_sup_test_() ->
     {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             process_flag(trap_exit, true),
             {ok, Sup} = hecate_station_app:start(normal, []),
             ?assert(is_pid(Sup)),
-            ?assertEqual([], supervisor:which_children(Sup)),
+            Children = supervisor:which_children(Sup),
+            ?assertMatch([{hecate_station_identity_registry,
+                           _Pid, worker,
+                           [hecate_station_identity_registry]}],
+                         Children),
+            %% Empty registry — disabled env never registers an identity.
+            ?assertEqual([], hecate_station_identity_registry:list()),
             ok = cleanup_sup(Sup)
         end
     end}.
