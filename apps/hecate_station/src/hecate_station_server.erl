@@ -245,9 +245,10 @@ dispatch_swim(From, Frame, Swim) ->
 
 %% Content frames dispatch through hecate_content_transfer. The
 %% transfer module returns either `ok' (fire-and-forget) or
-%% `{ok, ReplyFrame}' which the caller must send back over the
-%% same connection — the listener is the only thing that knows
-%% which conn to use.
+%% `{ok, ReplyFrame}' which the listener sends back over the
+%% same peering connection via `hecate_peering:send_frame/2'
+%% (which signs the frame with the local identity if it isn't
+%% already signed).
 dispatch_content(ConnPid, From, Frame) ->
     case hecate_frame:verify(Frame, From) of
         {ok, Verified}  -> handle_content_reply(
@@ -258,13 +259,8 @@ dispatch_content(ConnPid, From, Frame) ->
 
 handle_content_reply(_ConnPid, ok) ->
     ok;
-handle_content_reply(ConnPid, {ok, _ReplyFrame}) ->
-    %% TODO: route ReplyFrame back through ConnPid once the
-    %% peering layer exposes an inbound-reply primitive. Logging
-    %% the path here keeps the integration explicit even though
-    %% the wire-send is a follow-up.
-    _ = ConnPid,
-    ok;
+handle_content_reply(ConnPid, {ok, ReplyFrame}) ->
+    hecate_peering:send_frame(ConnPid, ReplyFrame);
 handle_content_reply(_ConnPid, {error, _Reason}) ->
     ok.
 
