@@ -155,6 +155,7 @@ handle_call(realm, _From, S) ->
     {reply, S#state.realm, S};
 handle_call({publish, Topic, Payload}, _From, S) ->
     Spec = #{topic           => Topic,
+             realm           => S#state.realm,
              publisher       => S#state.self_id,
              seq             => S#state.next_seq,
              payload         => Payload,

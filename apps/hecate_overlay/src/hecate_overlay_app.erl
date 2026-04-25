@@ -8,11 +8,10 @@
 %% keyed by an opaque 32-byte realm tag treated as a multi-tenant
 %% namespace, not as an authority claim.
 %%
-%% Phase 1 (this commit): the application boots an empty supervisor.
-%% Per-realm pubsub_server instances are not yet auto-started — they
-%% can be spawned directly by tests and will be managed by a registry
-%% (next commit) once the wire-frame integration into hecate_station's
-%% listener lands.
+%% Phase 2 (current): the application boots `hecate_pubsub_server_sup'
+%% (a `simple_one_for_one' pool) and `hecate_pubsub_registry' (a
+%% gen_server holding the `RealmTag => pid()' map). Listener
+%% integration for inbound frame dispatch lands in the next commit.
 -module(hecate_overlay_app).
 -behaviour(application).
 
