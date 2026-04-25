@@ -34,6 +34,7 @@
 -export([start_link/0,
          register/2,
          lookup/1,
+         lookup_opts/1,
          list/0,
          terminate/1]).
 
@@ -53,8 +54,13 @@
     %% for the EXIT-driven crash cleanup path. Keys + pids are
     %% pairwise unique — `register/2' rejects a second key for the
     %% same pid (would cause a stale entry on cleanup).
-    by_key = #{} :: #{identity_key() := pid()},
-    by_pid = #{} :: #{pid() := identity_key()}
+    by_key  = #{} :: #{identity_key() := pid()},
+    by_pid  = #{} :: #{pid() := identity_key()},
+    %% Original opts for each registered identity. Phase 5 needs
+    %% this so the admin `/admin/identities/:id/reload' endpoint
+    %% can re-register an identity with its original config.
+    by_opts = #{} :: #{identity_key()
+                       := hecate_station_identity_sup:identity_opts()}
 }).
 
 %%------------------------------------------------------------------
@@ -80,6 +86,14 @@ register(Key, IdentityOpts) when is_map(IdentityOpts) ->
 -spec lookup(identity_key()) -> {ok, pid()} | {error, not_found}.
 lookup(Key) ->
     gen_server:call(?MODULE, {lookup, Key}).
+
+%% @doc Look up the original `identity_opts()' that the identity was
+%% registered with. Used by the admin API `reload' endpoint to
+%% restart an identity with the same config.
+-spec lookup_opts(identity_key()) ->
+    {ok, hecate_station_identity_sup:identity_opts()} | {error, not_found}.
+lookup_opts(Key) ->
+    gen_server:call(?MODULE, {lookup_opts, Key}).
 
 %% @doc Snapshot every mapping. Used by the admin API + status pages.
 -spec list() -> [{identity_key(), pid()}].
@@ -108,6 +122,8 @@ handle_call({register, Key, Opts}, _From, S) ->
     do_register(Key, Opts, maps:is_key(Key, S#state.by_key), S);
 handle_call({lookup, Key}, _From, S) ->
     {reply, lookup_reply(maps:find(Key, S#state.by_key)), S};
+handle_call({lookup_opts, Key}, _From, S) ->
+    {reply, lookup_reply(maps:find(Key, S#state.by_opts)), S};
 handle_call(list, _From, S) ->
     {reply, snapshot(S#state.by_key), S};
 handle_call({terminate, Key}, _From, S) ->
@@ -134,16 +150,18 @@ code_change(_OldVsn, S, _Extra) ->
 do_register(_Key, _Opts, true, S) ->
     {reply, {error, already_registered}, S};
 do_register(Key, Opts, false, S) ->
-    on_sup_started(Key,
+    on_sup_started(Key, Opts,
                    hecate_station_identity_sup:start_link(Opts),
                    S).
 
-on_sup_started(_Key, {error, Reason}, S) ->
+on_sup_started(_Key, _Opts, {error, Reason}, S) ->
     {reply, {error, {sup_start_failed, Reason}}, S};
-on_sup_started(Key, {ok, Pid}, #state{by_key = K, by_pid = P} = S) ->
+on_sup_started(Key, Opts, {ok, Pid},
+               #state{by_key = K, by_pid = P, by_opts = O} = S) ->
     {reply, {ok, Pid},
-     S#state{by_key = K#{Key => Pid},
-             by_pid = P#{Pid => Key}}}.
+     S#state{by_key  = K#{Key  => Pid},
+             by_pid  = P#{Pid  => Key},
+             by_opts = O#{Key  => Opts}}}.
 
 lookup_reply({ok, Pid}) -> {ok, Pid};
 lookup_reply(error)     -> {error, not_found}.
@@ -193,6 +211,7 @@ drop_pid_step(error, _Pid, S) ->
 drop_pid_step({ok, Key}, Pid, S) ->
     drop_key(Key, Pid, S).
 
-drop_key(Key, Pid, #state{by_key = K, by_pid = P} = S) ->
-    S#state{by_key = maps:remove(Key, K),
-            by_pid = maps:remove(Pid, P)}.
+drop_key(Key, Pid, #state{by_key = K, by_pid = P, by_opts = O} = S) ->
+    S#state{by_key  = maps:remove(Key, K),
+            by_pid  = maps:remove(Pid, P),
+            by_opts = maps:remove(Key, O)}.

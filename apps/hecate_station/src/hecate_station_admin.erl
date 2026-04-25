@@ -5,16 +5,25 @@
 %% surface suitable for `curl' or an operator's dashboard:
 %%
 %% <table>
-%%   <tr><th>Method</th><th>Path</th><th>Body</th></tr>
-%%   <tr><td>GET</td>  <td>/status</td>          <td>overall health snapshot</td></tr>
-%%   <tr><td>GET</td>  <td>/dht/stats</td>       <td>routing-table size + self_id</td></tr>
-%%   <tr><td>GET</td>  <td>/swim/members</td>    <td>current SWIM member list</td></tr>
-%%   <tr><td>POST</td> <td>/bootstrap/rerun</td> <td>trigger a re-cascade</td></tr>
+%%   <tr><th>Method</th><th>Path</th><th>Auth</th><th>Body</th></tr>
+%%   <tr><td>GET</td>  <td>/status</td>                       <td>none</td>   <td>overall health snapshot</td></tr>
+%%   <tr><td>GET</td>  <td>/dht/stats</td>                    <td>none</td>   <td>routing-table size + self_id</td></tr>
+%%   <tr><td>GET</td>  <td>/swim/members</td>                 <td>none</td>   <td>current SWIM member list</td></tr>
+%%   <tr><td>POST</td> <td>/bootstrap/rerun</td>              <td>none</td>   <td>trigger a re-cascade</td></tr>
+%%   <tr><td>GET</td>  <td>/admin/identities</td>             <td>bearer</td> <td>list registered identities</td></tr>
+%%   <tr><td>POST</td> <td>/admin/identities/:id/start</td>   <td>bearer</td> <td>spawn a new identity from a JSON spec</td></tr>
+%%   <tr><td>POST</td> <td>/admin/identities/:id/stop</td>    <td>bearer</td> <td>terminate an identity</td></tr>
+%%   <tr><td>POST</td> <td>/admin/identities/:id/reload</td>  <td>bearer</td> <td>stop + re-register with the same opts</td></tr>
 %% </table>
 %%
+%% Bearer auth on `/admin/*' uses the `MACULA_ADMIN_TOKEN' env var.
+%% A missing or empty token returns 503 (admin disabled); a wrong
+%% Bearer header returns 401. The unauthenticated routes above stay
+%% open per V1's loopback-only model (front with `ssh -L' for
+%% remote access).
+%%
 %% TLS + client-cert auth are deferred to Phase 7; plan §8.6 scopes
-%% this to loopback-only. An operator wanting remote access is
-%% expected to front this with `ssh -L' for now.
+%% this to loopback-only.
 %%
 %% The gen_server owns the listen socket and a single acceptor child;
 %% each incoming connection is handled in a spawned worker process so
@@ -131,9 +140,10 @@ handle_conn(Sock) ->
 %% start-line + headers, then switches to raw for the body.
 %%==================================================================
 
--type req() :: #{method := binary(),
-                 path   := binary(),
-                 body   := binary()}.
+-type req() :: #{method  := binary(),
+                 path    := binary(),
+                 headers := #{binary() => binary()},
+                 body    := binary()}.
 
 -spec read_request(gen_tcp:socket()) -> {ok, req()} | {error, term()}.
 read_request(Sock) ->
@@ -147,9 +157,15 @@ on_start_line({error, _} = E, _Sock) ->
     E.
 
 on_headers({ok, Headers}, Sock, Method, Path) ->
-    finish_body(Sock, Method, Path, Headers);
+    finish_body(Sock, Method, Path, normalise_headers(Headers));
 on_headers({error, _} = E, _Sock, _Method, _Path) ->
     E.
+
+%% Header values arrive as binary OR list (depending on
+%% `{packet, http_bin}' decoding rules). Normalise to binary so
+%% downstream pattern matches stay simple.
+normalise_headers(Headers) ->
+    maps:map(fun(_K, V) -> to_bin(V) end, Headers).
 
 read_headers(Sock, Acc) ->
     read_headers_step(gen_tcp:recv(Sock, 0, 5_000), Sock, Acc).
@@ -168,7 +184,7 @@ header_key(K) when is_binary(K) -> string:lowercase(K).
 
 finish_body(Sock, Method, Path, Headers) ->
     Len = content_length(Headers),
-    assemble_request(read_body(Sock, Len), Method, Path).
+    assemble_request(read_body(Sock, Len), Method, Path, Headers).
 
 content_length(Headers) ->
     parse_len(maps:get(<<"content-length">>, Headers, <<"0">>)).
@@ -186,11 +202,12 @@ read_body(Sock, N) ->
     ok = inet:setopts(Sock, [{packet, raw}]),
     gen_tcp:recv(Sock, N, 5_000).
 
-assemble_request({ok, Body}, Method, Path) ->
-    {ok, #{method => to_method_bin(Method),
-           path   => to_bin(Path),
-           body   => to_bin(Body)}};
-assemble_request({error, _} = E, _Method, _Path) ->
+assemble_request({ok, Body}, Method, Path, Headers) ->
+    {ok, #{method  => to_method_bin(Method),
+           path    => to_bin(Path),
+           headers => Headers,
+           body    => to_bin(Body)}};
+assemble_request({error, _} = E, _Method, _Path, _Headers) ->
     E.
 
 to_method_bin(M) when is_atom(M)   -> string:uppercase(atom_to_binary(M, utf8));
@@ -208,11 +225,61 @@ to_bin(L) when is_list(L)   -> iolist_to_binary(L).
                       content_type := binary()}.
 
 -spec route(req()) -> response().
-route(#{method := <<"GET">>,  path := <<"/status">>})          -> status();
-route(#{method := <<"GET">>,  path := <<"/dht/stats">>})       -> dht_stats();
-route(#{method := <<"GET">>,  path := <<"/swim/members">>})    -> swim_members();
-route(#{method := <<"POST">>, path := <<"/bootstrap/rerun">>}) -> bootstrap_rerun();
-route(_)                                                        -> not_found().
+route(#{method := Method, path := Path} = Req) ->
+    dispatch(Method, path_segments(Path), Req).
+
+dispatch(<<"GET">>,  [<<"status">>],                  _Req) -> status();
+dispatch(<<"GET">>,  [<<"dht">>, <<"stats">>],        _Req) -> dht_stats();
+dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
+dispatch(<<"POST">>, [<<"bootstrap">>, <<"rerun">>],  _Req) -> bootstrap_rerun();
+dispatch(<<"GET">>,  [<<"admin">>, <<"identities">>],  Req) ->
+    with_auth(Req, fun() -> list_identities() end);
+dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"start">>], Req) ->
+    with_auth(Req, fun() -> start_identity(Id, Req) end);
+dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"stop">>], Req) ->
+    with_auth(Req, fun() -> stop_identity(Id) end);
+dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"reload">>], Req) ->
+    with_auth(Req, fun() -> reload_identity(Id) end);
+dispatch(_Method, _Segments, _Req) ->
+    not_found().
+
+%% Split a `/foo/bar/baz' binary path into `[<<"foo">>, <<"bar">>,
+%% <<"baz">>]'. Empty segments (leading slash, trailing slash, double
+%% slashes) are dropped.
+path_segments(<<"/", Rest/binary>>) ->
+    binary:split(Rest, <<"/">>, [global, trim_all]);
+path_segments(_) ->
+    [].
+
+%%==================================================================
+%% Bearer-token auth — `MACULA_ADMIN_TOKEN'.
+%%==================================================================
+
+with_auth(Req, Handler) ->
+    on_auth(check_auth(Req), Handler).
+
+on_auth(ok, Handler)            -> Handler();
+on_auth({error, Reason}, _H)    -> auth_error(Reason).
+
+check_auth(#{headers := Headers}) ->
+    on_token(os:getenv("MACULA_ADMIN_TOKEN"), Headers).
+
+on_token(false, _Headers)             -> {error, not_configured};
+on_token("",    _Headers)             -> {error, not_configured};
+on_token(Token, Headers)              -> match_bearer(list_to_binary(Token), Headers).
+
+match_bearer(Expected, Headers) ->
+    classify_bearer(maps:get(<<"authorization">>, Headers, undefined), Expected).
+
+classify_bearer(<<"Bearer ", Got/binary>>, Expected) when Got =:= Expected -> ok;
+classify_bearer(_Other, _Expected) -> {error, unauthorized}.
+
+auth_error(not_configured) ->
+    json_response(503, #{result => <<"error">>,
+                         reason => <<"admin_token_not_configured">>});
+auth_error(unauthorized) ->
+    json_response(401, #{result => <<"error">>,
+                         reason => <<"unauthorized">>}).
 
 %%------------------------------------------------------------------
 %% Handlers
@@ -278,6 +345,194 @@ member_json(#{node_id := N, state := S, last_seen := LS, since := Since}) ->
       state     => atom_to_binary(S, utf8),
       last_seen => LS,
       since     => Since}.
+
+%%==================================================================
+%% /admin/identities — Phase 5
+%%==================================================================
+
+list_identities() ->
+    Entries = [identity_status_json(K, P)
+               || {K, P} <- hecate_station_identity_registry:list()],
+    json_response(200, #{identities => Entries}).
+
+identity_status_json(Key, Pid) ->
+    Children = supervisor:which_children(Pid),
+    Listener = listener_status(Children),
+    #{
+        identity_key => to_bin(Key),
+        sup_pid      => list_to_binary(pid_to_list(Pid)),
+        children     => [child_id_bin(Id) || {Id, _, _, _} <- Children],
+        listener     => Listener
+    }.
+
+listener_status(Children) ->
+    Listeners = [P || {hecate_station_listener, P, _, _} <- Children],
+    listener_status_step(Listeners).
+
+listener_status_step([])    -> #{state => <<"absent">>};
+listener_status_step([Pid]) -> listener_addr_json(Pid).
+
+listener_addr_json(Pid) ->
+    classify_listener(catch hecate_station_listener:listen_addr(Pid)).
+
+classify_listener({Bind, Port}) when is_integer(Port) ->
+    #{state => <<"alive">>,
+      addr  => iolist_to_binary(io_lib:format("~s:~B", [Bind, Port]))};
+classify_listener(_) ->
+    #{state => <<"unreachable">>}.
+
+child_id_bin(A) when is_atom(A)   -> atom_to_binary(A, utf8);
+child_id_bin(B) when is_binary(B) -> B.
+
+%%------------------------------------------------------------------
+%% POST /admin/identities/:id/start
+%%------------------------------------------------------------------
+
+start_identity(Id, #{body := Body}) ->
+    on_decoded(Id, decode_spec(Body)).
+
+on_decoded(_Id, {error, Reason}) ->
+    json_response(400, #{result => <<"error">>, reason => Reason});
+on_decoded(Id, {ok, Spec}) ->
+    %% Plumbing: identity_key in the URL is authoritative — the
+    %% body's `hostname' must agree (otherwise admin would let an
+    %% operator desync the URL from the identity).
+    on_id_match(Id, maps:get(hostname, Spec, undefined), Spec).
+
+on_id_match(Id, Hostname, Spec) when Id =:= Hostname ->
+    do_start(Spec);
+on_id_match(_Id, _Hostname, _Spec) ->
+    json_response(400, #{result => <<"error">>,
+                         reason => <<"id_hostname_mismatch">>}).
+
+do_start(Spec) ->
+    on_box_secret(Spec, hecate_station_identity_config:load_box_secret()).
+
+on_box_secret(_Spec, {error, R}) ->
+    json_response(503, #{result => <<"error">>,
+                         reason => to_bin_reason({box_secret_failed, R})});
+on_box_secret(Spec, {ok, BoxSecret}) ->
+    on_shared(Spec, BoxSecret,
+              hecate_station_identity_config:shared_listener_opts()).
+
+on_shared(_Spec, _Secret, {error, R}) ->
+    json_response(503, #{result => <<"error">>,
+                         reason => to_bin_reason(R)});
+on_shared(Spec, BoxSecret, {ok, Shared}) ->
+    Opts = hecate_station_identity_config:spec_to_opts(
+             Spec, BoxSecret, Shared),
+    Key  = maps:get(identity_key, Opts),
+    on_register(Key, hecate_station_identity_registry:register(Key, Opts)).
+
+on_register(Key, {ok, Pid}) ->
+    json_response(201, #{result => <<"ok">>,
+                         identity_key => to_bin(Key),
+                         sup_pid      => list_to_binary(pid_to_list(Pid))});
+on_register(_Key, {error, already_registered}) ->
+    json_response(409, #{result => <<"error">>,
+                         reason => <<"already_registered">>});
+on_register(_Key, {error, Reason}) ->
+    json_response(500, #{result => <<"error">>,
+                         reason => to_bin_reason(Reason)}).
+
+%%------------------------------------------------------------------
+%% POST /admin/identities/:id/stop
+%%------------------------------------------------------------------
+
+stop_identity(Id) ->
+    on_terminate(Id, hecate_station_identity_registry:terminate(Id)).
+
+on_terminate(Id, ok) ->
+    json_response(200, #{result => <<"ok">>, identity_key => Id});
+on_terminate(_Id, {error, not_found}) ->
+    json_response(404, #{result => <<"error">>, reason => <<"not_found">>}).
+
+%%------------------------------------------------------------------
+%% POST /admin/identities/:id/reload
+%%------------------------------------------------------------------
+
+reload_identity(Id) ->
+    on_lookup_for_reload(Id, hecate_station_identity_registry:lookup_opts(Id)).
+
+on_lookup_for_reload(_Id, {error, not_found}) ->
+    json_response(404, #{result => <<"error">>, reason => <<"not_found">>});
+on_lookup_for_reload(Id, {ok, Opts}) ->
+    ok = hecate_station_identity_registry:terminate(Id),
+    on_reregister(Id, hecate_station_identity_registry:register(Id, Opts)).
+
+on_reregister(Id, {ok, Pid}) ->
+    json_response(200, #{result => <<"ok">>,
+                         identity_key => to_bin(Id),
+                         sup_pid      => list_to_binary(pid_to_list(Pid))});
+on_reregister(_Id, {error, Reason}) ->
+    json_response(500, #{result => <<"error">>,
+                         reason => to_bin_reason(Reason)}).
+
+%%------------------------------------------------------------------
+%% Body parsing — JSON ⇒ identity_spec()
+%%------------------------------------------------------------------
+
+decode_spec(<<>>) ->
+    {error, <<"empty_body">>};
+decode_spec(Body) ->
+    on_decoded_json(catch json:decode(Body)).
+
+on_decoded_json({'EXIT', _}) ->
+    {error, <<"invalid_json">>};
+on_decoded_json(Map) when is_map(Map) ->
+    classify_spec_map(Map);
+on_decoded_json(_) ->
+    {error, <<"json_must_be_object">>}.
+
+classify_spec_map(Map) ->
+    Required = [<<"hostname">>, <<"city">>, <<"country">>,
+                <<"lat">>, <<"lng">>],
+    classify_spec_step(check_required(Required, Map), Map).
+
+check_required([], _Map)            -> ok;
+check_required([K | R], Map) ->
+    case maps:is_key(K, Map) of
+        true  -> check_required(R, Map);
+        false -> {missing, K}
+    end.
+
+classify_spec_step({missing, K}, _Map) ->
+    {error, iolist_to_binary([<<"missing field: ">>, K])};
+classify_spec_step(ok, Map) ->
+    finalise_spec(Map).
+
+finalise_spec(Map) ->
+    Hostname = to_bin(maps:get(<<"hostname">>, Map)),
+    City     = to_bin(maps:get(<<"city">>, Map)),
+    Country  = to_bin(maps:get(<<"country">>, Map)),
+    Bind     = to_bind(maps:get(<<"bind">>, Map, undefined)),
+    classify_lat_lng(maps:get(<<"lat">>, Map),
+                     maps:get(<<"lng">>, Map),
+                     Hostname, City, Country, Bind).
+
+to_bind(undefined) -> undefined;
+to_bind(Bin) when is_binary(Bin) -> Bin;
+to_bind(L)   when is_list(L)     -> iolist_to_binary(L).
+
+classify_lat_lng(Lat, Lng, Host, City, Country, Bind)
+  when is_number(Lat), is_number(Lng) ->
+    {ok, #{
+        hostname => Host,
+        city     => City,
+        country  => Country,
+        lat      => to_float(Lat),
+        lng      => to_float(Lng),
+        bind     => Bind
+    }};
+classify_lat_lng(_Lat, _Lng, _Host, _City, _Country, _Bind) ->
+    {error, <<"lat/lng must be numeric">>}.
+
+to_float(N) when is_float(N)   -> N;
+to_float(N) when is_integer(N) -> float(N).
+
+to_bin_reason(A) when is_atom(A)   -> atom_to_binary(A, utf8);
+to_bin_reason(T) ->
+    iolist_to_binary(io_lib:format("~p", [T])).
 
 not_found() ->
     json_response(404, #{result => <<"error">>, reason => <<"not_found">>}).
@@ -351,9 +606,12 @@ send_response(Sock, #{status := Status, body := Body,
     gen_tcp:send(Sock, [Head, Body]).
 
 status_text(200) -> <<"OK">>;
+status_text(201) -> <<"Created">>;
 status_text(400) -> <<"Bad Request">>;
+status_text(401) -> <<"Unauthorized">>;
 status_text(404) -> <<"Not Found">>;
 status_text(409) -> <<"Conflict">>;
+status_text(500) -> <<"Internal Server Error">>;
 status_text(503) -> <<"Service Unavailable">>.
 
 %%==================================================================

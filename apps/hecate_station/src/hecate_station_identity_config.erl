@@ -44,7 +44,15 @@
 
 -export([from_env/0,
          from_env/1,
-         parse/1]).
+         parse/1,
+         %% Phase 5 — turn an identity_spec() into the full
+         %% identity_opts() the registry/sup consume. Shared
+         %% across the boot pipeline (station_app) and the admin
+         %% API runtime add path.
+         spec_to_opts/3,
+         load_box_secret/0,
+         shared_listener_opts/0,
+         box_secret_path/0]).
 
 -export_type([identity_spec/0]).
 
@@ -158,3 +166,106 @@ parse_int_step({I, []}, _S) when is_integer(I) ->
     {ok, float(I)};
 parse_int_step(_, _S) ->
     error.
+
+%%====================================================================
+%% Phase 5 — identity_spec() ⇒ identity_opts() construction
+%%====================================================================
+
+%% @doc Build the per-identity opts map the registry/sup consume from
+%% an `identity_spec()' (parsed) plus a `box_secret' (loaded once for
+%% the whole BEAM) plus the shared listener config (cert, key, port).
+%%
+%% Pure: derives keypair via
+%% `hecate_station_identity_keys:derive/2'; constructs the
+%% endpoint URL; falls back to the box-wide bind when the spec
+%% does not provide a per-identity address.
+-spec spec_to_opts(identity_spec(),
+                   hecate_station_identity_keys:box_secret(),
+                   #{port := inet:port_number(),
+                     certfile := file:name_all(),
+                     keyfile := file:name_all(),
+                     _ => _}) ->
+    hecate_station_identity_sup:identity_opts().
+spec_to_opts(Spec, BoxSecret, Shared) ->
+    Hostname = maps:get(hostname, Spec),
+    Port     = maps:get(port, Shared),
+    Kp       = hecate_station_identity_keys:derive(BoxSecret, Hostname),
+    StationId = macula_identity:public(Kp),
+    Endpoint = endpoint_for(Hostname, Port),
+    Capabilities = maps:get(capabilities, Shared,
+                    application:get_env(hecate_station, capabilities, 0)),
+    #{
+        identity_key => Hostname,
+        identity     => Kp,
+        bind         => bind_for(Spec, Shared),
+        port         => Port,
+        certfile     => maps:get(certfile, Shared),
+        keyfile      => maps:get(keyfile, Shared),
+        capabilities => Capabilities,
+        realms       => [],
+        station_id   => StationId,
+        endpoint     => Endpoint
+    }.
+
+bind_for(#{bind := undefined}, Shared) ->
+    %% No per-identity bind in the spec; fall back to the box-wide
+    %% bind from app env. Useful for tests on a single loopback.
+    application:get_env(hecate_station, bind,
+                        maps:get(bind, Shared, "0.0.0.0"));
+bind_for(#{bind := Addr}, _Shared) when is_binary(Addr) ->
+    binary_to_list(Addr).
+
+endpoint_for(Hostname, Port) ->
+    iolist_to_binary([<<"quic://">>, Hostname,
+                      $:, integer_to_binary(Port)]).
+
+%%====================================================================
+%% Phase 5 — app-env access for the box-secret + shared listener.
+%% Both the boot pipeline (`hecate_station_app') and the admin API
+%% runtime add path consume these.
+%%====================================================================
+
+%% @doc Load the box-secret from the configured path. Generates a
+%% fresh 32-byte secret on first run.
+-spec load_box_secret() ->
+    {ok, hecate_station_identity_keys:box_secret()} | {error, term()}.
+load_box_secret() ->
+    hecate_station_identity_keys:load_or_generate_box_secret(box_secret_path()).
+
+%% @doc Resolved path for the box-secret. App-env override or the
+%% per-user default under `~/.hecate'.
+-spec box_secret_path() -> file:name_all().
+box_secret_path() ->
+    case application:get_env(hecate_station, box_secret_path) of
+        {ok, P}   -> P;
+        undefined -> default_box_secret_path()
+    end.
+
+default_box_secret_path() ->
+    Home = case os:getenv("HOME") of
+               false -> "/tmp";
+               H     -> H
+           end,
+    filename:join([Home, ".hecate", "box-secret"]).
+
+%% @doc Read `port', `certfile', `keyfile' from the `hecate_station'
+%% app env. Each is mandatory for the multi-identity boot path —
+%% missing entries yield `{error, {missing_station_env, K}}'.
+-spec shared_listener_opts() ->
+    {ok, #{port := inet:port_number(),
+           certfile := file:name_all(),
+           keyfile := file:name_all()}}
+  | {error, {missing_station_env, atom()}}.
+shared_listener_opts() ->
+    require_app_env([port, certfile, keyfile], #{}).
+
+require_app_env([], Acc) ->
+    {ok, Acc};
+require_app_env([K | Rest], Acc) ->
+    require_one_app_env(application:get_env(hecate_station, K),
+                        K, Rest, Acc).
+
+require_one_app_env({ok, V}, K, Rest, Acc) ->
+    require_app_env(Rest, Acc#{K => V});
+require_one_app_env(undefined, K, _Rest, _Acc) ->
+    {error, {missing_station_env, K}}.

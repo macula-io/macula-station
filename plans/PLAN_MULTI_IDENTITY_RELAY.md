@@ -12,7 +12,7 @@
 | 2 | ✅ shipped | de-singletoned pubsub_registry + content_announcer; deleted pubsub_server_sup; identity_sup wires per-identity registry + announcer |
 | 3 | ✅ shipped | per-identity DHT/SWIM/observer/listener procedural startup; cross-talk test (two identities dialing each other via QUIC). Cascade ingest deferred to Phase 4. |
 | 4 | ✅ shipped | identity config parser (`MACULA_RELAY_IDENTITIES`); deterministic per-identity Ed25519 keys (HMAC-SHA256(box_secret, hostname)); cascade in identity_sup chain; station_app multi-identity boot branch; 3-identity boot test |
-| 5 | pending | admin API |
+| 5 | ✅ shipped | admin endpoints `GET /admin/identities`, `POST .../start|stop|reload`; bearer auth via `MACULA_ADMIN_TOKEN`; registry remembers opts for reload; admin sup also boots under multi-identity flow |
 | 6 | pending | operational tooling |
 | 7 | pending | cutover ops |
 

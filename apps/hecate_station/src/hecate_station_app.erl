@@ -97,53 +97,23 @@ boot_dispatch(SupPid, {ok, Specs}) ->
 %%==================================================================
 
 boot_multi(SupPid, Specs) ->
-    on_box_secret(SupPid, Specs, load_box_secret()).
-
-load_box_secret() ->
-    Path = box_secret_path(),
-    hecate_station_identity_keys:load_or_generate_box_secret(Path).
-
-box_secret_path() ->
-    case application:get_env(hecate_station, box_secret_path) of
-        {ok, P}   -> P;
-        undefined -> default_box_secret_path()
-    end.
-
-default_box_secret_path() ->
-    Home = case os:getenv("HOME") of
-               false -> "/tmp";
-               H     -> H
-           end,
-    filename:join([Home, ".hecate", "box-secret"]).
+    on_box_secret(SupPid, Specs, hecate_station_identity_config:load_box_secret()).
 
 on_box_secret(SupPid, _Specs, {error, Reason}) ->
     halt_sup(SupPid, {box_secret_failed, Reason});
 on_box_secret(SupPid, Specs, {ok, BoxSecret}) ->
-    on_shared_opts(SupPid, Specs, BoxSecret, shared_listener_opts()).
+    on_shared_opts(SupPid, Specs, BoxSecret,
+                   hecate_station_identity_config:shared_listener_opts()).
 
 on_shared_opts(SupPid, _Specs, _BoxSecret, {error, Reason}) ->
     halt_sup(SupPid, Reason);
 on_shared_opts(SupPid, Specs, BoxSecret, {ok, Shared}) ->
     register_each(SupPid, Specs, BoxSecret, Shared).
 
-shared_listener_opts() ->
-    require_app_env([port, certfile, keyfile], #{}).
-
-require_app_env([], Acc) ->
-    {ok, Acc};
-require_app_env([K | Rest], Acc) ->
-    require_one_app_env(application:get_env(hecate_station, K),
-                        K, Rest, Acc).
-
-require_one_app_env({ok, V}, K, Rest, Acc) ->
-    require_app_env(Rest, Acc#{K => V});
-require_one_app_env(undefined, K, _Rest, _Acc) ->
-    {error, {missing_station_env, K}}.
-
 register_each(SupPid, [], _BoxSecret, _Shared) ->
-    {ok, SupPid};
+    boot_multi_admin(SupPid);
 register_each(SupPid, [Spec | Rest], BoxSecret, Shared) ->
-    Opts = spec_to_opts(Spec, BoxSecret, Shared),
+    Opts = hecate_station_identity_config:spec_to_opts(Spec, BoxSecret, Shared),
     Key  = maps:get(identity_key, Opts),
     on_register(SupPid, Rest, BoxSecret, Shared,
                 hecate_station_identity_registry:register(Key, Opts)).
@@ -153,40 +123,31 @@ on_register(SupPid, _Rest, _BoxSecret, _Shared, {error, Reason}) ->
 on_register(SupPid, Rest, BoxSecret, Shared, {ok, _IdSup}) ->
     register_each(SupPid, Rest, BoxSecret, Shared).
 
-spec_to_opts(Spec, BoxSecret, Shared) ->
-    Hostname = maps:get(hostname, Spec),
-    Bind     = bind_for(Spec, Shared),
-    Port     = maps:get(port, Shared),
-    Kp       = hecate_station_identity_keys:derive(BoxSecret, Hostname),
-    StationId = macula_identity:public(Kp),
-    Endpoint = endpoint_for(Hostname, Port),
-    Capabilities = maps:get(capabilities, Shared,
-                            application:get_env(hecate_station, capabilities, 0)),
-    #{
-        identity_key => Hostname,
-        identity     => Kp,
-        bind         => Bind,
-        port         => Port,
-        certfile     => maps:get(certfile, Shared),
-        keyfile      => maps:get(keyfile, Shared),
-        capabilities => Capabilities,
-        realms       => [],
-        station_id   => StationId,
-        endpoint     => Endpoint
+%% Multi-identity boot mirrors the legacy path's final step: if an
+%% `admin' app env entry is present, spin up the admin HTTP listener
+%% under the shared station_sup. The legacy `/status', `/dht/stats'
+%% etc. routes still query the LEGACY singletons (which the
+%% multi-identity path does NOT populate); they will therefore
+%% return 503. The Phase-5 `/admin/identities' routes work fully
+%% under multi-identity since they query the registry directly.
+boot_multi_admin(SupPid) ->
+    case admin_cfg_from_env() of
+        undefined ->
+            {ok, SupPid};
+        AdminCfg ->
+            Spec = admin_sup_child(AdminCfg),
+            on_admin_started(SupPid, supervisor:start_child(SupPid, Spec))
+    end.
+
+admin_cfg_from_env() ->
+    classify_admin_env(application:get_env(hecate_station, admin)).
+
+classify_admin_env(undefined)   -> undefined;
+classify_admin_env({ok, Map}) when is_map(Map) ->
+    #admin_cfg{
+        bind = maps:get(bind, Map, "127.0.0.1"),
+        port = maps:get(port, Map, 8443)
     }.
-
-bind_for(#{bind := undefined}, Shared) ->
-    %% Spec did not provide a per-identity bind; fall back to the
-    %% box-wide one. Useful for tests that share `127.0.0.1' across
-    %% identities (each on a distinct port via the shared opts).
-    application:get_env(hecate_station, bind,
-                        maps:get(bind, Shared, "0.0.0.0"));
-bind_for(#{bind := Addr}, _Shared) when is_binary(Addr) ->
-    binary_to_list(Addr).
-
-endpoint_for(Hostname, Port) ->
-    iolist_to_binary([<<"quic://">>, Hostname,
-                      $:, integer_to_binary(Port)]).
 
 boot_cfg(SupPid, {error, Reason}) ->
     halt_sup(SupPid, Reason);
