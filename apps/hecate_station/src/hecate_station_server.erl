@@ -223,14 +223,50 @@ dispatch_peer_frame(ConnPid, Frame, #state{swim = Swim, peers = Peers} = S) ->
                                               Type =:= swim_ack;
                                               Type =:= swim_suspect;
                                               Type =:= swim_confirm ->
-            case hecate_frame:verify(Frame, From) of
-                {ok, _}         -> hecate_swim:handle_frame(Swim, From, Frame);
-                {error, _Reason} -> ok
-            end,
+            dispatch_swim(From, Frame, Swim),
+            S;
+        {Type, #{peer_node_id := From}} when Type =:= want;
+                                              Type =:= have;
+                                              Type =:= block;
+                                              Type =:= manifest_req;
+                                              Type =:= manifest_res;
+                                              Type =:= cancel ->
+            dispatch_content(ConnPid, From, Frame),
             S;
         _ ->
             S
     end.
+
+dispatch_swim(From, Frame, Swim) ->
+    case hecate_frame:verify(Frame, From) of
+        {ok, _}          -> hecate_swim:handle_frame(Swim, From, Frame);
+        {error, _Reason} -> ok
+    end.
+
+%% Content frames dispatch through hecate_content_transfer. The
+%% transfer module returns either `ok' (fire-and-forget) or
+%% `{ok, ReplyFrame}' which the caller must send back over the
+%% same connection — the listener is the only thing that knows
+%% which conn to use.
+dispatch_content(ConnPid, From, Frame) ->
+    case hecate_frame:verify(Frame, From) of
+        {ok, Verified}  -> handle_content_reply(
+                              ConnPid,
+                              hecate_content_transfer:process_inbound(From, Verified));
+        {error, _Reason} -> ok
+    end.
+
+handle_content_reply(_ConnPid, ok) ->
+    ok;
+handle_content_reply(ConnPid, {ok, _ReplyFrame}) ->
+    %% TODO: route ReplyFrame back through ConnPid once the
+    %% peering layer exposes an inbound-reply primitive. Logging
+    %% the path here keeps the integration explicit even though
+    %% the wire-send is a follow-up.
+    _ = ConnPid,
+    ok;
+handle_content_reply(_ConnPid, {error, _Reason}) ->
+    ok.
 
 %%------------------------------------------------------------------
 %% Termination

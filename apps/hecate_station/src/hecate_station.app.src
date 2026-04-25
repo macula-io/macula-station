@@ -9,7 +9,6 @@
         macula,
         hecate_frame,
         hecate_peering,
-        macula,
         hecate_record,
         hecate_transport,
         hecate_dht,
@@ -18,7 +17,8 @@
         hecate_handler,
         hecate_bootstrap,
         hecate_overlay,
-        hecate_realm
+        hecate_realm,
+        hecate_content
     ]},
     {env, []},
     {modules, []},
