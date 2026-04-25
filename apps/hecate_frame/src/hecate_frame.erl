@@ -129,9 +129,9 @@
 -type frame() :: map().
 
 -type connect_spec() :: #{
-    node_id          := hecate_identity:pubkey(),
-    station_id       := hecate_identity:pubkey(),
-    realms           := [hecate_identity:pubkey()],
+    node_id          := macula_identity:pubkey(),
+    station_id       := macula_identity:pubkey(),
+    realms           := [macula_identity:pubkey()],
     capabilities     := non_neg_integer(),
     puzzle_evidence  := <<_:256>>,
     addresses        => [map()],
@@ -140,9 +140,9 @@
 }.
 
 -type hello_spec() :: #{
-    node_id                 := hecate_identity:pubkey(),
-    station_id              := hecate_identity:pubkey(),
-    realms                  := [hecate_identity:pubkey()],
+    node_id                 := macula_identity:pubkey(),
+    station_id              := macula_identity:pubkey(),
+    realms                  := [macula_identity:pubkey()],
     capabilities            := non_neg_integer(),
     accepted                := boolean(),
     negotiated_capabilities := non_neg_integer(),
@@ -152,19 +152,19 @@
 }.
 
 -type swim_update_spec() :: #{
-    target      := hecate_identity:pubkey(),
+    target      := macula_identity:pubkey(),
     state       := member_state(),
     incarnation := non_neg_integer(),
     observed_at := pos_integer(),
-    by          := hecate_identity:pubkey()
+    by          := macula_identity:pubkey()
 }.
 
 -type swim_update() :: #{
-    target      := hecate_identity:pubkey(),
+    target      := macula_identity:pubkey(),
     state       := member_state(),
     incarnation := non_neg_integer(),
     observed_at := pos_integer(),
-    by          := hecate_identity:pubkey(),
+    by          := macula_identity:pubkey(),
     signature   => <<_:512>>
 }.
 
@@ -176,15 +176,15 @@
 
 -type swim_ack_spec() :: #{
     round       := non_neg_integer(),
-    responder   := hecate_identity:pubkey(),
+    responder   := macula_identity:pubkey(),
     incarnation := non_neg_integer(),
     piggyback   => [swim_update()]
 }.
 
 -type swim_suspect_spec() :: #{
-    target             := hecate_identity:pubkey(),
+    target             := macula_identity:pubkey(),
     target_incarnation := non_neg_integer(),
-    suspected_by       := hecate_identity:pubkey(),
+    suspected_by       := macula_identity:pubkey(),
     ttl                := non_neg_integer()
 }.
 
@@ -203,8 +203,8 @@
 -type country() :: <<_:16>>.
 
 -type station_ref_spec() :: #{
-    node_id      := hecate_identity:pubkey(),
-    station_id   := hecate_identity:pubkey(),
+    node_id      := macula_identity:pubkey(),
+    station_id   := macula_identity:pubkey(),
     addresses    => [map()],
     tier         := tier(),
     asn          => non_neg_integer() | undefined,
@@ -213,8 +213,8 @@
 }.
 
 -type station_ref() :: #{
-    node_id      := hecate_identity:pubkey(),
-    station_id   := hecate_identity:pubkey(),
+    node_id      := macula_identity:pubkey(),
+    station_id   := macula_identity:pubkey(),
     addresses    := [map()],
     tier         := tier(),
     asn          := non_neg_integer() | undefined,
@@ -227,7 +227,7 @@
 
 -type find_node_spec()     :: #{
     key    := id256(),
-    origin := hecate_identity:pubkey(),
+    origin := macula_identity:pubkey(),
     depth  := non_neg_integer()
 }.
 
@@ -238,7 +238,7 @@
 
 -type find_value_spec()    :: #{
     key    := id256(),
-    origin := hecate_identity:pubkey()
+    origin := macula_identity:pubkey()
 }.
 
 -type value_spec()         :: #{
@@ -276,7 +276,7 @@
     realm        := id256(),
     payload      := term(),
     deadline_ms  := integer(),
-    caller       := hecate_identity:pubkey(),
+    caller       := macula_identity:pubkey(),
     source_route => binary(),
     retry_budget => non_neg_integer()
 }.
@@ -284,16 +284,16 @@
 -type result_spec() :: #{
     call_id              := call_id(),
     payload              := term(),
-    responded_by         := hecate_identity:pubkey(),
+    responded_by         := macula_identity:pubkey(),
     source_route_reverse => binary()
 }.
 
 -type call_error_spec() :: #{
     call_id              := call_id(),
     code                 := hecate_bolt4:code(),
-    reported_by          := hecate_identity:pubkey(),
+    reported_by          := macula_identity:pubkey(),
     detail               => binary() | undefined,
-    offending_hop        => hecate_identity:pubkey() | undefined,
+    offending_hop        => macula_identity:pubkey() | undefined,
     source_route_partial => binary()
 }.
 
@@ -305,12 +305,12 @@
 
 -type hyparview_join_spec() :: #{
     realm      := id256(),
-    new_member := hecate_identity:pubkey()
+    new_member := macula_identity:pubkey()
 }.
 
 -type hyparview_forward_join_spec() :: #{
     realm      := id256(),
-    new_member := hecate_identity:pubkey(),
+    new_member := macula_identity:pubkey(),
     ttl        := non_neg_integer(),
     arwl       := non_neg_integer(),
     prwl       := non_neg_integer()
@@ -327,14 +327,14 @@
 
 -type hyparview_shuffle_spec() :: #{
     realm       := id256(),
-    origin      := hecate_identity:pubkey(),
+    origin      := macula_identity:pubkey(),
     ttl         := non_neg_integer(),
-    peer_sample := [hecate_identity:pubkey()]
+    peer_sample := [macula_identity:pubkey()]
 }.
 
 -type hyparview_shuffle_reply_spec() :: #{
     realm       := id256(),
-    peer_sample := [hecate_identity:pubkey()]
+    peer_sample := [macula_identity:pubkey()]
 }.
 
 %%------------------------------------------------------------------
@@ -375,7 +375,7 @@
 -type publish_spec() :: #{
     topic           := binary(),
     realm           := id256(),
-    publisher       := hecate_identity:pubkey(),
+    publisher       := macula_identity:pubkey(),
     seq             := non_neg_integer(),
     payload         := term(),
     published_at_ms := non_neg_integer(),
@@ -385,7 +385,7 @@
 -type subscribe_spec() :: #{
     topic      := binary(),
     realm      := id256(),
-    subscriber := hecate_identity:pubkey(),
+    subscriber := macula_identity:pubkey(),
     filter     => term() | undefined,
     options    => map()
 }.
@@ -393,13 +393,13 @@
 -type unsubscribe_spec() :: #{
     topic      := binary(),
     realm      := id256(),
-    subscriber := hecate_identity:pubkey()
+    subscriber := macula_identity:pubkey()
 }.
 
 -type event_spec() :: #{
     topic         := binary(),
     realm         := id256(),
-    publisher     := hecate_identity:pubkey(),
+    publisher     := macula_identity:pubkey(),
     seq           := non_neg_integer(),
     payload       := term(),
     delivered_via := delivery_channel()
@@ -600,11 +600,11 @@ swim_update(#{target := T, state := St, incarnation := Inc,
     }.
 
 -spec sign_swim_update(swim_update(),
-                       hecate_identity:key_pair() | hecate_identity:privkey()) ->
+                       macula_identity:key_pair() | macula_identity:privkey()) ->
     swim_update().
 sign_swim_update(Update, Identity) ->
     Bytes = canonical_swim_update(Update),
-    Sig = hecate_identity:sign([?SWIM_UPDATE_DOMAIN, Bytes], Identity),
+    Sig = macula_identity:sign([?SWIM_UPDATE_DOMAIN, Bytes], Identity),
     Update#{signature => Sig}.
 
 -spec verify_swim_update(swim_update()) -> {ok, swim_update()} | {error, term()}.
@@ -613,7 +613,7 @@ verify_swim_update(#{signature := Sig, by := By} = Update)
        is_binary(By),  byte_size(By)  =:= 32 ->
     Bytes = canonical_swim_update(Update),
     verify_update_result(
-        hecate_identity:verify([?SWIM_UPDATE_DOMAIN, Bytes], Sig, By),
+        macula_identity:verify([?SWIM_UPDATE_DOMAIN, Bytes], Sig, By),
         Update);
 verify_swim_update(_Update) ->
     {error, bad_swim_update}.
@@ -823,7 +823,7 @@ validate_retry_budget(N) when is_integer(N), N >= 0 -> ok.
 validate_optional_detail(undefined)                  -> ok;
 validate_optional_detail(B) when is_binary(B)        -> ok.
 
--spec validate_optional_hop(hecate_identity:pubkey() | undefined) -> ok.
+-spec validate_optional_hop(macula_identity:pubkey() | undefined) -> ok.
 validate_optional_hop(undefined)                              -> ok;
 validate_optional_hop(B) when is_binary(B), byte_size(B) =:= 32 -> ok.
 
@@ -1063,20 +1063,20 @@ validate_manifest_payload(M) when is_map(M)       -> ok.
 %% Sign / verify
 %%------------------------------------------------------------------
 
--spec sign(frame(), hecate_identity:key_pair() | hecate_identity:privkey()) ->
+-spec sign(frame(), macula_identity:key_pair() | macula_identity:privkey()) ->
     frame().
 sign(Frame, Identity) ->
     Bytes = canonical_unsigned(Frame),
-    Sig = hecate_identity:sign([?SIG_DOMAIN, Bytes], Identity),
+    Sig = macula_identity:sign([?SIG_DOMAIN, Bytes], Identity),
     Frame#{signature => Sig}.
 
--spec verify(frame(), hecate_identity:pubkey()) ->
+-spec verify(frame(), macula_identity:pubkey()) ->
     {ok, frame()} | {error, term()}.
 verify(#{signature := Sig} = Frame, Pub)
   when is_binary(Sig), byte_size(Sig) =:= 64,
        is_binary(Pub), byte_size(Pub) =:= 32 ->
     Bytes = canonical_unsigned(Frame),
-    verify_result(hecate_identity:verify([?SIG_DOMAIN, Bytes], Sig, Pub),
+    verify_result(macula_identity:verify([?SIG_DOMAIN, Bytes], Sig, Pub),
                   Frame);
 verify(_Frame, _Pub) ->
     {error, bad_frame}.

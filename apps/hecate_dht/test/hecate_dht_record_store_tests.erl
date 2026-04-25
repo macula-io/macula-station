@@ -5,8 +5,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 start() ->
-    Kp = hecate_identity:generate(),
-    {ok, D} = hecate_dht:start_link(#{self_id  => hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    {ok, D} = hecate_dht:start_link(#{self_id  => macula_identity:public(Kp),
                                       identity => Kp}),
     {D, Kp}.
 
@@ -16,8 +16,8 @@ start() ->
 
 put_node_record_indexed_by_node_id_test() ->
     {D, _} = start(),
-    OwnerKp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(OwnerKp),
+    OwnerKp = macula_identity:generate(),
+    NodeId = macula_identity:public(OwnerKp),
     R = hecate_record:sign(
           hecate_record:node_record(NodeId, [], 0), OwnerKp),
     ok = hecate_dht:put_record(D, R),
@@ -27,8 +27,8 @@ put_node_record_indexed_by_node_id_test() ->
 
 put_procedure_advertisement_indexed_by_uri_hash_test() ->
     {D, _} = start(),
-    AdvKp = hecate_identity:generate(),
-    Advertiser = hecate_identity:public(AdvKp),
+    AdvKp = macula_identity:generate(),
+    Advertiser = macula_identity:public(AdvKp),
     Uri = <<"mcp://weather/forecast">>,
     R = hecate_record:sign(
           hecate_record:procedure_advertisement(
@@ -44,8 +44,8 @@ put_procedure_advertisement_indexed_by_uri_hash_test() ->
 
 put_realm_stations_indexed_by_hashed_station_set_test() ->
     {D, _} = start(),
-    RealmKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(RealmKp),
+    RealmKp = macula_identity:generate(),
+    RealmId = macula_identity:public(RealmKp),
     R = hecate_record:sign(
           hecate_record:realm_stations(RealmId, []), RealmKp),
     ok = hecate_dht:put_record(D, R),
@@ -62,21 +62,21 @@ two_advertisers_same_procedure_both_stored_test() ->
     Uri = <<"mcp://news/headlines">>,
     StationA = crypto:strong_rand_bytes(32),
     StationB = crypto:strong_rand_bytes(32),
-    KpA = hecate_identity:generate(),
-    KpB = hecate_identity:generate(),
+    KpA = macula_identity:generate(),
+    KpB = macula_identity:generate(),
     Ra = hecate_record:sign(
            hecate_record:procedure_advertisement(
-               hecate_identity:public(KpA), Uri, StationA), KpA),
+               macula_identity:public(KpA), Uri, StationA), KpA),
     Rb = hecate_record:sign(
            hecate_record:procedure_advertisement(
-               hecate_identity:public(KpB), Uri, StationB), KpB),
+               macula_identity:public(KpB), Uri, StationB), KpB),
     ok = hecate_dht:put_record(D, Ra),
     ok = hecate_dht:put_record(D, Rb),
     Stored = hecate_dht:find_local_record(D, crypto:hash(sha256, Uri)),
     ?assertEqual(2, length(Stored)),
     Owners = lists:sort([hecate_record:key(R) || R <- Stored]),
-    ?assertEqual(lists:sort([hecate_identity:public(KpA),
-                             hecate_identity:public(KpB)]),
+    ?assertEqual(lists:sort([macula_identity:public(KpA),
+                             macula_identity:public(KpB)]),
                  Owners),
     hecate_dht:stop(D).
 
@@ -86,8 +86,8 @@ two_advertisers_same_procedure_both_stored_test() ->
 
 put_record_twice_same_owner_replaces_test() ->
     {D, _} = start(),
-    OwnerKp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(OwnerKp),
+    OwnerKp = macula_identity:generate(),
+    NodeId = macula_identity:public(OwnerKp),
     R1 = hecate_record:sign(
            hecate_record:node_record(NodeId, [], 0), OwnerKp),
     ok = hecate_dht:put_record(D, R1),

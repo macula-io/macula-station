@@ -49,7 +49,7 @@
 
 -export_type([pubkey/0, verify_error/0]).
 
--type pubkey() :: hecate_identity:pubkey().
+-type pubkey() :: macula_identity:pubkey().
 
 -type verify_error() ::
         bad_record

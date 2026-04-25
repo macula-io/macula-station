@@ -51,7 +51,7 @@ stop(Pid) ->
 stop(Pid, Reason) ->
     hecate_station_server:stop(Pid, Reason).
 
--spec identity(pid()) -> hecate_identity:key_pair().
+-spec identity(pid()) -> macula_identity:key_pair().
 identity(Pid) ->
     hecate_station_server:identity(Pid).
 
@@ -196,7 +196,7 @@ publish_tombstone(Dht, Kp, Reason) ->
     ok.
 
 build_tombstone(Kp, Reason) ->
-    Pub      = hecate_identity:public(Kp),
+    Pub      = macula_identity:public(Kp),
     Unsigned = hecate_record:tombstone(Pub, ?NODE_RECORD_TYPE, Reason),
     hecate_record:sign(Unsigned, Kp).
 
@@ -239,7 +239,7 @@ await_sup_down(Pid, Ref) ->
 %% booted. The identity is cached in `persistent_term' by the boot
 %% pipeline; callers outside `hecate_station_app' use this accessor
 %% rather than re-reading the file.
--spec current_identity() -> {ok, hecate_identity:key_pair()} | {error, not_started}.
+-spec current_identity() -> {ok, macula_identity:key_pair()} | {error, not_started}.
 current_identity() ->
     identity_of(persistent_term:get(?DIAL_KEY, undefined)).
 
@@ -295,8 +295,8 @@ deliver(Pid) when is_pid(Pid) -> {ok, Pid}.
 %% @doc Internal — called by `hecate_station_app:start/2' after the
 %% observer + listener are up. Exposes the dial template to
 %% `connect_to/1'. Not exported in the user-facing API.
--spec remember_dial_opts(#{identity       := hecate_identity:key_pair(),
-                           realms         := [hecate_identity:pubkey()],
+-spec remember_dial_opts(#{identity       := macula_identity:key_pair(),
+                           realms         := [macula_identity:pubkey()],
                            capabilities   := non_neg_integer()}) -> ok.
 remember_dial_opts(Template) ->
     persistent_term:put(?DIAL_KEY, Template),

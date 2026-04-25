@@ -153,7 +153,7 @@ run_tick(#state{dht = Dht} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec replicate_record(hecate_record:record(), hecate_identity:pubkey(),
+-spec replicate_record(hecate_record:record(), macula_identity:pubkey(),
                        #state{}, outcome()) -> outcome().
 replicate_record(Record, SelfId,
                  #state{dht = Dht, k = K} = State, Acc) ->
@@ -165,7 +165,7 @@ replicate_record(Record, SelfId,
     lists:foldl(fun(PeerId, A) -> send_one(PeerId, Record, State, A) end,
                 bump(Acc, records_seen), Targets).
 
--spec send_one(hecate_identity:pubkey(), hecate_record:record(),
+-spec send_one(macula_identity:pubkey(), hecate_record:record(),
                #state{}, outcome()) -> outcome().
 send_one(PeerId, Record,
          #state{dht = Dht, per_store_timeout_ms = Timeout}, Acc) ->

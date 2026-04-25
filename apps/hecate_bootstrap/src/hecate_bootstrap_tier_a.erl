@@ -49,7 +49,7 @@
 
 -type probe_opts() :: #{
     resolvers     := [resolver_spec()],
-    pubkeys       => [hecate_identity:pubkey()],
+    pubkeys       => [macula_identity:pubkey()],
     corroboration => pos_integer(),
     timeout_ms    => pos_integer()
 }.

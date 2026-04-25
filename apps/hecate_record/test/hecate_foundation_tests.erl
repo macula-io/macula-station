@@ -84,8 +84,8 @@ is_foundation_rejects_wrong_length_test() ->
 
 verify_record_accepts_signed_foundation_parameter_test() ->
     with_clean_env(fun() ->
-        Kp = hecate_identity:generate(),
-        Fk = hecate_identity:public(Kp),
+        Kp = macula_identity:generate(),
+        Fk = macula_identity:public(Kp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         R  = hecate_record:foundation_parameter(Fk, <<"puzzle_difficulty">>, 8),
         Signed = hecate_record:sign(R, Kp),
@@ -94,8 +94,8 @@ verify_record_accepts_signed_foundation_parameter_test() ->
 
 verify_record_accepts_all_four_foundation_types_test() ->
     with_clean_env(fun() ->
-        Kp = hecate_identity:generate(),
-        Fk = hecate_identity:public(Kp),
+        Kp = macula_identity:generate(),
+        Fk = macula_identity:public(Kp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         Now = erlang:system_time(millisecond),
         Records = [
@@ -113,13 +113,13 @@ verify_record_accepts_all_four_foundation_types_test() ->
 
 verify_record_rejects_untrusted_signer_test() ->
     with_clean_env(fun() ->
-        FoundationKp = hecate_identity:generate(),
-        Fk  = hecate_identity:public(FoundationKp),
+        FoundationKp = macula_identity:generate(),
+        Fk  = macula_identity:public(FoundationKp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         %% Record owned (and signed) by a completely different key.
-        ImpostorKp = hecate_identity:generate(),
+        ImpostorKp = macula_identity:generate(),
         R = hecate_record:foundation_parameter(
-              hecate_identity:public(ImpostorKp), <<"x">>, 1),
+              macula_identity:public(ImpostorKp), <<"x">>, 1),
         Signed = hecate_record:sign(R, ImpostorKp),
         ?assertEqual({error, not_foundation_signed},
                      hecate_foundation:verify_record(Signed))
@@ -127,8 +127,8 @@ verify_record_rejects_untrusted_signer_test() ->
 
 verify_record_rejects_non_foundation_type_test() ->
     with_clean_env(fun() ->
-        Kp = hecate_identity:generate(),
-        Fk = hecate_identity:public(Kp),
+        Kp = macula_identity:generate(),
+        Fk = macula_identity:public(Kp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         NodeRec = hecate_record:node_record(Fk, [], 0),
         Signed = hecate_record:sign(NodeRec, Kp),
@@ -138,8 +138,8 @@ verify_record_rejects_non_foundation_type_test() ->
 
 verify_record_rejects_tampered_payload_test() ->
     with_clean_env(fun() ->
-        Kp = hecate_identity:generate(),
-        Fk = hecate_identity:public(Kp),
+        Kp = macula_identity:generate(),
+        Fk = macula_identity:public(Kp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         R  = hecate_record:foundation_parameter(Fk, <<"x">>, 1),
         Signed = hecate_record:sign(R, Kp),
@@ -152,8 +152,8 @@ verify_record_rejects_tampered_payload_test() ->
 
 verify_record_rejects_expired_test() ->
     with_clean_env(fun() ->
-        Kp = hecate_identity:generate(),
-        Fk = hecate_identity:public(Kp),
+        Kp = macula_identity:generate(),
+        Fk = macula_identity:public(Kp),
         ok = application:set_env(hecate_record, foundation_pubkeys, [Fk]),
         R  = hecate_record:foundation_parameter(Fk, <<"x">>, 1, #{ttl_ms => 1}),
         Signed = hecate_record:sign(R, Kp),

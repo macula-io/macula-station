@@ -52,7 +52,7 @@
 -export_type([state/0, topic/0, subscriber/0]).
 
 -type topic()      :: binary().
--type subscriber() :: hecate_identity:pubkey().
+-type subscriber() :: macula_identity:pubkey().
 
 -type state() :: #{
     realm         := <<_:256>>,
@@ -151,7 +151,7 @@ deliver_event(_State, _Frame) ->
 %%=====================================================================
 
 -spec build_event(state(), hecate_frame:publish_spec(),
-                  hecate_identity:key_pair()) ->
+                  macula_identity:key_pair()) ->
         hecate_frame:frame().
 build_event(#{realm := R}, #{topic := T, publisher := Pub,
                               seq := Seq, payload := Payload},
@@ -169,7 +169,7 @@ build_event(#{realm := R}, #{topic := T, publisher := Pub,
 %% Inbound dispatch
 %%=====================================================================
 
--spec process(state(), hecate_identity:pubkey(),
+-spec process(state(), macula_identity:pubkey(),
               hecate_frame:frame()) ->
         {state(), [subscriber()]}.
 process(State, _From, #{frame_type := subscribe} = F) ->

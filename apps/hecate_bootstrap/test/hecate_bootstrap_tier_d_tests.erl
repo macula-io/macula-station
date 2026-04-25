@@ -26,8 +26,8 @@ tier_d_test_() ->
 setup() ->
     application:ensure_all_started(crypto),
     hecate_bootstrap_chain_fake:init(),
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     #{kp => Kp, fk => Fk}.
 
@@ -86,7 +86,7 @@ slow_chain_does_not_block_fast_one(#{kp := Kp, fk := Fk}) ->
 
 untrusted_signer_rejected(#{fk := Fk}) ->
     fun() ->
-        ImpKp = hecate_identity:generate(),
+        ImpKp = macula_identity:generate(),
         Record = hecate_record:sign(
                    hecate_record:foundation_seed_list(
                      Fk, sample_seeds(3)),

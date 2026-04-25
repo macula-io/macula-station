@@ -37,8 +37,8 @@
 -record(station, {
     name        :: atom(),
     pid         :: pid(),
-    kp          :: hecate_identity:key_pair(),
-    pubkey      :: hecate_identity:pubkey(),
+    kp          :: macula_identity:key_pair(),
+    pubkey      :: macula_identity:pubkey(),
     prefix      :: <<_:128>>
 }).
 
@@ -63,8 +63,8 @@ stop_fleet(#{router := Router, stations := Stations}) ->
     Router ! stop.
 
 build_station(Name, Router) ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Prefix = hecate_source_route:truncate_hop(Pub),
     Pid = spawn(fun() ->
         State = init_state(Kp, Pub, Prefix, Router),

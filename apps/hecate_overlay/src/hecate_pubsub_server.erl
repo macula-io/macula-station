@@ -45,11 +45,11 @@
 
 -export_type([opts/0]).
 
--type opts() :: #{realm := <<_:256>>, identity := hecate_identity:key_pair()}.
+-type opts() :: #{realm := <<_:256>>, identity := macula_identity:key_pair()}.
 
 -record(state, {
     realm    :: <<_:256>>,
-    identity :: hecate_identity:key_pair(),
+    identity :: macula_identity:key_pair(),
     self_id  :: <<_:256>>,
     pubsub   :: hecate_pubsub:state(),
     next_seq :: non_neg_integer()
@@ -130,7 +130,7 @@ init(#{realm := Realm, identity := Kp}) ->
     {ok, #state{
         realm    = Realm,
         identity = Kp,
-        self_id  = hecate_identity:public(Kp),
+        self_id  = macula_identity:public(Kp),
         pubsub   = hecate_pubsub:new(Realm),
         next_seq = 0
     }}.

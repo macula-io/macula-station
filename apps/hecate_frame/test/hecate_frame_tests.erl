@@ -34,29 +34,29 @@ goodbye_with_detail_test() ->
 %%------------------------------------------------------------------
 
 sign_attaches_64_byte_signature_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     ?assertEqual(64, byte_size(hecate_frame:signature(F))).
 
 verify_signed_connect_with_node_id_pubkey_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
-    Pub = hecate_identity:public(Kp),
+    Pub = macula_identity:public(Kp),
     ?assertMatch({ok, _}, hecate_frame:verify(F, Pub)).
 
 verify_rejects_tampered_frame_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     Tampered = F#{capabilities => 999},
     ?assertEqual({error, signature_invalid},
-                 hecate_frame:verify(Tampered, hecate_identity:public(Kp))).
+                 hecate_frame:verify(Tampered, macula_identity:public(Kp))).
 
 verify_rejects_wrong_pubkey_test() ->
-    Kp1 = hecate_identity:generate(),
-    Kp2 = hecate_identity:generate(),
+    Kp1 = macula_identity:generate(),
+    Kp2 = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp1), Kp1),
     ?assertEqual({error, signature_invalid},
-                 hecate_frame:verify(F, hecate_identity:public(Kp2))).
+                 hecate_frame:verify(F, macula_identity:public(Kp2))).
 
 verify_rejects_unsigned_frame_test() ->
     F = build_connect(),
@@ -68,30 +68,30 @@ verify_rejects_unsigned_frame_test() ->
 %%------------------------------------------------------------------
 
 encode_prepends_4_byte_length_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     Wire = hecate_frame:encode(F),
     <<Len:32/big, Body/binary>> = Wire,
     ?assertEqual(byte_size(Body), Len).
 
 encode_decode_roundtrip_connect_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, Decoded),
-    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, hecate_identity:public(Kp))).
+    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, macula_identity:public(Kp))).
 
 encode_decode_roundtrip_hello_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_hello(Kp), Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
-    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, hecate_identity:public(Kp))).
+    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, macula_identity:public(Kp))).
 
 encode_decode_roundtrip_goodbye_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:goodbye(draining, <<"bye">>), Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
-    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, hecate_identity:public(Kp))).
+    ?assertMatch({ok, _}, hecate_frame:verify(Decoded, macula_identity:public(Kp))).
 
 %%------------------------------------------------------------------
 %% Wire codec — partial / streaming
@@ -102,7 +102,7 @@ decode_returns_more_for_short_length_prefix_test() ->
     ?assertEqual({more, 1}, hecate_frame:decode(<<1, 2, 3>>)).
 
 decode_returns_more_for_short_body_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     Wire = hecate_frame:encode(F),
     %% Truncate to 10 bytes (4-byte len + 6 bytes of body).
@@ -123,7 +123,7 @@ decode_rejects_garbage_body_test() ->
 %%------------------------------------------------------------------
 
 parse_stream_drains_multiple_frames_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F1 = hecate_frame:sign(build_connect(Kp), Kp),
     F2 = hecate_frame:sign(build_hello(Kp), Kp),
     Buf = <<(hecate_frame:encode(F1))/binary, (hecate_frame:encode(F2))/binary>>,
@@ -134,7 +134,7 @@ parse_stream_drains_multiple_frames_test() ->
     ?assertEqual(hello, hecate_frame:frame_type(D2)).
 
 parse_stream_returns_unconsumed_tail_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F1 = hecate_frame:sign(build_connect(Kp), Kp),
     Wire1 = hecate_frame:encode(F1),
     %% Append a partial second frame: first 6 bytes of length+body.
@@ -150,7 +150,7 @@ parse_stream_returns_unconsumed_tail_test() ->
 %%------------------------------------------------------------------
 
 encode_is_deterministic_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(build_connect(Kp), Kp),
     ?assertEqual(hecate_frame:encode(F), hecate_frame:encode(F)).
 
@@ -159,23 +159,23 @@ encode_is_deterministic_test() ->
 %%------------------------------------------------------------------
 
 build_connect() ->
-    build_connect(hecate_identity:generate()).
+    build_connect(macula_identity:generate()).
 
 build_connect(Kp) ->
-    Pub = hecate_identity:public(Kp),
+    Pub = macula_identity:public(Kp),
     hecate_frame:connect(#{
         node_id          => Pub,
         station_id       => Pub,
         realms           => [crypto:strong_rand_bytes(32)],
         capabilities     => 16#FF,
-        puzzle_evidence  => hecate_identity:puzzle_evidence(Pub)
+        puzzle_evidence  => macula_identity:puzzle_evidence(Pub)
     }).
 
 build_hello() ->
-    build_hello(hecate_identity:generate()).
+    build_hello(macula_identity:generate()).
 
 build_hello(Kp) ->
-    Pub = hecate_identity:public(Kp),
+    Pub = macula_identity:public(Kp),
     hecate_frame:hello(#{
         node_id                 => Pub,
         station_id              => Pub,
@@ -190,8 +190,8 @@ build_hello(Kp) ->
 %%------------------------------------------------------------------
 
 swim_ping_has_expected_shape_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     U   = signed_update(Pub, alive, Kp),
     F = hecate_frame:swim_ping(#{round => 3, incarnation => 7, piggyback => [U]}),
     ?assertEqual(swim_ping, hecate_frame:frame_type(F)),
@@ -200,8 +200,8 @@ swim_ping_has_expected_shape_test() ->
     ?assertMatch([#{signature := _}], maps:get(piggyback, F)).
 
 swim_ack_carries_responder_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     F = hecate_frame:swim_ack(#{
         round => 3, responder => Pub, incarnation => 7, piggyback => []
     }),
@@ -222,49 +222,49 @@ swim_suspect_and_confirm_share_shape_test() ->
     ?assertEqual(5, maps:get(ttl, S)).
 
 swim_ping_sign_verify_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(
         hecate_frame:swim_ping(#{round => 1, incarnation => 0, piggyback => []}),
         Kp),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(F, hecate_identity:public(Kp))).
+                 hecate_frame:verify(F, macula_identity:public(Kp))).
 
 swim_ping_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(
         hecate_frame:swim_ping(#{round => 42, incarnation => 1, piggyback => []}),
         Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, Decoded),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(Decoded, hecate_identity:public(Kp))).
+                 hecate_frame:verify(Decoded, macula_identity:public(Kp))).
 
 %%------------------------------------------------------------------
 %% SWIM piggyback updates — signed independently by observer
 %%------------------------------------------------------------------
 
 swim_update_sign_verify_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
-    U = signed_update(hecate_identity:public(Kp), alive, Kp),
+    Kp = macula_identity:generate(),
+    U = signed_update(macula_identity:public(Kp), alive, Kp),
     ?assertMatch({ok, _}, hecate_frame:verify_swim_update(U)).
 
 swim_update_rejects_tamper_test() ->
-    Kp = hecate_identity:generate(),
-    U = signed_update(hecate_identity:public(Kp), alive, Kp),
+    Kp = macula_identity:generate(),
+    U = signed_update(macula_identity:public(Kp), alive, Kp),
     Tampered = U#{state => suspect},
     ?assertEqual({error, signature_invalid},
                  hecate_frame:verify_swim_update(Tampered)).
 
 swim_update_rejects_wrong_observer_test() ->
-    Kp1 = hecate_identity:generate(),
-    Kp2 = hecate_identity:generate(),
+    Kp1 = macula_identity:generate(),
+    Kp2 = macula_identity:generate(),
     %% Claim "by = Kp1" but sign with Kp2.
     Unsigned = hecate_frame:swim_update(#{
         target      => crypto:strong_rand_bytes(32),
         state       => alive,
         incarnation => 0,
         observed_at => erlang:system_time(millisecond),
-        by          => hecate_identity:public(Kp1)
+        by          => macula_identity:public(Kp1)
     }),
     Signed = hecate_frame:sign_swim_update(Unsigned, Kp2),
     ?assertEqual({error, signature_invalid},
@@ -273,11 +273,11 @@ swim_update_rejects_wrong_observer_test() ->
 swim_update_domain_is_distinct_from_frame_domain_test() ->
     %% Signing a swim_update with the swim-update domain should not verify
     %% if the frame sig-verify path (different domain) is tried.
-    Kp = hecate_identity:generate(),
-    U = signed_update(hecate_identity:public(Kp), alive, Kp),
+    Kp = macula_identity:generate(),
+    U = signed_update(macula_identity:public(Kp), alive, Kp),
     %% Attempt frame-verify on a signed update — must fail (bad_frame
     %% because it's missing frame fields, or signature_invalid).
-    Result = hecate_frame:verify(U, hecate_identity:public(Kp)),
+    Result = hecate_frame:verify(U, macula_identity:public(Kp)),
     ?assertNotMatch({ok, _}, Result).
 
 %%------------------------------------------------------------------
@@ -285,7 +285,7 @@ swim_update_domain_is_distinct_from_frame_domain_test() ->
 %%------------------------------------------------------------------
 
 signed_update(Target, State, Kp) ->
-    By = hecate_identity:public(Kp),
+    By = macula_identity:public(Kp),
     U = hecate_frame:swim_update(#{
         target      => Target,
         state       => State,
@@ -324,14 +324,14 @@ ping_pong_share_nonce_in_roundtrip_test() ->
     ?assertEqual(maps:get(nonce, Ping), maps:get(nonce, Pong)).
 
 ping_sign_verify_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F  = hecate_frame:sign(
            hecate_frame:ping(#{nonce => crypto:strong_rand_bytes(16)}),
            Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, Decoded),
     ?assertMatch({ok, _}, hecate_frame:verify(Decoded,
-                                              hecate_identity:public(Kp))).
+                                              macula_identity:public(Kp))).
 
 %% -- FIND_NODE / NODES --------------------------------------------
 
@@ -373,7 +373,7 @@ nodes_validates_each_station_ref_test() ->
                                       nodes => [Bad]})).
 
 find_node_nodes_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Req = hecate_frame:sign(
            hecate_frame:find_node(#{key    => crypto:strong_rand_bytes(32),
                                     origin => crypto:strong_rand_bytes(32),
@@ -388,7 +388,7 @@ find_node_nodes_wire_roundtrip_test() ->
     {ok, D2, <<>>} = hecate_frame:decode(hecate_frame:encode(Resp)),
     ?assertEqual(Resp, D2),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D2, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D2, macula_identity:public(Kp))).
 
 %% -- FIND_VALUE / VALUE -------------------------------------------
 
@@ -414,7 +414,7 @@ value_rejects_malformed_record_test() ->
                                       records => [BadRec]})).
 
 find_value_value_wire_roundtrip_test() ->
-    Kp  = hecate_identity:generate(),
+    Kp  = macula_identity:generate(),
     Req = hecate_frame:sign(
             hecate_frame:find_value(#{key    => crypto:strong_rand_bytes(32),
                                       origin => crypto:strong_rand_bytes(32)}),
@@ -461,12 +461,12 @@ store_ack_rejects_non_atom_reason_test() ->
                                           reason => <<"bad">>})).
 
 store_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F  = hecate_frame:sign(hecate_frame:store(#{record => sample_record()}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 %% -- REPLICATE / REPLICATE_ACK ------------------------------------
 
@@ -489,7 +489,7 @@ replicate_ack_test() ->
     ?assertEqual(true, maps:get(accepted, F)).
 
 replicate_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F  = hecate_frame:sign(
            hecate_frame:replicate(#{record => sample_record(),
                                     new_custodian => false}),
@@ -497,7 +497,7 @@ replicate_wire_roundtrip_test() ->
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 %% -- station_ref helper -------------------------------------------
 
@@ -548,8 +548,8 @@ sample_station_ref() ->
     }).
 
 sample_record() ->
-    Kp = hecate_identity:generate(),
-    Node = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    Node = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     hecate_record:sign(Node, Kp).
 
 %%------------------------------------------------------------------
@@ -591,12 +591,12 @@ call_rejects_wrong_realm_size_test() ->
                  hecate_frame:call(spec_with(realm, <<0:128>>))).
 
 call_sign_verify_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
-    F  = hecate_frame:sign(sample_call(hecate_identity:public(Kp)), Kp),
+    Kp = macula_identity:generate(),
+    F  = hecate_frame:sign(sample_call(macula_identity:public(Kp)), Kp),
     {ok, Decoded, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, Decoded),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(Decoded, hecate_identity:public(Kp))).
+                 hecate_frame:verify(Decoded, macula_identity:public(Kp))).
 
 %% -- RESULT -------------------------------------------------------
 
@@ -619,11 +619,11 @@ result_rejects_wrong_responded_by_size_test() ->
                      responded_by => <<0:64>>})).
 
 result_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:result(#{
             call_id      => hecate_record_uuid:v7(),
             payload      => <<"hello">>,
-            responded_by => hecate_identity:public(Kp)
+            responded_by => macula_identity:public(Kp)
         }), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D).
@@ -675,17 +675,17 @@ call_error_rejects_wrong_offending_hop_size_test() ->
                      offending_hop => <<0:64>>})).
 
 call_error_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:call_error(#{
             call_id     => hecate_record_uuid:v7(),
             code        => 16#0E,
-            reported_by => hecate_identity:public(Kp)
+            reported_by => macula_identity:public(Kp)
         }), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertEqual(signature_invalid, maps:get(name, D)),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 %%------------------------------------------------------------------
 %% CALL helpers
@@ -807,17 +807,17 @@ hyparview_shuffle_reply_carries_sample_test() ->
 %% -- sign + wire roundtrip cover all 6 frame types --
 
 hyparview_join_sign_verify_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:hyparview_join(#{
             realm => crypto:strong_rand_bytes(32),
             new_member => crypto:strong_rand_bytes(32)}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 hyparview_forward_join_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:hyparview_forward_join(#{
             realm => crypto:strong_rand_bytes(32),
             new_member => crypto:strong_rand_bytes(32),
@@ -826,7 +826,7 @@ hyparview_forward_join_wire_roundtrip_test() ->
     ?assertEqual(F, D).
 
 hyparview_neighbor_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:hyparview_neighbor(#{
             realm => crypto:strong_rand_bytes(32),
             priority => low}), Kp),
@@ -834,7 +834,7 @@ hyparview_neighbor_wire_roundtrip_test() ->
     ?assertEqual(F, D).
 
 hyparview_shuffle_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Sample = [crypto:strong_rand_bytes(32) || _ <- lists:seq(1, 3)],
     F = hecate_frame:sign(hecate_frame:hyparview_shuffle(#{
             realm => crypto:strong_rand_bytes(32),
@@ -844,7 +844,7 @@ hyparview_shuffle_wire_roundtrip_test() ->
     ?assertEqual(F, D).
 
 hyparview_shuffle_reply_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:hyparview_shuffle_reply(#{
             realm => crypto:strong_rand_bytes(32),
             peer_sample => [crypto:strong_rand_bytes(32)]}), Kp),
@@ -852,7 +852,7 @@ hyparview_shuffle_reply_wire_roundtrip_test() ->
     ?assertEqual(F, D).
 
 hyparview_disconnect_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:hyparview_disconnect(#{
             realm => crypto:strong_rand_bytes(32)}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
@@ -884,7 +884,7 @@ plumtree_gossip_rejects_short_msg_id_test() ->
                      payload => ok})).
 
 plumtree_ihave_round_trip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:plumtree_ihave(#{
             realm  => crypto:strong_rand_bytes(32),
             msg_id => crypto:strong_rand_bytes(16),
@@ -894,7 +894,7 @@ plumtree_ihave_round_trip_test() ->
     ?assertEqual(plumtree_ihave, hecate_frame:frame_type(D)).
 
 plumtree_graft_round_trip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:plumtree_graft(#{
             realm  => crypto:strong_rand_bytes(32),
             msg_id => crypto:strong_rand_bytes(16),
@@ -909,7 +909,7 @@ plumtree_prune_carries_realm_only_test() ->
     ?assertEqual(R, maps:get(realm, F)).
 
 plumtree_gossip_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:plumtree_gossip(#{
             realm   => crypto:strong_rand_bytes(32),
             msg_id  => crypto:strong_rand_bytes(16),
@@ -918,7 +918,7 @@ plumtree_gossip_wire_roundtrip_test() ->
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 %%------------------------------------------------------------------
 %% PubSub frames — Part 6 §6
@@ -997,34 +997,34 @@ event_rejects_unknown_delivery_channel_test() ->
                      delivered_via => carrier_pigeon})).
 
 publish_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:publish(#{
             topic           => <<"t">>,
             realm           => crypto:strong_rand_bytes(32),
-            publisher       => hecate_identity:public(Kp),
+            publisher       => macula_identity:public(Kp),
             seq             => 3,
             payload         => <<"hi">>,
             published_at_ms => 1_000}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 subscribe_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:subscribe(#{
             topic      => <<"t">>,
             realm      => crypto:strong_rand_bytes(32),
-            subscriber => hecate_identity:public(Kp)}), Kp),
+            subscriber => macula_identity:public(Kp)}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D).
 
 event_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:event(#{
             topic         => <<"t">>,
             realm         => crypto:strong_rand_bytes(32),
-            publisher     => hecate_identity:public(Kp),
+            publisher     => macula_identity:public(Kp),
             seq           => 0,
             payload       => ok,
             delivered_via => direct}), Kp),
@@ -1116,23 +1116,23 @@ cancel_rejects_short_mcid_in_list_test() ->
                  hecate_frame:cancel(#{blocks => [mcid(), <<"short">>]})).
 
 want_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:want(#{
             blocks => [#{mcid => mcid(), priority => 99}]}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(D, hecate_identity:public(Kp))).
+                 hecate_frame:verify(D, macula_identity:public(Kp))).
 
 block_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:block(#{
             mcid => mcid(), payload => <<"chunk-bytes">>}), Kp),
     {ok, D, <<>>} = hecate_frame:decode(hecate_frame:encode(F)),
     ?assertEqual(F, D).
 
 manifest_res_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:manifest_res(#{
             mcid     => mcid(),
             manifest => #{name => <<"x">>, size => 42}}), Kp),

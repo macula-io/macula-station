@@ -42,7 +42,7 @@
 -type handshake_fun() ::
         fun((SrcAddr :: inet:ip6_address(),
              Port    :: 1..65535,
-             ExpectedNodeId :: hecate_identity:pubkey()) ->
+             ExpectedNodeId :: macula_identity:pubkey()) ->
               {ok, hecate_record:record()} | {error, term()}).
 
 -type probe_opts() :: #{

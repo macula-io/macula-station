@@ -20,27 +20,27 @@
 
 -type opts() :: #{
     role            := client | server,
-    identity        := hecate_identity:key_pair(),
-    realms          := [hecate_identity:pubkey()],
+    identity        := macula_identity:key_pair(),
+    realms          := [macula_identity:pubkey()],
     capabilities    := non_neg_integer(),
     controlling_pid := pid(),
-    target          => macula_transport:connect_opts(),
-    quic_conn       => macula_transport:connection()
+    target          => hecate_transport:connect_opts(),
+    quic_conn       => hecate_transport:connection()
 }.
 
 -record(data, {
     role            :: client | server,
-    identity        :: hecate_identity:key_pair(),
-    node_id         :: hecate_identity:pubkey(),
-    realms          :: [hecate_identity:pubkey()],
+    identity        :: macula_identity:key_pair(),
+    node_id         :: macula_identity:pubkey(),
+    realms          :: [macula_identity:pubkey()],
     capabilities    :: non_neg_integer(),
     controlling_pid :: pid(),
-    target          :: undefined | macula_transport:connect_opts(),
-    quic_conn       :: undefined | macula_transport:connection(),
-    quic_stream     :: undefined | macula_transport:stream(),
-    peer_node_id    :: undefined | hecate_identity:pubkey(),
-    peer_station_id :: undefined | hecate_identity:pubkey(),
-    peer_realms     :: [hecate_identity:pubkey()],
+    target          :: undefined | hecate_transport:connect_opts(),
+    quic_conn       :: undefined | hecate_transport:connection(),
+    quic_stream     :: undefined | hecate_transport:stream(),
+    peer_node_id    :: undefined | macula_identity:pubkey(),
+    peer_station_id :: undefined | macula_identity:pubkey(),
+    peer_realms     :: [macula_identity:pubkey()],
     buf             :: binary()
 }).
 
@@ -62,7 +62,7 @@ init(#{role := Role, identity := Identity, controlling_pid := Pid} = Opts)
     Data = #data{
         role            = Role,
         identity        = Identity,
-        node_id         = hecate_identity:public(Identity),
+        node_id         = macula_identity:public(Identity),
         realms          = maps:get(realms, Opts, []),
         capabilities    = maps:get(capabilities, Opts, 0),
         controlling_pid = Pid,
@@ -94,7 +94,7 @@ connecting(enter, _Old, Data) ->
     self() ! attempt_connect,
     {keep_state, Data};
 connecting(info, attempt_connect, #data{target = Target} = Data) ->
-    after_connect(macula_transport:connect(Target), Data);
+    after_connect(hecate_transport:connect(Target), Data);
 connecting(cast, {close, Reason}, Data) ->
     notify(disconnected, Reason, Data),
     {stop, normal, Data};
@@ -102,7 +102,7 @@ connecting(EventType, Event, Data) ->
     drop_unexpected(EventType, Event, connecting, Data).
 
 after_connect({ok, Conn}, Data) ->
-    ok = macula_transport:controlling_process_conn(Conn, self()),
+    ok = hecate_transport:controlling_process_conn(Conn, self()),
     {next_state, handshaking, Data#data{quic_conn = Conn}};
 after_connect(Other, Data) ->
     notify(disconnected, {connect_failed, Other}, Data),
@@ -127,12 +127,12 @@ awaiting_start(EventType, Event, Data) ->
 %%------------------------------------------------------------------
 
 handshaking(enter, _Old, #data{role = client, quic_conn = Conn} = Data) ->
-    on_handshake_enter_client(macula_transport:open_stream(Conn), Data);
+    on_handshake_enter_client(hecate_transport:open_stream(Conn), Data);
 handshaking(enter, _Old, #data{role = server, quic_conn = Conn} = Data) ->
-    ok = macula_transport:accept_stream(Conn),
+    ok = hecate_transport:accept_stream(Conn),
     {keep_state, Data};
 handshaking(info, {quic, new_stream, Stream, _Info}, Data) ->
-    ok = macula_transport:setopt_active(Stream, true),
+    ok = hecate_transport:setopt_active(Stream, true),
     {keep_state, Data#data{quic_stream = Stream}};
 handshaking(info, {quic, Bin, Stream, _Flags},
             #data{quic_stream = Stream, buf = Buf} = Data) when is_binary(Bin) ->
@@ -147,7 +147,7 @@ handshaking(EventType, Event, Data) ->
     drop_unexpected(EventType, Event, handshaking, Data).
 
 on_handshake_enter_client({ok, Stream}, Data) ->
-    ok = macula_transport:setopt_active(Stream, true),
+    ok = hecate_transport:setopt_active(Stream, true),
     ok = send_connect(Stream, Data),
     {keep_state, Data#data{quic_stream = Stream}};
 on_handshake_enter_client(Err, Data) ->
@@ -265,10 +265,10 @@ send_connect(Stream, Data) ->
         station_id       => Data#data.node_id,
         realms           => Data#data.realms,
         capabilities     => Data#data.capabilities,
-        puzzle_evidence  => hecate_identity:puzzle_evidence(Data#data.node_id)
+        puzzle_evidence  => macula_identity:puzzle_evidence(Data#data.node_id)
     }),
     Signed = hecate_frame:sign(Frame, Data#data.identity),
-    macula_transport:send(Stream, hecate_frame:encode(Signed)).
+    hecate_transport:send(Stream, hecate_frame:encode(Signed)).
 
 send_hello(Stream, Data) ->
     Frame = hecate_frame:hello(#{
@@ -280,20 +280,20 @@ send_hello(Stream, Data) ->
         negotiated_capabilities => Data#data.capabilities
     }),
     Signed = hecate_frame:sign(Frame, Data#data.identity),
-    macula_transport:send(Stream, hecate_frame:encode(Signed)).
+    hecate_transport:send(Stream, hecate_frame:encode(Signed)).
 
 send_goodbye(undefined, _Reason, _Data) ->
     ok;
 send_goodbye(Stream, Reason, Data) ->
     Frame = hecate_frame:goodbye(Reason, undefined),
     Signed = hecate_frame:sign(Frame, Data#data.identity),
-    macula_transport:send(Stream, hecate_frame:encode(Signed)).
+    hecate_transport:send(Stream, hecate_frame:encode(Signed)).
 
 send_application_frame(_Frame, #data{quic_stream = undefined}) ->
     ok;
 send_application_frame(Frame, #data{quic_stream = Stream, identity = Id}) ->
     Signed = ensure_signed(Frame, Id),
-    macula_transport:send(Stream, hecate_frame:encode(Signed)).
+    hecate_transport:send(Stream, hecate_frame:encode(Signed)).
 
 ensure_signed(#{signature := _} = Frame, _Id) -> Frame;
 ensure_signed(Frame, Id) -> hecate_frame:sign(Frame, Id).
@@ -301,7 +301,7 @@ ensure_signed(Frame, Id) -> hecate_frame:sign(Frame, Id).
 close_quic(#data{quic_conn = undefined}) ->
     ok;
 close_quic(#data{quic_conn = Conn}) ->
-    catch macula_transport:close_connection(Conn),
+    catch hecate_transport:close_connection(Conn),
     ok.
 
 %%------------------------------------------------------------------

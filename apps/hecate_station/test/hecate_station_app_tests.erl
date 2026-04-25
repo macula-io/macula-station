@@ -116,8 +116,8 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                  {ok, Swim} = hecate_station:swim(),
                  {_Bind, Port} = hecate_station:listen_addr(),
                  %% External peer with its own identity dials our listener.
-                 ExtKp = hecate_identity:generate(),
-                 ExtId = hecate_identity:public(ExtKp),
+                 ExtKp = macula_identity:generate(),
+                 ExtId = macula_identity:public(ExtKp),
                  {ok, _ClientPid} = hecate_peering:connect(#{
                      role            => client,
                      identity        => ExtKp,

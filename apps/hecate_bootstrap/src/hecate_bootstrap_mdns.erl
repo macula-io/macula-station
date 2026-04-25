@@ -41,7 +41,7 @@
 ]).
 
 -type node_info() :: #{
-    node_id := hecate_identity:pubkey(),
+    node_id := macula_identity:pubkey(),
     port    := 1..65535,
     tier    := 0..4
 }.
@@ -53,7 +53,7 @@
 -type query_id() :: 0..65535.
 
 -type candidate() :: #{
-    node_id := hecate_identity:pubkey(),
+    node_id := macula_identity:pubkey(),
     port    := 1..65535,
     tier    := 0..4
 }.

@@ -193,5 +193,5 @@ classify(_Acks, _Quorum, Outcome) ->
 %% Utils
 %%=====================================================================
 
--spec id_of(hecate_frame:station_ref()) -> hecate_identity:pubkey().
+-spec id_of(hecate_frame:station_ref()) -> macula_identity:pubkey().
 id_of(#{node_id := Id}) -> Id.

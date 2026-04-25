@@ -1,6 +1,6 @@
 %% @doc QUIC listener owner.
 %%
-%% Owns one `macula_transport:listener()' reference and drives an
+%% Owns one `hecate_transport:listener()' reference and drives an
 %% async accept loop. Each `{quic, new_conn, ConnRef, _Info}' message
 %% spawns a `hecate_peering' handshake worker (under the peering
 %% library's own `simple_one_for_one' supervisor) whose
@@ -30,8 +30,8 @@
     port         := inet:port_number(),
     certfile     := file:name_all(),
     keyfile      := file:name_all(),
-    identity     := hecate_identity:key_pair(),
-    realms       := [hecate_identity:pubkey()],
+    identity     := macula_identity:key_pair(),
+    realms       := [macula_identity:pubkey()],
     capabilities := non_neg_integer(),
     observer     := pid()
 }.
@@ -39,7 +39,7 @@
 -type listen_addr() :: {inet:ip_address() | string(), inet:port_number()}.
 
 -record(state, {
-    listener    :: macula_transport:listener(),
+    listener    :: hecate_transport:listener(),
     listen_addr :: listen_addr(),
     opts        :: opts()
 }).
@@ -66,10 +66,10 @@ listen_addr(Pid) ->
 
 init(Opts) ->
     process_flag(trap_exit, true),
-    on_listen(macula_transport:listen(listen_opts(Opts)), Opts).
+    on_listen(hecate_transport:listen(listen_opts(Opts)), Opts).
 
 on_listen({ok, Listener}, Opts) ->
-    ok = macula_transport:accept(Listener),
+    ok = hecate_transport:accept(Listener),
     {ok, #state{listener    = Listener,
                 listen_addr = derive_addr(Opts),
                 opts        = Opts}};
@@ -90,7 +90,7 @@ handle_info(_Msg, S) ->
     {noreply, S}.
 
 terminate(_Reason, #state{listener = L}) ->
-    _ = catch macula_transport:close_listener(L),
+    _ = catch hecate_transport:close_listener(L),
     ok.
 
 code_change(_OldVsn, S, _Extra) -> {ok, S}.
@@ -109,7 +109,7 @@ accept_conn(Conn, #state{opts = Opts, listener = L} = S) ->
     %% Re-arm the listener for the next inbound connection. Ignoring
     %% the result is safe: on a broken listener we would receive no
     %% further `new_conn' messages; supervisor restart re-binds.
-    _ = macula_transport:accept(L),
+    _ = hecate_transport:accept(L),
     S.
 
 peering_opts(#{identity := Id, realms := R, capabilities := C,

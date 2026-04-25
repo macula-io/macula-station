@@ -47,7 +47,7 @@
     dht         := hecate_dht:dht(),
     interval_ms => pos_integer(),
     k           => pos_integer(),
-    self_id     => hecate_identity:pubkey()
+    self_id     => macula_identity:pubkey()
 }.
 
 -type bucket_report() :: #{
@@ -71,7 +71,7 @@
 }.
 
 -type report() :: #{
-    self_id       := hecate_identity:pubkey(),
+    self_id       := macula_identity:pubkey(),
     rt_size       := non_neg_integer(),
     bucket_count  := non_neg_integer(),
     sibling_count := non_neg_integer(),
@@ -87,7 +87,7 @@
 
 -record(state, {
     dht         :: hecate_dht:dht(),
-    self_id     :: hecate_identity:pubkey(),
+    self_id     :: macula_identity:pubkey(),
     interval_ms :: pos_integer(),
     k           :: pos_integer(),
     ticks       :: non_neg_integer(),

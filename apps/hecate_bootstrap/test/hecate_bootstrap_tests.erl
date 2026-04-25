@@ -132,9 +132,9 @@ term_to_expr(T) ->
 %%------------------------------------------------------------------
 
 url() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Record = hecate_record:sign(
-        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+        hecate_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
 

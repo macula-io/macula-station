@@ -29,8 +29,8 @@ tier_a_test_() ->
 setup() ->
     application:ensure_all_started(crypto),
     hecate_bootstrap_tier_a_fake:init(),
-    Kp     = hecate_identity:generate(),
-    Fk     = hecate_identity:public(Kp),
+    Kp     = macula_identity:generate(),
+    Fk     = macula_identity:public(Kp),
     application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     Seeds  = sample_seeds(3),
     Record = hecate_record:sign(
@@ -91,8 +91,8 @@ untrusted_signer_rejected(#{fk := Fk}) ->
 
 wrong_storage_key_rejected(#{kp := Kp, fk := Fk}) ->
     fun() ->
-        OtherKp     = hecate_identity:generate(),
-        OtherFk     = hecate_identity:public(OtherKp),
+        OtherKp     = macula_identity:generate(),
+        OtherFk     = macula_identity:public(OtherKp),
         application:set_env(hecate_record, foundation_pubkeys,
                             [Fk, OtherFk]),
         OtherRecord = hecate_record:sign(
@@ -193,7 +193,7 @@ sample_seeds(N) ->
 %% wire format and target pubkey, but signature won't validate
 %% against the trusted foundation list.
 impostor_bytes(Fk) ->
-    ImpostorKp = hecate_identity:generate(),
+    ImpostorKp = macula_identity:generate(),
     Record = hecate_record:sign(
                hecate_record:foundation_seed_list(Fk, sample_seeds(2)),
                ImpostorKp),

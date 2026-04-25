@@ -169,7 +169,7 @@ halt_sup(SupPid, Reason) ->
 %%==================================================================
 
 dht_child(#station_cfg{identity = Kp}) ->
-    Self = hecate_identity:public(Kp),
+    Self = macula_identity:public(Kp),
     #{
         id       => hecate_dht,
         start    => {hecate_station_sup, start_dht, [#{self_id => Self}]},
@@ -181,7 +181,7 @@ dht_child(#station_cfg{identity = Kp}) ->
 
 swim_child(#station_cfg{identity = Kp}) ->
     SwimOpts = #{
-        self_node_id    => hecate_identity:public(Kp),
+        self_node_id    => macula_identity:public(Kp),
         identity        => Kp,
         %% SWIM frames arrive via the peer observer; membership state
         %% notifications are not routed anywhere yet (Session 8.6

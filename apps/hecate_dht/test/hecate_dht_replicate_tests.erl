@@ -24,7 +24,7 @@ tick_on_empty_store_is_a_noop_test() ->
 tick_replicates_record_to_known_peer_test() ->
     Net = start_net([a, b]),
     #{a := {A, _}, b := {B, KpB}} = Net,
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
 
     %% A holds a record and knows B.
     Record = signed_record(),
@@ -51,8 +51,8 @@ tick_replicates_record_to_known_peer_test() ->
 tick_replicates_all_records_to_all_peers_test() ->
     Net = start_net([a, b, c]),
     #{a := {A, _}, b := {_, KpB}, c := {_, KpC}} = Net,
-    BId = hecate_identity:public(KpB),
-    CId = hecate_identity:public(KpC),
+    BId = macula_identity:public(KpB),
+    CId = macula_identity:public(KpC),
     Rec1 = signed_record(),
     Rec2 = signed_record(),
     Rec3 = signed_record(),
@@ -76,7 +76,7 @@ tick_replicates_all_records_to_all_peers_test() ->
 cumulative_stats_accumulate_across_ticks_test() ->
     Net = start_net([a, b]),
     #{a := {A, _}, b := {_, KpB}} = Net,
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
     ok = hecate_dht:put_record(A, signed_record()),
     admitted = hecate_dht:observe(A, peer_spec(BId)),
 
@@ -116,7 +116,7 @@ tick_with_record_but_no_peers_sends_nothing_test() ->
 timer_fires_on_interval_test() ->
     Net = start_net([a, b]),
     #{a := {A, _}, b := {_, KpB}} = Net,
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
     ok = hecate_dht:put_record(A, signed_record()),
     admitted = hecate_dht:observe(A, peer_spec(BId)),
 
@@ -152,15 +152,15 @@ start_net(Names) ->
     Router = spawn_router(),
     Entries = [{N, make_server(Router)} || N <- Names],
     Net = maps:from_list([{N, {P, Kp}} || {N, {P, Kp}} <- Entries]),
-    Table = maps:from_list([{hecate_identity:public(Kp), P}
+    Table = maps:from_list([{macula_identity:public(Kp), P}
                             || {_, {P, Kp}} <- Entries]),
     Router ! {table, Table},
     put(replicate_router, Router),
     Net.
 
 make_server(Router) ->
-    Kp = hecate_identity:generate(),
-    SelfId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    SelfId = macula_identity:public(Kp),
     Send = fun(DstId, Frame) ->
         Router ! {route, SelfId, DstId, Frame}, ok
     end,
@@ -199,7 +199,7 @@ peer_spec(NodeId) ->
     #{node_id => NodeId, asn => 64512, country => <<"BE">>, tier => t1}.
 
 signed_record() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     hecate_record:sign(
-        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+        hecate_record:node_record(macula_identity:public(Kp), [], 0),
         Kp).

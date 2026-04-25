@@ -34,7 +34,7 @@ rejects_unsigned_endorsement_test() ->
 
 rejects_wrong_signer_test() ->
     {_AdminKp, RealmId} = admin(),
-    Impostor = hecate_identity:generate(),
+    Impostor = macula_identity:generate(),
     Member = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_member_endorsement(
           RealmId,
@@ -104,8 +104,8 @@ rejects_endorsement_expired_test() ->
 
 build_join_frame_is_signed_hyparview_join_test() ->
     {AdminKp, RealmId} = admin(),
-    MemberKp = hecate_identity:generate(),
-    Member   = hecate_identity:public(MemberKp),
+    MemberKp = macula_identity:generate(),
+    Member   = macula_identity:public(MemberKp),
     Endorsement = signed_endorsement(AdminKp, RealmId, Member, [<<"peer">>]),
     F = hecate_realm_join:build_join(RealmId, Member, Endorsement, MemberKp),
     ?assertEqual(hyparview_join, hecate_frame:frame_type(F)),
@@ -119,8 +119,8 @@ build_join_frame_is_signed_hyparview_join_test() ->
 %%=====================================================================
 
 admin() ->
-    Kp = hecate_identity:generate(),
-    {Kp, hecate_identity:public(Kp)}.
+    Kp = macula_identity:generate(),
+    {Kp, macula_identity:public(Kp)}.
 
 signed_endorsement(AdminKp, RealmId, Member, Roles) ->
     R = hecate_record:realm_member_endorsement(

@@ -25,8 +25,8 @@ tier_c_test_() ->
 setup() ->
     application:ensure_all_started(crypto),
     hecate_bootstrap_dht_fake:init(),
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     #{kp => Kp, fk => Fk}.
 
@@ -67,7 +67,7 @@ wrong_pubkey_in_dht_item(#{kp := Kp, fk := Fk}) ->
     fun() ->
         %% DHT serves an item but the embedded pubkey is NOT what we
         %% asked about. Impersonation must be refused.
-        OtherKp = hecate_identity:generate(),
+        OtherKp = macula_identity:generate(),
         Record = hecate_record:sign(
                    hecate_record:foundation_seed_list(Fk, sample_seeds(2)),
                    Kp),
@@ -120,8 +120,8 @@ record_not_signed_by_foundation(#{fk := Fk}) ->
     fun() ->
         %% Bep44 verifies fine; the inner hecate_record is signed by
         %% someone else. hecate_foundation:verify_record must catch it.
-        ImpKp  = hecate_identity:generate(),
-        ImpPub = hecate_identity:public(ImpKp),
+        ImpKp  = macula_identity:generate(),
+        ImpPub = macula_identity:public(ImpKp),
         Record = hecate_record:sign(
                    hecate_record:foundation_seed_list(
                      ImpPub, sample_seeds(2)), ImpKp),
@@ -139,8 +139,8 @@ first_successful_pubkey_wins(#{kp := Kp, fk := Fk}) ->
     fun() ->
         %% Two foundation pubkeys; only one has a record in DHT.
         %% Tier C should still succeed via the one that works.
-        OtherKp = hecate_identity:generate(),
-        OtherFk = hecate_identity:public(OtherKp),
+        OtherKp = macula_identity:generate(),
+        OtherFk = macula_identity:public(OtherKp),
         application:set_env(hecate_record, foundation_pubkeys,
                             [OtherFk, Fk]),
         publish_seed_list(Kp, Fk, 3),

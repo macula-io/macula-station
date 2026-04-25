@@ -8,8 +8,8 @@
 %%------------------------------------------------------------------
 
 build_node_record_envelope_test() ->
-    Kp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    NodeId = macula_identity:public(Kp),
     Realm  = crypto:strong_rand_bytes(32),
     R = hecate_record:node_record(NodeId, [Realm], 1),
     ?assertEqual(16#01, hecate_record:type(R)),
@@ -18,32 +18,32 @@ build_node_record_envelope_test() ->
     ?assert(hecate_record:expires_at(R) > hecate_record:created_at(R)).
 
 node_record_default_station_id_is_node_id_test() ->
-    Kp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    NodeId = macula_identity:public(Kp),
     R = hecate_record:node_record(NodeId, [], 0),
     P = hecate_record:payload(R),
     ?assertEqual(NodeId, maps:get({text, <<"station_id">>}, P)).
 
 node_record_with_custom_station_id_test() ->
-    Kp = hecate_identity:generate(),
-    NodeId    = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    NodeId    = macula_identity:public(Kp),
     StationId = crypto:strong_rand_bytes(32),
     R = hecate_record:node_record(NodeId, [], 0, #{station_id => StationId}),
     P = hecate_record:payload(R),
     ?assertEqual(StationId, maps:get({text, <<"station_id">>}, P)).
 
 node_record_with_optional_text_fields_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:node_record(
-        hecate_identity:public(Kp), [], 0,
+        macula_identity:public(Kp), [], 0,
         #{caps_hint => <<"hint">>, display_name => <<"Alice">>}),
     P = hecate_record:payload(R),
     ?assertEqual({text, <<"hint">>}, maps:get({text, <<"caps_hint">>}, P)),
     ?assertEqual({text, <<"Alice">>}, maps:get({text, <<"display_name">>}, P)).
 
 node_record_omits_unset_optional_fields_test() ->
-    Kp = hecate_identity:generate(),
-    R = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     P = hecate_record:payload(R),
     ?assertNot(maps:is_key({text, <<"caps_hint">>}, P)),
     ?assertNot(maps:is_key({text, <<"display_name">>}, P)).
@@ -53,43 +53,43 @@ node_record_omits_unset_optional_fields_test() ->
 %%------------------------------------------------------------------
 
 sign_attaches_signature_test() ->
-    Kp = hecate_identity:generate(),
-    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R  = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     Signed = hecate_record:sign(R, Kp),
     ?assertEqual(64, byte_size(hecate_record:signature(Signed))).
 
 verify_signed_record_test() ->
-    Kp = hecate_identity:generate(),
-    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R  = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     Signed = hecate_record:sign(R, Kp),
     ?assertMatch({ok, _}, hecate_record:verify(Signed)).
 
 verify_rejects_tampered_payload_test() ->
-    Kp = hecate_identity:generate(),
-    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R  = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     Signed = hecate_record:sign(R, Kp),
     P = hecate_record:payload(Signed),
     Tampered = Signed#{payload => P#{ {text, <<"capabilities">>} => 999 }},
     ?assertEqual({error, signature_invalid}, hecate_record:verify(Tampered)).
 
 verify_rejects_wrong_signer_test() ->
-    Kp1 = hecate_identity:generate(),
-    Kp2 = hecate_identity:generate(),
+    Kp1 = macula_identity:generate(),
+    Kp2 = macula_identity:generate(),
     %% Build record with Kp1's pubkey as `key` but sign with Kp2.
-    R  = hecate_record:node_record(hecate_identity:public(Kp1), [], 0),
+    R  = hecate_record:node_record(macula_identity:public(Kp1), [], 0),
     Signed = hecate_record:sign(R, Kp2),
     ?assertEqual({error, signature_invalid}, hecate_record:verify(Signed)).
 
 verify_rejects_expired_test() ->
-    Kp = hecate_identity:generate(),
-    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R  = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     Past = R#{expires_at => erlang:system_time(millisecond) - 1},
     Signed = hecate_record:sign(Past, Kp),
     ?assertEqual({error, expired}, hecate_record:verify(Signed)).
 
 verify_rejects_record_without_signature_test() ->
-    Kp = hecate_identity:generate(),
-    R  = hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+    Kp = macula_identity:generate(),
+    R  = hecate_record:node_record(macula_identity:public(Kp), [], 0),
     ?assertEqual({error, bad_record}, hecate_record:verify(R)).
 
 %%------------------------------------------------------------------
@@ -97,9 +97,9 @@ verify_rejects_record_without_signature_test() ->
 %%------------------------------------------------------------------
 
 encode_decode_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:node_record(
-        hecate_identity:public(Kp),
+        macula_identity:public(Kp),
         [crypto:strong_rand_bytes(32), crypto:strong_rand_bytes(32)],
         16#DEADBEEF,
         #{caps_hint => <<"some hint">>, display_name => <<"a node">>}
@@ -128,7 +128,7 @@ decode_returns_missing_signature_when_unsigned_test() ->
         {text, <<"x">>} => erlang:system_time(millisecond) + 60_000,
         {text, <<"p">>} => #{}
     },
-    Wire = hecate_record_cbor:encode(Map),
+    Wire = macula_record_cbor:encode(Map),
     ?assertEqual({error, missing_signature}, hecate_record:decode(Wire)).
 
 decode_rejects_short_signature_test() ->
@@ -141,7 +141,7 @@ decode_rejects_short_signature_test() ->
         {text, <<"p">>} => #{},
         {text, <<"s">>} => crypto:strong_rand_bytes(32)   %% wrong size
     },
-    Wire = hecate_record_cbor:encode(Map),
+    Wire = macula_record_cbor:encode(Map),
     ?assertEqual({error, bad_record}, hecate_record:decode(Wire)).
 
 %%------------------------------------------------------------------
@@ -149,29 +149,29 @@ decode_rejects_short_signature_test() ->
 %%------------------------------------------------------------------
 
 build_tombstone_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, retired),
     ?assertEqual(16#0C, hecate_record:type(Tomb)),
     ?assertEqual(Pub, hecate_record:key(Tomb)).
 
 sign_verify_tombstone_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, retired),
     Signed = hecate_record:sign(Tomb, Kp),
     ?assertMatch({ok, _}, hecate_record:verify(Signed)).
 
 tombstone_default_detail_is_null_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, expired),
     P = hecate_record:payload(Tomb),
     ?assertEqual(null, maps:get({text, <<"detail">>}, P)).
 
 tombstone_with_detail_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, revoked,
                                    #{detail => <<"key compromise">>}),
     P = hecate_record:payload(Tomb),
@@ -179,16 +179,16 @@ tombstone_with_detail_test() ->
                  maps:get({text, <<"detail">>}, P)).
 
 tombstone_reason_serialised_as_text_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, moved),
     P = hecate_record:payload(Tomb),
     ?assertEqual({text, <<"moved">>},
                  maps:get({text, <<"reason">>}, P)).
 
 tombstone_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, revoked,
                                    #{detail => <<"reason here">>}),
     Signed = hecate_record:sign(Tomb, Kp),
@@ -203,8 +203,8 @@ tombstone_wire_roundtrip_test() ->
 %%------------------------------------------------------------------
 
 realm_directory_shape_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     AdminKey = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_directory(RealmId, <<"my realm">>, AdminKey),
     ?assertEqual(16#03, hecate_record:type(R)),
@@ -217,8 +217,8 @@ realm_directory_shape_test() ->
     ?assertNot(maps:is_key({text, <<"policy_url">>}, P)).
 
 realm_directory_with_policy_url_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     AdminKey = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_directory(RealmId, <<"r">>, AdminKey,
                                       #{policy_url => <<"https://ex.io">>}),
@@ -226,8 +226,8 @@ realm_directory_with_policy_url_test() ->
                  maps:get({text, <<"policy_url">>}, hecate_record:payload(R))).
 
 realm_directory_sign_verify_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     R = hecate_record:realm_directory(RealmId, <<"r">>,
                                       crypto:strong_rand_bytes(32)),
     Signed = hecate_record:sign(R, Kp),
@@ -244,8 +244,8 @@ realm_directory_rejects_non_32_byte_realm_id_test() ->
 %%------------------------------------------------------------------
 
 realm_stations_shape_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     S1 = crypto:strong_rand_bytes(32),
     S2 = crypto:strong_rand_bytes(32),
     Entries = [
@@ -262,8 +262,8 @@ realm_stations_shape_test() ->
                  maps:get({text, <<"roles">>}, E2)).
 
 realm_stations_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     R = hecate_record:realm_stations(
           RealmId,
           [#{station_id => crypto:strong_rand_bytes(32),
@@ -274,8 +274,8 @@ realm_stations_wire_roundtrip_test() ->
     {ok, _} = hecate_record:verify(Decoded).
 
 realm_stations_accepts_empty_list_test() ->
-    Kp = hecate_identity:generate(),
-    R = hecate_record:realm_stations(hecate_identity:public(Kp), []),
+    Kp = macula_identity:generate(),
+    R = hecate_record:realm_stations(macula_identity:public(Kp), []),
     ?assertEqual([], maps:get({text, <<"stations">>},
                               hecate_record:payload(R))).
 
@@ -284,8 +284,8 @@ realm_stations_accepts_empty_list_test() ->
 %%------------------------------------------------------------------
 
 realm_member_endorsement_shape_test() ->
-    AdminKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    RealmId = macula_identity:public(AdminKp),
     Member  = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_member_endorsement(
           RealmId,
@@ -305,8 +305,8 @@ realm_member_endorsement_shape_test() ->
     ?assert(ValidUntil > ValidFrom).
 
 realm_member_endorsement_custom_validity_window_test() ->
-    AdminKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    RealmId = macula_identity:public(AdminKp),
     Member  = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_member_endorsement(
           RealmId,
@@ -317,8 +317,8 @@ realm_member_endorsement_custom_validity_window_test() ->
     ?assertEqual(5000, maps:get({text, <<"valid_until">>}, P)).
 
 realm_member_endorsement_sign_verify_roundtrip_test() ->
-    AdminKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    RealmId = macula_identity:public(AdminKp),
     Member  = crypto:strong_rand_bytes(32),
     R = hecate_record:realm_member_endorsement(
           RealmId,
@@ -330,8 +330,8 @@ realm_member_endorsement_sign_verify_roundtrip_test() ->
     {ok, _} = hecate_record:verify(Decoded).
 
 realm_member_endorsement_storage_key_binds_realm_and_member_test() ->
-    AdminKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    RealmId = macula_identity:public(AdminKp),
     M1 = crypto:strong_rand_bytes(32),
     M2 = crypto:strong_rand_bytes(32),
     R1 = hecate_record:realm_member_endorsement(
@@ -364,8 +364,8 @@ realm_member_endorsement_rejects_non_32_byte_member_test() ->
 %%------------------------------------------------------------------
 
 procedure_advertisement_shape_test() ->
-    Kp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    NodeId = macula_identity:public(Kp),
     Station = crypto:strong_rand_bytes(32),
     R = hecate_record:procedure_advertisement(NodeId,
                                               <<"mcp://weather/forecast">>,
@@ -379,10 +379,10 @@ procedure_advertisement_shape_test() ->
     ?assertEqual(Station, maps:get({text, <<"serving_station">>}, P)).
 
 procedure_advertisement_with_capacity_hints_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Station = crypto:strong_rand_bytes(32),
     R = hecate_record:procedure_advertisement(
-          hecate_identity:public(Kp),
+          macula_identity:public(Kp),
           <<"mcp://x/y">>,
           Station,
           #{rate_limit_qps => 100, max_concurrency => 8}),
@@ -391,9 +391,9 @@ procedure_advertisement_with_capacity_hints_test() ->
     ?assertEqual(8,   maps:get({text, <<"max_concurrency">>}, P)).
 
 procedure_advertisement_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:procedure_advertisement(
-          hecate_identity:public(Kp),
+          macula_identity:public(Kp),
           <<"mcp://weather/forecast">>,
           crypto:strong_rand_bytes(32)),
     Signed = hecate_record:sign(R, Kp),
@@ -405,30 +405,30 @@ procedure_advertisement_wire_roundtrip_test() ->
 %%------------------------------------------------------------------
 
 storage_key_node_record_is_envelope_key_test() ->
-    Kp = hecate_identity:generate(),
-    NodeId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    NodeId = macula_identity:public(Kp),
     R = hecate_record:node_record(NodeId, [], 0),
     ?assertEqual(NodeId, hecate_record:storage_key(R)).
 
 storage_key_realm_directory_is_realm_id_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     R = hecate_record:realm_directory(RealmId, <<"r">>,
                                       crypto:strong_rand_bytes(32)),
     ?assertEqual(RealmId, hecate_record:storage_key(R)).
 
 storage_key_realm_stations_is_hashed_test() ->
-    Kp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    RealmId = macula_identity:public(Kp),
     Expected = crypto:hash(sha256, <<"station_set", RealmId/binary>>),
     R = hecate_record:realm_stations(RealmId, []),
     ?assertEqual(Expected, hecate_record:storage_key(R)),
     ?assertNotEqual(RealmId, hecate_record:storage_key(R)).
 
 storage_key_procedure_advertisement_is_uri_hash_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Uri = <<"mcp://weather/forecast">>,
-    R = hecate_record:procedure_advertisement(hecate_identity:public(Kp),
+    R = hecate_record:procedure_advertisement(macula_identity:public(Kp),
                                               Uri,
                                               crypto:strong_rand_bytes(32)),
     ?assertEqual(crypto:hash(sha256, Uri), hecate_record:storage_key(R)),
@@ -436,8 +436,8 @@ storage_key_procedure_advertisement_is_uri_hash_test() ->
     ?assertNotEqual(hecate_record:key(R), hecate_record:storage_key(R)).
 
 storage_key_tombstone_is_superseded_key_test() ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Tomb = hecate_record:tombstone(Pub, 16#01, revoked),
     ?assertEqual(Pub, hecate_record:storage_key(Tomb)).
 
@@ -446,9 +446,9 @@ storage_key_tombstone_is_superseded_key_test() ->
 %%------------------------------------------------------------------
 
 refresh_preserves_type_key_payload_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:sign(
-          hecate_record:node_record(hecate_identity:public(Kp), [], 7),
+          hecate_record:node_record(macula_identity:public(Kp), [], 7),
           Kp),
     timer:sleep(2),
     Fresh = hecate_record:refresh(R, Kp),
@@ -457,9 +457,9 @@ refresh_preserves_type_key_payload_test() ->
     ?assertEqual(hecate_record:payload(R), hecate_record:payload(Fresh)).
 
 refresh_bumps_version_and_timestamps_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:sign(
-          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          hecate_record:node_record(macula_identity:public(Kp), [], 0),
           Kp),
     timer:sleep(2),
     Fresh = hecate_record:refresh(R, Kp),
@@ -468,9 +468,9 @@ refresh_bumps_version_and_timestamps_test() ->
     ?assert(hecate_record:expires_at(Fresh) >= hecate_record:expires_at(R)).
 
 refresh_preserves_ttl_duration_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:sign(
-          hecate_record:node_record(hecate_identity:public(Kp), [], 0,
+          hecate_record:node_record(macula_identity:public(Kp), [], 0,
                                     #{ttl_ms => 60_000}),
           Kp),
     Fresh = hecate_record:refresh(R, Kp),
@@ -479,17 +479,17 @@ refresh_preserves_ttl_duration_test() ->
     ?assertEqual(Ttl, Ttl2).
 
 refresh_produces_verifiable_record_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:sign(
-          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          hecate_record:node_record(macula_identity:public(Kp), [], 0),
           Kp),
     Fresh = hecate_record:refresh(R, Kp),
     ?assertMatch({ok, _}, hecate_record:verify(Fresh)).
 
 refresh_round_trip_over_wire_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:sign(
-          hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+          hecate_record:node_record(macula_identity:public(Kp), [], 0),
           Kp),
     Fresh = hecate_record:refresh(R, Kp),
     {ok, Decoded} = hecate_record:decode(hecate_record:encode(Fresh)),
@@ -500,8 +500,8 @@ refresh_round_trip_over_wire_test() ->
 %%------------------------------------------------------------------
 
 foundation_seed_list_shape_test() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     Seed1 = #{node_id => crypto:strong_rand_bytes(32),
               addresses => [#{{text, <<"v6">>} => {text, <<"2a02::1">>},
                               {text, <<"port">>} => 7000}],
@@ -518,9 +518,9 @@ foundation_seed_list_shape_test() ->
     ?assertEqual(3, maps:get({text, <<"tier">>}, E2)).
 
 foundation_seed_list_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:foundation_seed_list(
-          hecate_identity:public(Kp),
+          macula_identity:public(Kp),
           [#{node_id => crypto:strong_rand_bytes(32),
              addresses => [], tier => 4}]),
     Signed = hecate_record:sign(R, Kp),
@@ -529,10 +529,10 @@ foundation_seed_list_wire_roundtrip_test() ->
     {ok, _} = hecate_record:verify(Decoded).
 
 foundation_seed_list_rejects_wrong_tier_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     ?assertError(function_clause,
                  hecate_record:foundation_seed_list(
-                   hecate_identity:public(Kp),
+                   macula_identity:public(Kp),
                    [#{node_id => crypto:strong_rand_bytes(32),
                       addresses => [], tier => 1}])).
 
@@ -541,9 +541,9 @@ foundation_seed_list_rejects_wrong_tier_test() ->
 %%------------------------------------------------------------------
 
 foundation_parameter_shape_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:foundation_parameter(
-          hecate_identity:public(Kp), <<"puzzle_difficulty">>, 8),
+          macula_identity:public(Kp), <<"puzzle_difficulty">>, 8),
     ?assertEqual(16#0E, hecate_record:type(R)),
     P = hecate_record:payload(R),
     ?assertEqual({text, <<"puzzle_difficulty">>},
@@ -552,18 +552,18 @@ foundation_parameter_shape_test() ->
     ?assertEqual(null, maps:get({text, <<"prior_version">>}, P)).
 
 foundation_parameter_with_prior_version_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Prior = hecate_record_uuid:v7(erlang:system_time(millisecond) - 1),
     R = hecate_record:foundation_parameter(
-          hecate_identity:public(Kp), <<"tRepublish_ms">>, 3_600_000,
+          macula_identity:public(Kp), <<"tRepublish_ms">>, 3_600_000,
           #{prior_version => Prior}),
     P = hecate_record:payload(R),
     ?assertEqual(Prior, maps:get({text, <<"prior_version">>}, P)).
 
 foundation_parameter_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:foundation_parameter(
-          hecate_identity:public(Kp), <<"tExpire_ms">>, 86_400_000),
+          macula_identity:public(Kp), <<"tExpire_ms">>, 86_400_000),
     Signed = hecate_record:sign(R, Kp),
     {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
     ?assertEqual(16#0E, hecate_record:type(Decoded)),
@@ -574,12 +574,12 @@ foundation_parameter_wire_roundtrip_test() ->
 %%------------------------------------------------------------------
 
 foundation_realm_trust_list_shape_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     T1 = crypto:strong_rand_bytes(32),
     T2 = crypto:strong_rand_bytes(32),
     Rv = crypto:strong_rand_bytes(32),
     R = hecate_record:foundation_realm_trust_list(
-          hecate_identity:public(Kp), [T1, T2],
+          macula_identity:public(Kp), [T1, T2],
           #{realms_revoked => [Rv]}),
     ?assertEqual(16#0F, hecate_record:type(R)),
     P = hecate_record:payload(R),
@@ -587,9 +587,9 @@ foundation_realm_trust_list_shape_test() ->
     ?assertEqual([Rv],     maps:get({text, <<"realms_revoked">>}, P)).
 
 foundation_realm_trust_list_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:foundation_realm_trust_list(
-          hecate_identity:public(Kp),
+          macula_identity:public(Kp),
           [crypto:strong_rand_bytes(32)]),
     Signed = hecate_record:sign(R, Kp),
     {ok, Decoded} = hecate_record:decode(hecate_record:encode(Signed)),
@@ -601,11 +601,11 @@ foundation_realm_trust_list_wire_roundtrip_test() ->
 %%------------------------------------------------------------------
 
 foundation_t3_attestation_shape_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Station = crypto:strong_rand_bytes(32),
     Audit = erlang:system_time(millisecond),
     R = hecate_record:foundation_t3_attestation(
-          hecate_identity:public(Kp), Station, Audit,
+          macula_identity:public(Kp), Station, Audit,
           #{notes => <<"audited Q2-2026">>}),
     ?assertEqual(16#10, hecate_record:type(R)),
     P = hecate_record:payload(R),
@@ -615,9 +615,9 @@ foundation_t3_attestation_shape_test() ->
                  maps:get({text, <<"notes">>}, P)).
 
 foundation_t3_attestation_wire_roundtrip_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     R = hecate_record:foundation_t3_attestation(
-          hecate_identity:public(Kp),
+          macula_identity:public(Kp),
           crypto:strong_rand_bytes(32),
           erlang:system_time(millisecond)),
     Signed = hecate_record:sign(R, Kp),
@@ -630,23 +630,23 @@ foundation_t3_attestation_wire_roundtrip_test() ->
 %%------------------------------------------------------------------
 
 storage_key_foundation_seed_list_is_hashed_test() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     R = hecate_record:foundation_seed_list(Fk, []),
     ?assertEqual(32, byte_size(hecate_record:storage_key(R))),
     ?assertNotEqual(Fk, hecate_record:storage_key(R)).
 
 storage_key_foundation_parameter_varies_by_name_test() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     R1 = hecate_record:foundation_parameter(Fk, <<"a">>, 1),
     R2 = hecate_record:foundation_parameter(Fk, <<"b">>, 1),
     ?assertNotEqual(hecate_record:storage_key(R1),
                     hecate_record:storage_key(R2)).
 
 storage_key_foundation_t3_attestation_varies_by_station_test() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     S1 = crypto:strong_rand_bytes(32),
     S2 = crypto:strong_rand_bytes(32),
     Now = erlang:system_time(millisecond),

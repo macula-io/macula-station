@@ -45,7 +45,7 @@
 %% @doc Build a signed PING frame and return the fresh nonce alongside
 %% it. The nonce is what the caller uses to correlate the incoming
 %% PONG.
--spec build_ping(hecate_identity:key_pair()) ->
+-spec build_ping(macula_identity:key_pair()) ->
         {hecate_frame:frame(), nonce()}.
 build_ping(Identity) ->
     Nonce = new_nonce(),
@@ -53,15 +53,15 @@ build_ping(Identity) ->
     {Frame, Nonce}.
 
 %% @doc Build a signed PONG echoing the nonce from an incoming PING.
--spec build_pong(nonce(), hecate_identity:key_pair()) -> hecate_frame:frame().
+-spec build_pong(nonce(), macula_identity:key_pair()) -> hecate_frame:frame().
 build_pong(Nonce, Identity) when is_binary(Nonce), byte_size(Nonce) =:= ?NONCE_BYTES ->
     hecate_frame:sign(hecate_frame:pong(#{nonce => Nonce}), Identity).
 
 %% @doc Build a signed FIND_NODE request.
 -spec build_find_node(Key :: hecate_dht_xor:id(),
-                      Origin :: hecate_identity:pubkey(),
+                      Origin :: macula_identity:pubkey(),
                       Depth :: non_neg_integer(),
-                      hecate_identity:key_pair()) -> hecate_frame:frame().
+                      macula_identity:key_pair()) -> hecate_frame:frame().
 build_find_node(<<_:256>> = Key, <<_:256>> = Origin, Depth, Identity)
   when is_integer(Depth), Depth >= 0 ->
     hecate_frame:sign(
@@ -72,7 +72,7 @@ build_find_node(<<_:256>> = Key, <<_:256>> = Origin, Depth, Identity)
 %% entries. Converts each entry to a `station_ref()' inline.
 -spec build_nodes_reply(Key :: hecate_dht_xor:id(),
                         [hecate_dht_entry:entry()],
-                        hecate_identity:key_pair()) -> hecate_frame:frame().
+                        macula_identity:key_pair()) -> hecate_frame:frame().
 build_nodes_reply(<<_:256>> = Key, Entries, Identity) ->
     Refs = [entry_to_station_ref(E) || E <- Entries],
     hecate_frame:sign(
@@ -81,8 +81,8 @@ build_nodes_reply(<<_:256>> = Key, Entries, Identity) ->
 
 %% @doc Build a signed FIND_VALUE request.
 -spec build_find_value(Key :: hecate_dht_xor:id(),
-                       Origin :: hecate_identity:pubkey(),
-                       hecate_identity:key_pair()) -> hecate_frame:frame().
+                       Origin :: macula_identity:pubkey(),
+                       macula_identity:key_pair()) -> hecate_frame:frame().
 build_find_value(<<_:256>> = Key, <<_:256>> = Origin, Identity) ->
     hecate_frame:sign(
       hecate_frame:find_value(#{key => Key, origin => Origin}),
@@ -91,7 +91,7 @@ build_find_value(<<_:256>> = Key, <<_:256>> = Origin, Identity) ->
 %% @doc Build a signed VALUE response carrying one or more records.
 -spec build_value_reply(Key :: hecate_dht_xor:id(),
                         [hecate_record:record()],
-                        hecate_identity:key_pair()) -> hecate_frame:frame().
+                        macula_identity:key_pair()) -> hecate_frame:frame().
 build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
     hecate_frame:sign(
       hecate_frame:value(#{key => Key, records => Records}),
@@ -99,14 +99,14 @@ build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
 
 %% @doc Build a signed STORE request carrying a record to persist.
 -spec build_store(hecate_record:record(),
-                  hecate_identity:key_pair()) -> hecate_frame:frame().
+                  macula_identity:key_pair()) -> hecate_frame:frame().
 build_store(Record, Identity) when is_map(Record) ->
     hecate_frame:sign(hecate_frame:store(#{record => Record}), Identity).
 
 %% @doc Build a signed STORE_ACK for a given storage key.
 -spec build_store_ack(hecate_dht_xor:id(), boolean(),
                       atom() | undefined,
-                      hecate_identity:key_pair()) -> hecate_frame:frame().
+                      macula_identity:key_pair()) -> hecate_frame:frame().
 build_store_ack(<<_:256>> = Key, Stored, Reason, Identity)
   when is_boolean(Stored) ->
     Spec = #{key => Key, stored => Stored, reason => Reason},
@@ -119,7 +119,7 @@ build_store_ack(<<_:256>> = Key, Stored, Reason, Identity)
 %% @doc Verify an incoming DHT frame against the claimed sender's
 %% NodeId. In V2 every NodeId is itself an Ed25519 pubkey, so the
 %% NodeId is the verification key.
--spec verify(hecate_frame:frame(), hecate_identity:pubkey()) ->
+-spec verify(hecate_frame:frame(), macula_identity:pubkey()) ->
         {ok, hecate_frame:frame()} | {error, term()}.
 verify(Frame, <<_:256>> = FromNodeId) ->
     hecate_frame:verify(Frame, FromNodeId).

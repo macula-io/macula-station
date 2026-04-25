@@ -6,7 +6,7 @@
 %% <ol>
 %%   <li>Decode the raw CBOR as a `hecate_record:record()'
 %%       — <em>safely</em>: external bytes may be arbitrary garbage
-%%       and `hecate_record_cbor:decode/1' crashes on malformed
+%%       and `macula_record_cbor:decode/1' crashes on malformed
 %%       input rather than returning `{error, _}'.</li>
 %%   <li>Validate the record against the firmware-embedded foundation
 %%       trust anchor (`hecate_foundation:verify_record/1').</li>

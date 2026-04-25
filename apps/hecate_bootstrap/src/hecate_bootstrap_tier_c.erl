@@ -46,7 +46,7 @@
 
 -type probe_opts() :: #{
     dht_transport := module(),
-    pubkeys       => [hecate_identity:pubkey()],
+    pubkeys       => [macula_identity:pubkey()],
     timeout_ms    => pos_integer()
 }.
 

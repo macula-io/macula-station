@@ -51,8 +51,8 @@
 -record(state, {
     dht    :: pid(),
     swim   :: pid(),
-    peers  :: #{pid() => hecate_identity:pubkey()},
-    conns  :: #{hecate_identity:pubkey() => pid()}
+    peers  :: #{pid() => macula_identity:pubkey()},
+    conns  :: #{macula_identity:pubkey() => pid()}
 }).
 
 %%==================================================================
@@ -66,10 +66,10 @@ start_link(Opts) ->
 -spec stop(pid()) -> ok.
 stop(Pid) -> gen_server:stop(Pid).
 
--spec peers(pid()) -> [{pid(), hecate_identity:pubkey()}].
+-spec peers(pid()) -> [{pid(), macula_identity:pubkey()}].
 peers(Pid) -> gen_server:call(Pid, peers).
 
--spec conn_for(pid(), hecate_identity:pubkey()) ->
+-spec conn_for(pid(), macula_identity:pubkey()) ->
     {ok, pid()} | error.
 conn_for(Pid, <<_:256>> = NodeId) ->
     gen_server:call(Pid, {conn_for, NodeId}).

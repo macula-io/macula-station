@@ -91,8 +91,8 @@ deliver_event_ignores_wrong_realm_test() ->
 
 build_event_signs_with_identity_test() ->
     R = realm(),
-    Kp = hecate_identity:generate(),
-    PubId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    PubId = macula_identity:public(Kp),
     State = hecate_pubsub:new(R),
     PubSpec = #{topic => <<"t">>,
                 realm => R,
@@ -149,18 +149,18 @@ realm() -> crypto:strong_rand_bytes(32).
 id(N) -> <<N:256>>.
 
 event_frame(Realm, Topic) ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     hecate_frame:sign(hecate_frame:event(#{
         topic         => Topic,
         realm         => Realm,
-        publisher     => hecate_identity:public(Kp),
+        publisher     => macula_identity:public(Kp),
         seq           => 0,
         payload       => <<"data">>,
         delivered_via => plumtree
     }), Kp).
 
 sign_subscribe(Realm, Topic, Sub) ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     hecate_frame:sign(hecate_frame:subscribe(#{
         topic      => Topic,
         realm      => Realm,
@@ -168,7 +168,7 @@ sign_subscribe(Realm, Topic, Sub) ->
     }), Kp).
 
 sign_unsubscribe(Realm, Topic, Sub) ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     hecate_frame:sign(hecate_frame:unsubscribe(#{
         topic      => Topic,
         realm      => Realm,

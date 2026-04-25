@@ -118,7 +118,7 @@ frame_from_unknown_conn_is_dropped_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(#{obs := Obs}) ->
         fun() ->
             Fake = spawn_dummy(),
-            Kp   = hecate_identity:generate(),
+            Kp   = macula_identity:generate(),
             Ping = hecate_frame:swim_ping(#{round => 1, incarnation => 0,
                                             piggyback => []}),
             Signed = hecate_frame:sign(Ping, Kp),
@@ -134,9 +134,9 @@ frame_from_unknown_conn_is_dropped_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    SelfKp  = hecate_identity:generate(),
-    PeerKp  = hecate_identity:generate(),
-    SelfId  = hecate_identity:public(SelfKp),
+    SelfKp  = macula_identity:generate(),
+    PeerKp  = macula_identity:generate(),
+    SelfId  = macula_identity:public(SelfKp),
     {ok, Dht}  = hecate_dht:start_link(#{self_id => SelfId}),
     {ok, Swim} = hecate_swim:start_link(#{
         self_node_id    => SelfId,
@@ -156,7 +156,7 @@ teardown(#{obs := Obs, swim := Swim, dht := Dht}) ->
 
 one_connected_peer(#{obs := Obs, dht := Dht, swim := Swim,
                      peer_kp := PeerKp}) ->
-    NodeId  = hecate_identity:public(PeerKp),
+    NodeId  = macula_identity:public(PeerKp),
     ConnPid = spawn_dummy(),
     Obs ! {hecate_peering, connected, ConnPid, NodeId},
     wait_for(fun() -> hecate_dht:size(Dht) =:= 1 end, 500),

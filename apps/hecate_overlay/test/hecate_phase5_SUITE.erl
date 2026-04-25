@@ -37,8 +37,8 @@ end_per_suite(_Cfg) -> ok.
 %%---------------------------------------------------------------------
 
 realm_join_admits_new_member(_Cfg) ->
-    AdminKp = hecate_identity:generate(),
-    Realm   = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    Realm   = macula_identity:public(AdminKp),
     Net = phase5_helper:start_fleet([seed, joiner], [Realm], #{}),
     try
         End = phase5_helper:endorse(Net, AdminKp, Realm, joiner),
@@ -51,9 +51,9 @@ realm_join_admits_new_member(_Cfg) ->
     end.
 
 realm_join_rejects_bogus_endorsement(_Cfg) ->
-    RealAdmin = hecate_identity:generate(),
-    Realm     = hecate_identity:public(RealAdmin),
-    Impostor  = hecate_identity:generate(),
+    RealAdmin = macula_identity:generate(),
+    Realm     = macula_identity:public(RealAdmin),
+    Impostor  = macula_identity:generate(),
     Net = phase5_helper:start_fleet([seed, joiner], [Realm], #{}),
     try
         %% Build endorsement but sign with the impostor — verify must fail.
@@ -83,8 +83,8 @@ realm_join_rejects_bogus_endorsement(_Cfg) ->
 %%---------------------------------------------------------------------
 
 plumtree_delivers_to_all_subscribers(_Cfg) ->
-    AdminKp = hecate_identity:generate(),
-    Realm   = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    Realm   = macula_identity:public(AdminKp),
     Net = phase5_helper:start_fleet([a, b, c, d, e], [Realm], #{}),
     try
         %% Chain topology: a — b — c — d — e. Every message must
@@ -115,8 +115,8 @@ plumtree_delivers_to_all_subscribers(_Cfg) ->
 %%---------------------------------------------------------------------
 
 cross_realm_isolation(_Cfg) ->
-    AdminR1 = hecate_identity:generate(), R1 = hecate_identity:public(AdminR1),
-    AdminR2 = hecate_identity:generate(), R2 = hecate_identity:public(AdminR2),
+    AdminR1 = macula_identity:generate(), R1 = macula_identity:public(AdminR1),
+    AdminR2 = macula_identity:generate(), R2 = macula_identity:public(AdminR2),
     %% Both realms share the same fleet identities; wiring is per-realm.
     Net = phase5_helper:start_fleet([a, b, c], [R1, R2], #{}),
     try

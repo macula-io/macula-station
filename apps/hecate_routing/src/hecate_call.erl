@@ -57,7 +57,7 @@
     | awaiting_ack | succeeded | failed.
 
 -type opts() :: #{
-    caller       := hecate_identity:pubkey(),
+    caller       := macula_identity:pubkey(),
     procedure    := binary(),
     realm        := <<_:256>>,
     payload      := term(),
@@ -78,15 +78,15 @@
 -type info() :: #{
     call_id       := <<_:128>>,
     state         := state_name(),
-    target        := hecate_identity:pubkey() | undefined,
-    path          := [hecate_identity:pubkey()] | undefined,
+    target        := macula_identity:pubkey() | undefined,
+    path          := [macula_identity:pubkey()] | undefined,
     outcome       := outcome() | undefined,
     elapsed_ms    := non_neg_integer()
 }.
 
 -record(data, {
     call_id           :: <<_:128>>,
-    caller            :: hecate_identity:pubkey(),
+    caller            :: macula_identity:pubkey(),
     procedure         :: binary(),
     realm             :: <<_:256>>,
     payload           :: term(),
@@ -97,8 +97,8 @@
     t_selected        :: pos_integer(),
     t_connecting      :: pos_integer(),
     t_awaiting        :: pos_integer(),
-    target            :: hecate_identity:pubkey() | undefined,
-    path              :: [hecate_identity:pubkey()] | undefined,
+    target            :: macula_identity:pubkey() | undefined,
+    path              :: [macula_identity:pubkey()] | undefined,
     outcome           :: outcome() | undefined,
     started_at_mono   :: integer()
 }).
@@ -123,13 +123,13 @@ await(Pid, TimeoutMs) ->
     gen_statem:call(Pid, await, TimeoutMs).
 
 %% @doc Driving event from the orchestrator: resolution complete.
--spec resolved(pid(), hecate_identity:pubkey(),
-               [hecate_identity:pubkey()]) -> ok.
+-spec resolved(pid(), macula_identity:pubkey(),
+               [macula_identity:pubkey()]) -> ok.
 resolved(Pid, Target, Path) when is_binary(Target), is_list(Path) ->
     gen_statem:cast(Pid, {resolved, Target, Path}).
 
 %% @doc Driving event: target picked from candidates.
--spec selected(pid(), hecate_identity:pubkey()) -> ok.
+-spec selected(pid(), macula_identity:pubkey()) -> ok.
 selected(Pid, Target) when is_binary(Target) ->
     gen_statem:cast(Pid, {selected, Target}).
 
@@ -146,7 +146,7 @@ ack(Pid, Payload) ->
 %% @doc Driving event: ERROR frame received with a BOLT#4 code,
 %% optionally identifying the offending hop.
 -spec ack_error(pid(), hecate_bolt4:name() | hecate_bolt4:code(),
-                hecate_identity:pubkey() | undefined) -> ok.
+                macula_identity:pubkey() | undefined) -> ok.
 ack_error(Pid, CodeOrName, Hop) ->
     gen_statem:cast(Pid, {ack_error, CodeOrName, Hop}).
 

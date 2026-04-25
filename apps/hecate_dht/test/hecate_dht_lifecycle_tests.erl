@@ -21,9 +21,9 @@ republish_skips_non_owned_records_test() ->
     Net = start_net([a]),
     #{a := {A, KpA}} = Net,
     %% A holds a record signed by someone ELSE (a random key).
-    KpOther = hecate_identity:generate(),
+    KpOther = macula_identity:generate(),
     Record  = hecate_record:sign(
-                hecate_record:node_record(hecate_identity:public(KpOther),
+                hecate_record:node_record(macula_identity:public(KpOther),
                                           [], 0),
                 KpOther),
     ok = hecate_dht:put_record(A, Record),
@@ -39,8 +39,8 @@ republish_skips_non_owned_records_test() ->
 republish_refreshes_owned_record_version_test() ->
     Net = start_net([a, b]),
     #{a := {A, KpA}, b := {_, KpB}} = Net,
-    AId = hecate_identity:public(KpA),
-    BId = hecate_identity:public(KpB),
+    AId = macula_identity:public(KpA),
+    BId = macula_identity:public(KpB),
 
     %% A's own node_record, owned by A.
     Record = hecate_record:sign(hecate_record:node_record(AId, [], 0), KpA),
@@ -65,8 +65,8 @@ republish_refreshes_owned_record_version_test() ->
 republish_propagates_to_custodian_test() ->
     Net = start_net([a, b]),
     #{a := {A, KpA}, b := {B, KpB}} = Net,
-    AId = hecate_identity:public(KpA),
-    BId = hecate_identity:public(KpB),
+    AId = macula_identity:public(KpA),
+    BId = macula_identity:public(KpB),
 
     Record = hecate_record:sign(hecate_record:node_record(AId, [], 0), KpA),
     ok = hecate_dht:put_record(A, Record),
@@ -86,7 +86,7 @@ republish_no_candidates_is_counted_test() ->
     %% no_candidates. Local store still holds the refreshed version.
     Net = start_net([a]),
     #{a := {A, KpA}} = Net,
-    AId = hecate_identity:public(KpA),
+    AId = macula_identity:public(KpA),
     Record = hecate_record:sign(hecate_record:node_record(AId, [], 0), KpA),
     ok = hecate_dht:put_record(A, Record),
 
@@ -213,15 +213,15 @@ start_net(Names) ->
     Router = spawn_router(),
     Entries = [{N, make_server(Router)} || N <- Names],
     Net = maps:from_list([{N, {P, Kp}} || {N, {P, Kp}} <- Entries]),
-    Table = maps:from_list([{hecate_identity:public(Kp), P}
+    Table = maps:from_list([{macula_identity:public(Kp), P}
                             || {_, {P, Kp}} <- Entries]),
     Router ! {table, Table},
     put(lifecycle_router, Router),
     Net.
 
 make_server(Router) ->
-    Kp = hecate_identity:generate(),
-    SelfId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    SelfId = macula_identity:public(Kp),
     Send = fun(DstId, Frame) ->
         Router ! {route, SelfId, DstId, Frame}, ok
     end,
@@ -258,8 +258,8 @@ peer_spec(NodeId) ->
     #{node_id => NodeId, asn => 64512, country => <<"BE">>, tier => t1}.
 
 fresh_record(TtlMs) ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     hecate_record:sign(
-        hecate_record:node_record(hecate_identity:public(Kp), [], 0,
+        hecate_record:node_record(macula_identity:public(Kp), [], 0,
                                   #{ttl_ms => TtlMs}),
         Kp).

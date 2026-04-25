@@ -1,8 +1,8 @@
-{application, hecate_swim, [
-    {description, "Hecate Station — SWIM-Lifeguard member"},
+{application, hecate_transport, [
+    {description, "Hecate Station — thin adapter over macula_quic from the SDK"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, hecate_frame, hecate_peering, macula, hecate_diagnostics]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

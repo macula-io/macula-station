@@ -245,7 +245,7 @@ count_asn(Asn, Refs) ->
 %% Accessors
 %%=====================================================================
 
--spec id_of(hecate_frame:station_ref())      -> hecate_identity:pubkey().
+-spec id_of(hecate_frame:station_ref())      -> macula_identity:pubkey().
 id_of(#{node_id := V})      -> V.
 
 -spec asn_of(hecate_frame:station_ref())     -> non_neg_integer() | undefined.

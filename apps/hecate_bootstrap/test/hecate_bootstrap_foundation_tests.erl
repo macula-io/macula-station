@@ -22,7 +22,7 @@ decode_rejects_arbitrary_garbage_test_() ->
 decode_rejects_malformed_cbor_test() ->
     %% 0x9f starts an indefinite-length CBOR array; alone it never
     %% terminates and triggers a match error inside
-    %% hecate_record_cbor:decode/1. We must catch and normalise.
+    %% macula_record_cbor:decode/1. We must catch and normalise.
     ?assertEqual({error, bad_record_bytes},
                  hecate_bootstrap_foundation:decode_record_bytes(<<16#9F>>)).
 
@@ -30,7 +30,7 @@ decode_truthfully_returns_record_errors_test() ->
     %% A decodable CBOR map that is not a valid macula envelope
     %% should come back as an `{error, _}' from hecate_record rather
     %% than being eaten by our catch-all.
-    NotAnEnvelope = hecate_record_cbor:encode(
+    NotAnEnvelope = macula_record_cbor:encode(
                       #{ {text, <<"hello">>} => {text, <<"world">>} }),
     ?assertMatch({error, _},
                  hecate_bootstrap_foundation:decode_record_bytes(
@@ -51,8 +51,8 @@ peers_from_seed_list_stamps_tier_and_via_test() ->
 
 peers_from_record_preserves_seed_node_ids_test() ->
     Seeds = sample_seeds(4),
-    Kp    = hecate_identity:generate(),
-    Fk    = hecate_identity:public(Kp),
+    Kp    = macula_identity:generate(),
+    Fk    = macula_identity:public(Kp),
     Record = hecate_record:sign(
                hecate_record:foundation_seed_list(Fk, Seeds), Kp),
     Peers = hecate_bootstrap_foundation:peers_from_record(
@@ -62,8 +62,8 @@ peers_from_record_preserves_seed_node_ids_test() ->
     ?assertEqual(Expected, Got).
 
 peers_from_record_empty_seed_list_test() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     Record = hecate_record:sign(
                hecate_record:foundation_seed_list(Fk, []), Kp),
     ?assertEqual([], hecate_bootstrap_foundation:peers_from_record(
@@ -75,8 +75,8 @@ peers_from_non_seed_list_record_returns_empty_test() ->
     %% someday publish foundation_parameter / trust_list records that
     %% happen to land here if a caller mis-routes; we degrade
     %% gracefully instead of failing loud.
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     Record = hecate_record:sign(
                hecate_record:foundation_parameter(
                  Fk, <<"puzzle_difficulty">>, 8), Kp),
@@ -84,8 +84,8 @@ peers_from_non_seed_list_record_returns_empty_test() ->
                        Record, a, hecate_bootstrap_tier_a)).
 
 peers_from_record_preserves_addresses_test() ->
-    Kp    = hecate_identity:generate(),
-    Fk    = hecate_identity:public(Kp),
+    Kp    = macula_identity:generate(),
+    Fk    = macula_identity:public(Kp),
     Seeds = [#{node_id   => crypto:strong_rand_bytes(32),
                addresses => [#{ {text, <<"ip">>}   => {text, <<"::1">>},
                                 {text, <<"port">>} => 7000 }],
@@ -103,8 +103,8 @@ peers_from_record_preserves_addresses_test() ->
 %%==================================================================
 
 sample_record() ->
-    Kp = hecate_identity:generate(),
-    Fk = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Fk = macula_identity:public(Kp),
     hecate_record:sign(
       hecate_record:foundation_seed_list(Fk, sample_seeds(3)), Kp).
 

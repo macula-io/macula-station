@@ -29,8 +29,8 @@ tier_a_over_doh_codec_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    Kp     = hecate_identity:generate(),
-    Fk     = hecate_identity:public(Kp),
+    Kp     = macula_identity:generate(),
+    Fk     = macula_identity:public(Kp),
     application:set_env(hecate_record, foundation_pubkeys, [Fk]),
     Seeds  = [#{node_id => crypto:strong_rand_bytes(32),
                 addresses => [], tier => 4}

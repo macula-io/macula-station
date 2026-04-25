@@ -70,13 +70,13 @@
 
 -export_type([state/0, peer/0, msg_id/0, action/0, delivery/0]).
 
--type peer()     :: hecate_identity:pubkey().
+-type peer()     :: macula_identity:pubkey().
 -type msg_id()   :: <<_:128>>.
 
 -type state() :: #{
     self_id    := peer(),
     realm      := <<_:256>>,
-    identity   := hecate_identity:key_pair(),
+    identity   := macula_identity:key_pair(),
     eager_push := sets:set(peer()),
     lazy_push  := sets:set(peer()),
     received   := #{msg_id() => term()},
@@ -90,10 +90,10 @@
 %% Construction + view changes
 %%=====================================================================
 
--spec new(hecate_identity:key_pair(), <<_:256>>) -> state().
+-spec new(macula_identity:key_pair(), <<_:256>>) -> state().
 new(Identity, Realm) when is_binary(Realm), byte_size(Realm) =:= 32 ->
     #{
-        self_id    => hecate_identity:public(Identity),
+        self_id    => macula_identity:public(Identity),
         realm      => Realm,
         identity   => Identity,
         eager_push => sets:new(),

@@ -45,8 +45,8 @@
 -record(station, {
     name   :: atom(),
     pid    :: pid(),
-    kp     :: hecate_identity:key_pair(),
-    pubkey :: hecate_identity:pubkey()
+    kp     :: macula_identity:key_pair(),
+    pubkey :: macula_identity:pubkey()
 }).
 
 %%=====================================================================
@@ -71,8 +71,8 @@ stop_fleet(#{router := Router, stations := Stations}) ->
     ok.
 
 build_station(Name, Realms, Router) ->
-    Kp = hecate_identity:generate(),
-    Pub = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
     Pid = spawn(fun() ->
         station_loop(init_state(Name, Kp, Pub, Realms, Router))
     end),

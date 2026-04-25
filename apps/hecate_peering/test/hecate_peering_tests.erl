@@ -25,7 +25,7 @@ client_worker_emits_disconnected_on_connect_failure_test_() ->
      fun() ->
          {ok, _} = application:ensure_all_started(hecate_peering),
          Self = self(),
-         Identity = hecate_identity:generate(),
+         Identity = macula_identity:generate(),
          {ok, Pid} = hecate_peering:connect(#{
              identity        => Identity,
              realms          => [],
@@ -54,7 +54,7 @@ server_worker_can_be_spawned_test() ->
     %% Spawn server-role worker without a real conn — it stays in
     %% awaiting_start state. We verify spawning works and close cleans up.
     Self = self(),
-    Identity = hecate_identity:generate(),
+    Identity = macula_identity:generate(),
     Opts = #{
         role            => server,
         identity        => Identity,
@@ -82,7 +82,7 @@ server_worker_can_be_spawned_test() ->
 close_on_dead_worker_does_not_crash_test() ->
     {ok, _} = application:ensure_all_started(hecate_peering),
     Self = self(),
-    Identity = hecate_identity:generate(),
+    Identity = macula_identity:generate(),
     {ok, Pid} = hecate_peering_conn_sup:start_conn(#{
         role            => server,
         identity        => Identity,

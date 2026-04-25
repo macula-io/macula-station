@@ -17,7 +17,7 @@
     %% when the operator does not override it).
     identity_file  :: file:name_all(),
     %% Loaded identity (filled by the loader after disk I/O).
-    identity       :: hecate_identity:key_pair() | undefined,
+    identity       :: macula_identity:key_pair() | undefined,
     %% QUIC listener.
     bind           :: inet:ip_address() | string(),
     port           :: inet:port_number(),

@@ -78,15 +78,15 @@
 -type path() :: #{
     id        := path_id(),
     shortlist := [hecate_frame:station_ref()],
-    queried   := sets:set(hecate_identity:pubkey()),
-    in_flight := sets:set(hecate_identity:pubkey())
+    queried   := sets:set(macula_identity:pubkey()),
+    in_flight := sets:set(macula_identity:pubkey())
 }.
 
 -type state() :: #{
     dht          := hecate_dht:dht(),
     key          := hecate_dht_xor:id(),
     paths        := [path()],
-    claimed      := sets:set(hecate_identity:pubkey()),
+    claimed      := sets:set(macula_identity:pubkey()),
     target_count := pos_integer(),
     alpha        := pos_integer(),
     per_req      := pos_integer(),
@@ -133,7 +133,7 @@ build_state(Dht, Key, Opts) ->
     }.
 
 -spec seed_refs(hecate_dht:dht(), hecate_dht_xor:id(), pos_integer(),
-                hecate_identity:pubkey()) ->
+                macula_identity:pubkey()) ->
           [hecate_frame:station_ref()].
 seed_refs(Dht, Key, MaxCount, Self) ->
     Entries = hecate_dht:k_closest(Dht, Key, MaxCount),
@@ -204,7 +204,7 @@ next_unqueried(#{shortlist := Short, queried := Q}) ->
     scan_unqueried(Short, Q).
 
 -spec scan_unqueried([hecate_frame:station_ref()],
-                     sets:set(hecate_identity:pubkey())) ->
+                     sets:set(macula_identity:pubkey())) ->
           {ok, hecate_frame:station_ref()} | none.
 scan_unqueried([], _Q) -> none;
 scan_unqueried([Ref | Rest], Q) ->
@@ -212,7 +212,7 @@ scan_unqueried([Ref | Rest], Q) ->
 
 -spec resume_scan(boolean(), hecate_frame:station_ref(),
                   [hecate_frame:station_ref()],
-                  sets:set(hecate_identity:pubkey())) ->
+                  sets:set(macula_identity:pubkey())) ->
           {ok, hecate_frame:station_ref()} | none.
 resume_scan(true,  _Ref, Rest, Q) -> scan_unqueried(Rest, Q);
 resume_scan(false, Ref,  _Rest, _Q) -> {ok, Ref}.
@@ -270,7 +270,7 @@ await_result(State) ->
         State
     end.
 
--spec absorb(state(), path_id(), hecate_identity:pubkey(),
+-spec absorb(state(), path_id(), macula_identity:pubkey(),
              hecate_dht:find_node_result()) -> state().
 absorb(State, PathId, PeerId, {ok, Refs}) ->
     State1 = clear_in_flight(State, PathId, PeerId),
@@ -278,7 +278,7 @@ absorb(State, PathId, PeerId, {ok, Refs}) ->
 absorb(State, PathId, PeerId, {error, _}) ->
     clear_in_flight(State, PathId, PeerId).
 
--spec clear_in_flight(state(), path_id(), hecate_identity:pubkey()) ->
+-spec clear_in_flight(state(), path_id(), macula_identity:pubkey()) ->
           state().
 clear_in_flight(State, PathId, PeerId) ->
     Paths = update_path(maps:get(paths, State), PathId,
@@ -332,7 +332,7 @@ finalise(State) ->
 %% Small helpers
 %%=====================================================================
 
--spec id_of(hecate_frame:station_ref()) -> hecate_identity:pubkey().
+-spec id_of(hecate_frame:station_ref()) -> macula_identity:pubkey().
 id_of(#{node_id := Id}) -> Id.
 
 -spec sort_by_distance([hecate_frame:station_ref()], hecate_dht_xor:id()) ->

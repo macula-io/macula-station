@@ -60,8 +60,8 @@ decode_non_cbor_payload_test() ->
 decode_wrong_record_type_test() ->
     %% Build an endorsement record (type 0x05) and wrap it — should
     %% be rejected because only node_record (0x01) is acceptable.
-    AdminKp = hecate_identity:generate(),
-    RealmId = hecate_identity:public(AdminKp),
+    AdminKp = macula_identity:generate(),
+    RealmId = macula_identity:public(AdminKp),
     Member  = crypto:strong_rand_bytes(32),
     Endorsement = hecate_record:sign(
         hecate_record:realm_member_endorsement(
@@ -81,8 +81,8 @@ decode_rejects_tampered_record_test() ->
     ?assertMatch({error, _}, Result).
 
 decode_rejects_expired_record_test() ->
-    Kp = hecate_identity:generate(),
-    R = hecate_record:node_record(hecate_identity:public(Kp), [], 0,
+    Kp = macula_identity:generate(),
+    R = hecate_record:node_record(macula_identity:public(Kp), [], 0,
                                   #{ttl_ms => 1}),
     Signed = hecate_record:sign(R, Kp),
     Url = hecate_bootstrap_peer_url:encode(Signed, []),
@@ -95,8 +95,8 @@ decode_rejects_expired_record_test() ->
 %%------------------------------------------------------------------
 
 build_url(Addrs) ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     Record = hecate_record:sign(
-        hecate_record:node_record(hecate_identity:public(Kp), [], 0),
+        hecate_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
     {hecate_bootstrap_peer_url:encode(Record, Addrs), Record}.

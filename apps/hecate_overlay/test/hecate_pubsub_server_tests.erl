@@ -9,7 +9,7 @@
 
 realm()   -> crypto:strong_rand_bytes(32).
 id(N)     -> <<N:256>>.
-keypair() -> hecate_identity:generate().
+keypair() -> macula_identity:generate().
 
 start() ->
     {ok, Pid} = hecate_pubsub_server:start_link(
@@ -112,7 +112,7 @@ publish_increments_seq_test() ->
 publish_signs_with_server_identity_test() ->
     R   = realm(),
     Kp  = keypair(),
-    Pub = hecate_identity:public(Kp),
+    Pub = macula_identity:public(Kp),
     {ok, Pid} = hecate_pubsub_server:start_link(
                   #{realm => R, identity => Kp}),
     ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
@@ -134,7 +134,7 @@ deliver_event_returns_subscribers_test() ->
     External = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"t">>,
         realm         => R,
-        publisher     => hecate_identity:public(Kp),
+        publisher     => macula_identity:public(Kp),
         seq           => 42,
         payload       => <<"x">>,
         delivered_via => plumtree
@@ -154,7 +154,7 @@ deliver_event_for_other_realm_returns_empty_test() ->
     External = hecate_frame:sign(hecate_frame:event(#{
         topic         => <<"t">>,
         realm         => R2,
-        publisher     => hecate_identity:public(Kp),
+        publisher     => macula_identity:public(Kp),
         seq           => 1,
         payload       => <<"x">>,
         delivered_via => plumtree

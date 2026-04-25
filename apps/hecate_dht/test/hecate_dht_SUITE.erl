@@ -145,8 +145,8 @@ fleet_bucket_diversity_observable(Config) ->
 %% faster than ticks complete and racy teardown dominates the
 %% signal we want to measure here.
 fleet_lifecycle_loops_observed(_Config) ->
-    Kp = hecate_identity:generate(),
-    SelfId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    SelfId = macula_identity:public(Kp),
     {ok, Dht} = hecate_dht:start_link(#{
         self_id    => SelfId,
         identity   => Kp,
@@ -159,8 +159,8 @@ fleet_lifecycle_loops_observed(_Config) ->
                     hecate_record:node_record(SelfId, [], 0), Kp),
     ok = hecate_dht:put_record(Dht, OwnedRecord),
     Stale = hecate_record:sign(
-              hecate_record:node_record(hecate_identity:public(
-                                          hecate_identity:generate()),
+              hecate_record:node_record(macula_identity:public(
+                                          macula_identity:generate()),
                                         [], 0, #{ttl_ms => 1}),
               Kp),
     ok = hecate_dht:put_record(Dht, Stale),
@@ -198,7 +198,7 @@ fleet_round_trip_pings_succeed(Config) ->
     Stations = maps:get(stations, Net),
     Pairs = sample_station_pairs(Stations, 10),
     Results = [hecate_dht:ping_peer(maps:get(pid, Src),
-                                    hecate_identity:public(maps:get(kp, Tgt)),
+                                    macula_identity:public(maps:get(kp, Tgt)),
                                     500)
                || {Src, Tgt} <- Pairs],
     Successes = [R || {ok, _} = R <- Results],
@@ -217,7 +217,7 @@ build_fleet(N, Seed) ->
     Tiers     = [t0, t1, t2, t3],
     Stations = [build_station(I, Router, Asns, Countries, Tiers)
                 || I <- lists:seq(1, N)],
-    Table = maps:from_list([{hecate_identity:public(maps:get(kp, S)),
+    Table = maps:from_list([{macula_identity:public(maps:get(kp, S)),
                              maps:get(pid, S)} || S <- Stations]),
     sync_set_router_table(Router, Table),
     bootstrap_routing_tables(Stations, Seed),
@@ -229,8 +229,8 @@ teardown_fleet(#{router := Router, stations := Stations}) ->
     ok.
 
 build_station(Idx, Router, AsnPool, CountryPool, TierPool) ->
-    Kp = hecate_identity:generate(),
-    SelfId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    SelfId = macula_identity:public(Kp),
     Send = fun(DstId, Frame) ->
         Router ! {route, SelfId, DstId, Frame}, ok
     end,
@@ -280,7 +280,7 @@ pick_pair(Stations) ->
     Src = pick_one(Stations),
     Others = [S || S <- Stations, maps:get(idx, S) =/= maps:get(idx, Src)],
     Tgt = pick_one(Others),
-    {Src, hecate_identity:public(maps:get(kp, Tgt))}.
+    {Src, macula_identity:public(maps:get(kp, Tgt))}.
 
 sample_station_pairs(Stations, N) ->
     [pick_station_pair(Stations) || _ <- lists:seq(1, N)].
@@ -298,7 +298,7 @@ pick_station_pair(Stations) ->
 station_bucket_report(Station) ->
     Pid = maps:get(pid, Station),
     Kp  = maps:get(kp,  Station),
-    SelfId = hecate_identity:public(Kp),
+    SelfId = macula_identity:public(Kp),
     {ok, Mon} = hecate_dht_monitor:start_link(
                   #{dht => Pid, interval_ms => 3_600_000,
                     self_id => SelfId}),
@@ -326,13 +326,13 @@ pick_one(List) ->
 %%------------------------------------------------------------------
 
 peer_spec(Station) ->
-    #{node_id => hecate_identity:public(maps:get(kp, Station)),
+    #{node_id => macula_identity:public(maps:get(kp, Station)),
       asn     => maps:get(asn, Station),
       country => maps:get(country, Station),
       tier    => maps:get(tier, Station)}.
 
 station_to_ref(Station) ->
-    NodeId = hecate_identity:public(maps:get(kp, Station)),
+    NodeId = macula_identity:public(maps:get(kp, Station)),
     #{node_id      => NodeId,
       station_id   => NodeId,
       addresses    => [],

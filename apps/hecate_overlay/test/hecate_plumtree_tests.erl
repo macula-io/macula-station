@@ -9,7 +9,7 @@
 
 new_state_starts_empty_test() ->
     {Kp, S} = fresh(),
-    ?assertEqual(hecate_identity:public(Kp),
+    ?assertEqual(macula_identity:public(Kp),
                  hecate_plumtree:self_id(S)),
     ?assertEqual([], hecate_plumtree:eager_peers(S)),
     ?assertEqual([], hecate_plumtree:lazy_peers(S)),
@@ -240,7 +240,7 @@ three_node_chain_delivers_message_once_each_test() ->
 %%=====================================================================
 
 fresh() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     {Kp, hecate_plumtree:new(Kp, crypto:strong_rand_bytes(32))}.
 
 realm_for(S) -> hecate_plumtree:realm(S).

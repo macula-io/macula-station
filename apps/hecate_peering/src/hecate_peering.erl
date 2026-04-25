@@ -7,7 +7,7 @@
 %% <ul>
 %%   <li>`connect/1' — outbound dial; worker drives the QUIC connect.</li>
 %%   <li>`accept/2' — inbound; caller transfers ownership of an
-%%       already-established `macula_transport:connection()' to a new worker.</li>
+%%       already-established `hecate_transport:connection()' to a new worker.</li>
 %% </ul>
 %%
 %% The caller passes a `controlling_pid' in opts; that pid receives
@@ -42,7 +42,7 @@ connect(Opts) ->
 %% @doc Inbound accept. Caller currently owns `Conn' (e.g. it's the listener
 %% owner that just received `{quic, new_conn, Conn, _}'). The transfer of
 %% ownership and the handshake start are sequenced atomically.
--spec accept(macula_transport:connection(), opts()) ->
+-spec accept(hecate_transport:connection(), opts()) ->
     {ok, pid()} | {error, term()}.
 accept(Conn, Opts) ->
     start_server_worker(Conn, Opts#{role => server, quic_conn => Conn}).
@@ -51,7 +51,7 @@ start_server_worker(Conn, Opts) ->
     handle_started(hecate_peering_conn_sup:start_conn(Opts), Conn).
 
 handle_started({ok, Pid}, Conn) ->
-    ok = macula_transport:controlling_process_conn(Conn, Pid),
+    ok = hecate_transport:controlling_process_conn(Conn, Pid),
     ok = gen_statem:cast(Pid, start_handshake),
     {ok, Pid};
 handle_started(Err, _Conn) ->

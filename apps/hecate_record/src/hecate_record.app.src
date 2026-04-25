@@ -2,7 +2,7 @@
     {description, "Macula SDK — PKARR-compatible signed records with deterministic CBOR"},
     {vsn, "2.0.0-alpha.1"},
     {registered, []},
-    {applications, [kernel, stdlib, crypto, hecate_identity]},
+    {applications, [kernel, stdlib, crypto, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

@@ -105,7 +105,7 @@
 }.
 
 -type node_record_opts() :: #{
-    station_id   => hecate_identity:pubkey(),
+    station_id   => macula_identity:pubkey(),
     caps_hint    => binary(),
     display_name => binary(),
     ttl_ms       => pos_integer()
@@ -117,7 +117,7 @@
 }.
 
 -type realm_station_entry() :: #{
-    station_id := hecate_identity:pubkey(),
+    station_id := macula_identity:pubkey(),
     roles      := [binary()]
 }.
 
@@ -137,7 +137,7 @@
 }.
 
 -type foundation_seed() :: #{
-    node_id   := hecate_identity:pubkey(),
+    node_id   := macula_identity:pubkey(),
     addresses := [map()],
     tier      := 3 | 4
 }.
@@ -159,7 +159,7 @@
 }.
 
 -type foundation_realm_trust_list_opts() :: #{
-    realms_revoked => [hecate_identity:pubkey()],
+    realms_revoked => [macula_identity:pubkey()],
     valid_until    => pos_integer(),
     ttl_ms         => pos_integer()
 }.
@@ -179,14 +179,14 @@
 %% Constructors — node_record (Part 6 §9.2)
 %%------------------------------------------------------------------
 
--spec node_record(hecate_identity:pubkey(),
-                  [hecate_identity:pubkey()],
+-spec node_record(macula_identity:pubkey(),
+                  [macula_identity:pubkey()],
                   non_neg_integer()) -> record().
 node_record(NodeId, Realms, Capabilities) ->
     node_record(NodeId, Realms, Capabilities, #{}).
 
--spec node_record(hecate_identity:pubkey(),
-                  [hecate_identity:pubkey()],
+-spec node_record(macula_identity:pubkey(),
+                  [macula_identity:pubkey()],
                   non_neg_integer(),
                   node_record_opts()) -> record().
 node_record(NodeId, Realms, Capabilities, Opts)
@@ -204,13 +204,13 @@ node_record(NodeId, Realms, Capabilities, Opts)
 %% Owning key is the RealmId; storage key is also the RealmId.
 %%------------------------------------------------------------------
 
--spec realm_directory(hecate_identity:pubkey(), binary(),
-                      hecate_identity:pubkey()) -> record().
+-spec realm_directory(macula_identity:pubkey(), binary(),
+                      macula_identity:pubkey()) -> record().
 realm_directory(RealmId, Name, AdminKey) ->
     realm_directory(RealmId, Name, AdminKey, #{}).
 
--spec realm_directory(hecate_identity:pubkey(), binary(),
-                      hecate_identity:pubkey(),
+-spec realm_directory(macula_identity:pubkey(), binary(),
+                      macula_identity:pubkey(),
                       realm_directory_opts()) -> record().
 realm_directory(RealmId, Name, AdminKey, Opts)
   when is_binary(RealmId),  byte_size(RealmId)  =:= 32,
@@ -228,12 +228,12 @@ realm_directory(RealmId, Name, AdminKey, Opts)
 %% RealmId (admin signs the record).
 %%------------------------------------------------------------------
 
--spec realm_stations(hecate_identity:pubkey(),
+-spec realm_stations(macula_identity:pubkey(),
                      [realm_station_entry()]) -> record().
 realm_stations(RealmId, Entries) ->
     realm_stations(RealmId, Entries, #{}).
 
--spec realm_stations(hecate_identity:pubkey(),
+-spec realm_stations(macula_identity:pubkey(),
                      [realm_station_entry()],
                      realm_stations_opts()) -> record().
 realm_stations(RealmId, Entries, Opts)
@@ -252,16 +252,16 @@ realm_stations(RealmId, Entries, Opts)
 %% (admin signs).
 %%------------------------------------------------------------------
 
--spec realm_member_endorsement(hecate_identity:pubkey(),
-                               #{realm      := hecate_identity:pubkey(),
-                                 member_node := hecate_identity:pubkey(),
+-spec realm_member_endorsement(macula_identity:pubkey(),
+                               #{realm      := macula_identity:pubkey(),
+                                 member_node := macula_identity:pubkey(),
                                  roles       := [binary()]}) -> record().
 realm_member_endorsement(RealmId, Spec) ->
     realm_member_endorsement(RealmId, Spec, #{}).
 
--spec realm_member_endorsement(hecate_identity:pubkey(),
-                               #{realm       := hecate_identity:pubkey(),
-                                 member_node := hecate_identity:pubkey(),
+-spec realm_member_endorsement(macula_identity:pubkey(),
+                               #{realm       := macula_identity:pubkey(),
+                                 member_node := macula_identity:pubkey(),
                                  roles       := [binary()]},
                                realm_member_endorsement_opts()) -> record().
 realm_member_endorsement(RealmId,
@@ -285,13 +285,13 @@ realm_member_endorsement(RealmId,
 %% the advertiser's NodeId (advertiser signs the record).
 %%------------------------------------------------------------------
 
--spec procedure_advertisement(hecate_identity:pubkey(), binary(),
-                              hecate_identity:pubkey()) -> record().
+-spec procedure_advertisement(macula_identity:pubkey(), binary(),
+                              macula_identity:pubkey()) -> record().
 procedure_advertisement(AdvertiserNode, ProcedureUri, ServingStation) ->
     procedure_advertisement(AdvertiserNode, ProcedureUri, ServingStation, #{}).
 
--spec procedure_advertisement(hecate_identity:pubkey(), binary(),
-                              hecate_identity:pubkey(),
+-spec procedure_advertisement(macula_identity:pubkey(), binary(),
+                              macula_identity:pubkey(),
                               procedure_advertisement_opts()) -> record().
 procedure_advertisement(AdvertiserNode, ProcedureUri, ServingStation, Opts)
   when is_binary(AdvertiserNode), byte_size(AdvertiserNode) =:= 32,
@@ -309,12 +309,12 @@ procedure_advertisement(AdvertiserNode, ProcedureUri, ServingStation, Opts)
 %% in station firmware via `hecate_foundation'.
 %%------------------------------------------------------------------
 
--spec foundation_seed_list(hecate_identity:pubkey(),
+-spec foundation_seed_list(macula_identity:pubkey(),
                            [foundation_seed()]) -> record().
 foundation_seed_list(FoundationKey, Seeds) ->
     foundation_seed_list(FoundationKey, Seeds, #{}).
 
--spec foundation_seed_list(hecate_identity:pubkey(),
+-spec foundation_seed_list(macula_identity:pubkey(),
                            [foundation_seed()],
                            foundation_seed_list_opts()) -> record().
 foundation_seed_list(FoundationKey, Seeds, Opts)
@@ -334,12 +334,12 @@ foundation_seed_list(FoundationKey, Seeds, Opts)
 %% Constructors — foundation_parameter (Part 6 §9.15)
 %%------------------------------------------------------------------
 
--spec foundation_parameter(hecate_identity:pubkey(), binary(),
+-spec foundation_parameter(macula_identity:pubkey(), binary(),
                            foundation_parameter_value()) -> record().
 foundation_parameter(FoundationKey, Name, Value) ->
     foundation_parameter(FoundationKey, Name, Value, #{}).
 
--spec foundation_parameter(hecate_identity:pubkey(), binary(),
+-spec foundation_parameter(macula_identity:pubkey(), binary(),
                            foundation_parameter_value(),
                            foundation_parameter_opts()) -> record().
 foundation_parameter(FoundationKey, Name, Value, Opts)
@@ -360,13 +360,13 @@ foundation_parameter(FoundationKey, Name, Value, Opts)
 %% Constructors — foundation_realm_trust_list (Part 6 §9.16)
 %%------------------------------------------------------------------
 
--spec foundation_realm_trust_list(hecate_identity:pubkey(),
-                                  [hecate_identity:pubkey()]) -> record().
+-spec foundation_realm_trust_list(macula_identity:pubkey(),
+                                  [macula_identity:pubkey()]) -> record().
 foundation_realm_trust_list(FoundationKey, Trusted) ->
     foundation_realm_trust_list(FoundationKey, Trusted, #{}).
 
--spec foundation_realm_trust_list(hecate_identity:pubkey(),
-                                  [hecate_identity:pubkey()],
+-spec foundation_realm_trust_list(macula_identity:pubkey(),
+                                  [macula_identity:pubkey()],
                                   foundation_realm_trust_list_opts()) ->
           record().
 foundation_realm_trust_list(FoundationKey, Trusted, Opts)
@@ -386,14 +386,14 @@ foundation_realm_trust_list(FoundationKey, Trusted, Opts)
 %% Constructors — foundation_t3_attestation (Part 6 §9.17)
 %%------------------------------------------------------------------
 
--spec foundation_t3_attestation(hecate_identity:pubkey(),
-                                hecate_identity:pubkey(),
+-spec foundation_t3_attestation(macula_identity:pubkey(),
+                                macula_identity:pubkey(),
                                 pos_integer()) -> record().
 foundation_t3_attestation(FoundationKey, StationId, AuditDate) ->
     foundation_t3_attestation(FoundationKey, StationId, AuditDate, #{}).
 
--spec foundation_t3_attestation(hecate_identity:pubkey(),
-                                hecate_identity:pubkey(),
+-spec foundation_t3_attestation(macula_identity:pubkey(),
+                                macula_identity:pubkey(),
                                 pos_integer(),
                                 foundation_t3_attestation_opts()) ->
           record().
@@ -415,11 +415,11 @@ foundation_t3_attestation(FoundationKey, StationId, AuditDate, Opts)
 %% Constructors — tombstone (Part 6 §9.13)
 %%------------------------------------------------------------------
 
--spec tombstone(hecate_identity:pubkey(), type_tag(), atom()) -> record().
+-spec tombstone(macula_identity:pubkey(), type_tag(), atom()) -> record().
 tombstone(SupersededKey, SupersededType, Reason) ->
     tombstone(SupersededKey, SupersededType, Reason, #{}).
 
--spec tombstone(hecate_identity:pubkey(), type_tag(), atom(), tombstone_opts()) ->
+-spec tombstone(macula_identity:pubkey(), type_tag(), atom(), tombstone_opts()) ->
     record().
 tombstone(SupersededKey, SupersededType, Reason, Opts)
   when is_binary(SupersededKey), byte_size(SupersededKey) =:= 32,
@@ -434,11 +434,11 @@ tombstone(SupersededKey, SupersededType, Reason, Opts)
 %% Sign / verify
 %%------------------------------------------------------------------
 
--spec sign(record(), hecate_identity:key_pair() | hecate_identity:privkey()) ->
+-spec sign(record(), macula_identity:key_pair() | macula_identity:privkey()) ->
     record().
 sign(Record, Identity) ->
     Bytes = canonical_unsigned(Record),
-    Sig = hecate_identity:sign([?SIG_DOMAIN, Bytes], Identity),
+    Sig = macula_identity:sign([?SIG_DOMAIN, Bytes], Identity),
     Record#{signature => Sig}.
 
 -spec verify(record()) -> {ok, record()} | {error, term()}.
@@ -446,7 +446,7 @@ verify(#{signature := Sig, key := Pub} = Record)
   when is_binary(Sig), byte_size(Sig) =:= 64,
        is_binary(Pub), byte_size(Pub) =:= 32 ->
     Bytes = canonical_unsigned(Record),
-    verify_signature(hecate_identity:verify([?SIG_DOMAIN, Bytes], Sig, Pub),
+    verify_signature(macula_identity:verify([?SIG_DOMAIN, Bytes], Sig, Pub),
                      Record);
 verify(_) ->
     {error, bad_record}.
@@ -466,7 +466,7 @@ verify_signature(false, _Record) ->
 %% safely pass an already-signed record — the prior signature is
 %% stripped before re-signing.
 -spec refresh(record(),
-              hecate_identity:key_pair() | hecate_identity:privkey()) ->
+              macula_identity:key_pair() | macula_identity:privkey()) ->
           record().
 refresh(Record, Identity) ->
     NowMs = erlang:system_time(millisecond),
@@ -493,11 +493,11 @@ expiry_check(#{expires_at := X} = Record) ->
 
 -spec encode(record()) -> binary().
 encode(#{signature := Sig} = Record) when is_binary(Sig), byte_size(Sig) =:= 64 ->
-    hecate_record_cbor:encode(to_envelope_map(Record)).
+    macula_record_cbor:encode(to_envelope_map(Record)).
 
 -spec decode(binary()) -> {ok, record()} | {error, term()}.
 decode(Bin) when is_binary(Bin) ->
-    decode_value(hecate_record_cbor:decode(Bin)).
+    decode_value(macula_record_cbor:decode(Bin)).
 
 decode_value(Map) when is_map(Map) ->
     G = fun(Key) -> maps:get({text, Key}, Map, undefined) end,
@@ -739,4 +739,4 @@ add_signature(M, Sig) when is_binary(Sig) ->
 
 %% Canonical CBOR of the record minus its signature — what gets signed/verified.
 canonical_unsigned(Record) ->
-    hecate_record_cbor:encode(to_envelope_map(maps:without([signature], Record))).
+    macula_record_cbor:encode(to_envelope_map(maps:without([signature], Record))).

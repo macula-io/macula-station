@@ -53,7 +53,7 @@
 -define(BULK_RETRY_BUDGET,                100).
 -define(BULK_OVERALL_TIMEOUT_MS,    3_600_000).
 
--type path()    :: [hecate_identity:pubkey()].
+-type path()    :: [macula_identity:pubkey()].
 -type try_fn()  :: fun((path()) -> hecate_call:outcome()).
 
 -type opts() :: #{

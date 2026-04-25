@@ -49,21 +49,21 @@
 -export_type([context/0, action/0]).
 
 -type alive_predicate() ::
-        fun((hecate_identity:pubkey()) -> boolean()).
+        fun((macula_identity:pubkey()) -> boolean()).
 
 -type context() :: #{
-    self_id  := hecate_identity:pubkey(),
-    identity := hecate_identity:key_pair(),
+    self_id  := macula_identity:pubkey(),
+    identity := macula_identity:key_pair(),
     is_alive := alive_predicate(),
     now_ms   => non_neg_integer()
 }.
 
 -type action() ::
-      {forward, NextHop :: hecate_identity:pubkey(),
+      {forward, NextHop :: macula_identity:pubkey(),
                 hecate_frame:frame()}
     | {deliver_local, hecate_frame:frame()}
     | {reply_error, hecate_frame:frame(),
-                    OriginatorId :: hecate_identity:pubkey() | undefined}.
+                    OriginatorId :: macula_identity:pubkey() | undefined}.
 
 %%=====================================================================
 %% Public API

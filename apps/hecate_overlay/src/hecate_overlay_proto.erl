@@ -52,12 +52,12 @@
 -define(DEFAULT_SHUFFLE_ACTIVE,       3).
 -define(DEFAULT_SHUFFLE_PASSIVE,      4).
 
--type peer() :: hecate_identity:pubkey().
+-type peer() :: macula_identity:pubkey().
 
 -type ctx() :: #{
     self_id              := peer(),
     realm                := <<_:256>>,
-    identity             := hecate_identity:key_pair(),
+    identity             := macula_identity:key_pair(),
     arwl                 => non_neg_integer(),
     prwl                 => non_neg_integer(),
     shuffle_ttl          => non_neg_integer(),
@@ -334,7 +334,7 @@ build_disconnect(Ctx) ->
                 #{realm => realm(Ctx)}),
               identity(Ctx)).
 
--spec sign_with(hecate_frame:frame(), hecate_identity:key_pair()) ->
+-spec sign_with(hecate_frame:frame(), macula_identity:key_pair()) ->
         hecate_frame:frame().
 sign_with(Frame, Identity) ->
     hecate_frame:sign(Frame, Identity).

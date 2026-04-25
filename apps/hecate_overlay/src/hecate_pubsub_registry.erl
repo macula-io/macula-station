@@ -42,7 +42,7 @@
 -export_type([realm/0, identity/0]).
 
 -type realm()    :: <<_:256>>.
--type identity() :: hecate_identity:key_pair().
+-type identity() :: macula_identity:key_pair().
 
 -record(state, {
     by_realm = #{} :: #{realm() => pid()},

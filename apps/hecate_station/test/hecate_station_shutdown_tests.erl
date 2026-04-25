@@ -20,7 +20,7 @@ shutdown_publishes_tombstone_and_flushes_cache_test_() ->
              #{dht := Dht,
                kp  := Kp,
                cache_dir := CacheDir} = Ctx,
-             Pub = hecate_identity:public(Kp),
+             Pub = macula_identity:public(Kp),
              %% Snapshot the tombstone key before we shut down — the
              %% DHT process is about to exit, so we need the public
              %% key ahead of time.
@@ -78,7 +78,7 @@ prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
          fun() ->
              process_flag(trap_exit, true),
              {ok, Dht} = hecate_station:dht(),
-             Pub       = hecate_identity:public(Kp),
+             Pub       = macula_identity:public(Kp),
              %% No prior tombstone for our NodeId.
              ?assertEqual([],
                  hecate_dht:find_local_record(Dht, Pub)),
@@ -113,7 +113,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
          fun() ->
              process_flag(trap_exit, true),
             {ok, Dht} = hecate_station:dht(),
-            Pub       = hecate_identity:public(Kp),
+            Pub       = macula_identity:public(Kp),
             %% No prior tombstone for the self-pub key.
             ?assertEqual([],
                 hecate_dht:find_local_record(Dht, Pub)),
@@ -175,7 +175,7 @@ teardown_dir(#{dir := Dir, saved := Saved}) ->
 teardown_app(Ctx) -> teardown_dir(Ctx).
 
 tombstone(Kp, Reason) ->
-    Pub = hecate_identity:public(Kp),
+    Pub = macula_identity:public(Kp),
     Unsigned = hecate_record:tombstone(Pub,
                                        hecate_station:tombstone_type(),
                                        Reason),

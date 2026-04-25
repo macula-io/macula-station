@@ -16,7 +16,7 @@
 
 ping_roundtrip_marks_target_last_seen_test() ->
     #{a := {A, KpA}, b := {B, KpB}} = start_pair(),
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
 
     %% A observes B first so touch/2 has a live entry to bump.
     admitted = hecate_dht:observe(A, spec(BId)),
@@ -33,8 +33,8 @@ ping_roundtrip_marks_target_last_seen_test() ->
     stop_pair(#{a => {A, KpA}, b => {B, KpB}}).
 
 ping_no_transport_returns_error_test() ->
-    Kp = hecate_identity:generate(),
-    {ok, D} = hecate_dht:start_link(#{self_id => hecate_identity:public(Kp)}),
+    Kp = macula_identity:generate(),
+    {ok, D} = hecate_dht:start_link(#{self_id => macula_identity:public(Kp)}),
     ?assertEqual({error, no_transport},
                  hecate_dht:ping_peer(D, <<1:256>>)),
     hecate_dht:stop(D).
@@ -42,8 +42,8 @@ ping_no_transport_returns_error_test() ->
 ping_timeout_when_peer_does_not_reply_test() ->
     %% A has a transport that drops frames on the floor — B never sees
     %% them, so A's timer fires.
-    KpA = hecate_identity:generate(),
-    AId = hecate_identity:public(KpA),
+    KpA = macula_identity:generate(),
+    AId = macula_identity:public(KpA),
     Silent = fun(_Target, _Frame) -> ok end,
     {ok, A} = hecate_dht:start_link(#{
         self_id         => AId,
@@ -58,8 +58,8 @@ ping_timeout_when_peer_does_not_reply_test() ->
 pong_with_wrong_nonce_is_ignored_test() ->
     %% An unsolicited PONG (no matching pending entry) must not crash
     %% the server or touch any routing-table entry.
-    Kp = hecate_identity:generate(),
-    SelfId = hecate_identity:public(Kp),
+    Kp = macula_identity:generate(),
+    SelfId = macula_identity:public(Kp),
     {ok, D} = hecate_dht:start_link(#{
         self_id    => SelfId,
         identity   => Kp,
@@ -77,10 +77,10 @@ tampered_frame_is_dropped_silently_test() ->
     %% B asks A for a ping, but the transport mutates the signed
     %% frame in flight. A's signature check must fail, A must not
     %% reply, and B's own ping_peer/3 call must time out.
-    KpA = hecate_identity:generate(),
-    KpB = hecate_identity:generate(),
-    AId = hecate_identity:public(KpA),
-    BId = hecate_identity:public(KpB),
+    KpA = macula_identity:generate(),
+    KpB = macula_identity:generate(),
+    AId = macula_identity:public(KpA),
+    BId = macula_identity:public(KpB),
     {ok, A} = hecate_dht:start_link(#{
         self_id    => AId,
         identity   => KpA,
@@ -107,7 +107,7 @@ tampered_frame_is_dropped_silently_test() ->
 
 find_node_returns_peers_target_knows_test() ->
     #{a := {A, KpA}, b := {B, KpB}} = start_pair(),
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
 
     %% B has three peers in its routing table; A asks B for k-closest
     %% to a specific key.
@@ -127,14 +127,14 @@ find_node_returns_peers_target_knows_test() ->
 
 find_node_returns_empty_when_target_has_no_peers_test() ->
     #{a := {A, KpA}, b := {B, KpB}} = start_pair(),
-    BId = hecate_identity:public(KpB),
+    BId = macula_identity:public(KpB),
     {ok, []} = hecate_dht:find_node(A, <<9:8, 0:248>>, BId),
     stop_pair(#{a => {A, KpA}, b => {B, KpB}}).
 
 find_node_timeout_when_peer_is_silent_test() ->
-    Kp = hecate_identity:generate(),
+    Kp = macula_identity:generate(),
     {ok, D} = hecate_dht:start_link(#{
-        self_id              => hecate_identity:public(Kp),
+        self_id              => macula_identity:public(Kp),
         identity             => Kp,
         send_frame           => fun(_, _) -> ok end,
         find_node_timeout_ms => 120
@@ -144,8 +144,8 @@ find_node_timeout_when_peer_is_silent_test() ->
     hecate_dht:stop(D).
 
 find_node_no_transport_returns_error_test() ->
-    Kp = hecate_identity:generate(),
-    {ok, D} = hecate_dht:start_link(#{self_id => hecate_identity:public(Kp)}),
+    Kp = macula_identity:generate(),
+    {ok, D} = hecate_dht:start_link(#{self_id => macula_identity:public(Kp)}),
     ?assertEqual({error, no_transport},
                  hecate_dht:find_node(D, <<1:256>>, <<2:256>>)),
     hecate_dht:stop(D).
@@ -157,12 +157,12 @@ find_node_no_transport_returns_error_test() ->
 concurrent_pings_to_different_peers_test() ->
     %% A has two transports — one to B, one to C. Each keeps a
     %% distinct nonce. Both should resolve independently.
-    KpA = hecate_identity:generate(),
-    KpB = hecate_identity:generate(),
-    KpC = hecate_identity:generate(),
-    AId = hecate_identity:public(KpA),
-    BId = hecate_identity:public(KpB),
-    CId = hecate_identity:public(KpC),
+    KpA = macula_identity:generate(),
+    KpB = macula_identity:generate(),
+    KpC = macula_identity:generate(),
+    AId = macula_identity:public(KpA),
+    BId = macula_identity:public(KpB),
+    CId = macula_identity:public(KpC),
 
     Router = spawn_router(),
     SendFrom = fun(FromId) ->
@@ -200,10 +200,10 @@ concurrent_pings_to_different_peers_test() ->
 %%---------------------------------------------------------------------
 
 start_pair() ->
-    KpA = hecate_identity:generate(),
-    KpB = hecate_identity:generate(),
-    AId = hecate_identity:public(KpA),
-    BId = hecate_identity:public(KpB),
+    KpA = macula_identity:generate(),
+    KpB = macula_identity:generate(),
+    AId = macula_identity:public(KpA),
+    BId = macula_identity:public(KpB),
     Router = spawn_router(),
     SendFrom = fun(FromId) ->
         fun(DstId, Frame) ->

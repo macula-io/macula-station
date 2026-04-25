@@ -62,7 +62,7 @@ encode(Record, Addresses)
         {text, <<"r">>} => RecBin,
         {text, <<"a">>} => Addresses
     },
-    CborBin = hecate_record_cbor:encode(Payload),
+    CborBin = macula_record_cbor:encode(Payload),
     B64 = base64:encode(CborBin, ?B64_OPTS),
     <<?SCHEME, B64/binary>>.
 
@@ -92,7 +92,7 @@ decode_b64(B64) ->
     end.
 
 decode_cbor(Bin) ->
-    try hecate_record_cbor:decode(Bin) of
+    try macula_record_cbor:decode(Bin) of
         Map when is_map(Map) -> decode_envelope(Map);
         _                    -> {error, bad_cbor}
     catch

@@ -39,7 +39,7 @@
 
 -type opts() :: #{
     dht         := hecate_dht:dht(),
-    identity    := hecate_identity:key_pair(),
+    identity    := macula_identity:key_pair(),
     interval_ms => pos_integer(),
     store_opts  => hecate_dht_store:opts()
 }.
@@ -60,8 +60,8 @@
 
 -record(state, {
     dht         :: hecate_dht:dht(),
-    identity    :: hecate_identity:key_pair(),
-    self_id     :: hecate_identity:pubkey(),
+    identity    :: macula_identity:key_pair(),
+    self_id     :: macula_identity:pubkey(),
     interval_ms :: pos_integer(),
     store_opts  :: hecate_dht_store:opts(),
     ticks       :: non_neg_integer(),
@@ -95,7 +95,7 @@ init(#{dht := Dht, identity := Identity} = Opts) ->
     State = #state{
         dht         = Dht,
         identity    = Identity,
-        self_id     = hecate_identity:public(Identity),
+        self_id     = macula_identity:public(Identity),
         interval_ms = Interval,
         store_opts  = maps:get(store_opts, Opts, default_store_opts()),
         ticks       = 0,
@@ -145,7 +145,7 @@ run_tick(#state{dht = Dht, self_id = SelfId} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec process_record(hecate_record:record(), hecate_identity:pubkey(),
+-spec process_record(hecate_record:record(), macula_identity:pubkey(),
                      #state{}, outcome()) -> outcome().
 process_record(Record, SelfId, State, Acc0) ->
     Acc = bump(Acc0, records_seen),
