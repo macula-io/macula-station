@@ -23,12 +23,21 @@
 %% If `dht' is `undefined' (unconfigured), the announcer logs and
 %% drops events — useful for unit tests of the dispatch pathway
 %% without a running DHT.
+%%
+%% == Multi-identity (PLAN_MULTI_IDENTITY_RELAY §Phase 2) ==
+%%
+%% Anonymous gen_server. Each identity gets its OWN announcer with
+%% its OWN identity / station_id / endpoint. The shared
+%% `hecate_content_store' fan-outs `{manifest_stored, ...}' messages
+%% via pg, so every announcer subscribed to the events group sees
+%% the same store events and publishes a per-identity record into
+%% its identity's DHT.
 -module(hecate_content_announcer).
 -behaviour(gen_server).
 
 -export([
-    start_link/1, stop/0,
-    announce/1, announce/2
+    start_link/1, stop/1,
+    announce/2, announce/3
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -59,22 +68,22 @@
 
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
 start_link(#{identity := _, station_id := _, endpoint := _} = Opts) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
+    gen_server:start_link(?MODULE, Opts, []).
 
--spec stop() -> ok.
-stop() -> gen_server:stop(?MODULE).
+-spec stop(pid()) -> ok.
+stop(Pid) -> gen_server:stop(Pid).
 
 %% @doc Manually announce a manifest by MCID. Used when a caller
 %% wants to announce content the announcer didn't observe via the
 %% pg event channel (e.g. on station boot, to re-publish previously
 %% stored manifests).
--spec announce(binary()) -> ok | {error, term()}.
-announce(MCID) ->
-    gen_server:call(?MODULE, {announce_mcid, MCID}).
+-spec announce(pid(), binary()) -> ok | {error, term()}.
+announce(Pid, MCID) ->
+    gen_server:call(Pid, {announce_mcid, MCID}).
 
--spec announce(binary(), map()) -> ok | {error, term()}.
-announce(MCID, Manifest) ->
-    gen_server:call(?MODULE, {announce, MCID, Manifest}).
+-spec announce(pid(), binary(), map()) -> ok | {error, term()}.
+announce(Pid, MCID, Manifest) ->
+    gen_server:call(Pid, {announce, MCID, Manifest}).
 
 %%====================================================================
 %% gen_server callbacks

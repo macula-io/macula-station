@@ -1,11 +1,12 @@
-%% @doc Per-realm-namespace registry for `hecate_pubsub_server' processes.
+%% @doc Per-identity registry for `hecate_pubsub_server' processes.
 %%
 %% Holds a `RealmTag => pid()' map and acts as the dispatch hub for
 %% inbound SUBSCRIBE / UNSUBSCRIBE / EVENT frames. New realms are
-%% materialised via `register/2': the registry asks
-%% `hecate_pubsub_server_sup' to spawn a child and tracks it via
-%% `erlang:monitor/2'. When a server dies the monitor's DOWN clears
-%% the entry; a later `register/2' yields a fresh server.
+%% materialised via `register/2': the registry spawn-links a
+%% `hecate_pubsub_server' worker for the realm and stores its pid.
+%% A linked worker that crashes delivers an `'EXIT'' message which
+%% the registry traps + uses to clear the entry; a later
+%% `register/2' yields a fresh server.
 %%
 %% == Sprint A invariant ==
 %%
@@ -14,166 +15,196 @@
 %% server per tag, no cross-realm leakage). Realm authority lives
 %% outside the station per `PLAN_DEFERRED_WORK' §6.
 %%
-%% == Sequencing ==
+%% == Multi-identity (PLAN_MULTI_IDENTITY_RELAY §Phase 2) ==
 %%
-%% <ul>
-%%   <li>Phase 1 (prior commit): `hecate_pubsub_server' standalone.</li>
-%%   <li>Phase 2 (this commit): registry + dynamic supervisor under
-%%       `hecate_overlay_sup'.</li>
-%%   <li>Phase 3 (next commit): wire registry into
-%%       `hecate_station_listener' for inbound frame dispatch.</li>
-%%   <li>Later: Plumtree fan-out, DHT topic-mesh discovery.</li>
-%% </ul>
+%% N identities run inside one BEAM. Each identity has its OWN
+%% pubsub_registry, owning its OWN per-realm pubsub_server pool.
+%% No cross-identity leakage — a realm tag X under identity A is
+%% a different overlay than the same realm tag X under identity B.
+%%
+%% Phase 2 also folded the previous `hecate_pubsub_server_sup'
+%% (`simple_one_for_one' pool) into the registry: the registry
+%% spawn-links pubsub_servers itself. Equivalent semantics — they
+%% are temporary, the registry's monitor was already doing the
+%% bookkeeping that the supervisor would have — minus a module +
+%% the pid-passing coordination that splitting them required under
+%% per-identity supervision.
 -module(hecate_pubsub_registry).
 -behaviour(gen_server).
 
 -compile({no_auto_import, [register/2]}).
 
 -export([
-    start_link/0,
-    register/2,
-    lookup/1,
-    dispatch_frame/3,
-    stop/0
+    start_link/1,
+    register/3,
+    lookup/2,
+    dispatch_frame/4,
+    list_realms/1,
+    stop/1
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
--export_type([realm/0, identity/0]).
+-export_type([opts/0, realm/0, identity/0]).
 
 -type realm()    :: <<_:256>>.
 -type identity() :: macula_identity:key_pair().
 
+-type opts() :: #{
+    %% Default identity used when a `register/3' caller does not
+    %% pass one explicitly. Optional — passing identity per-call
+    %% gives the same behaviour as the pre-Phase-2 API.
+    identity => identity()
+}.
+
 -record(state, {
-    by_realm = #{} :: #{realm() => pid()},
-    by_ref   = #{} :: #{reference() => realm()}
+    default_identity     :: identity() | undefined,
+    by_realm = #{}       :: #{realm() => pid()},
+    by_pid   = #{}       :: #{pid() => realm()}
 }).
 
 %%====================================================================
 %% API
 %%====================================================================
 
--spec start_link() -> {ok, pid()} | {error, term()}.
-start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+-spec start_link(opts()) -> {ok, pid()} | {error, term()}.
+start_link(Opts) when is_map(Opts) ->
+    gen_server:start_link(?MODULE, Opts, []).
 
-%% @doc Idempotently start a pubsub_server for `Realm'. If a live
-%% server already exists, returns its pid; otherwise spawns a new
-%% one under `hecate_pubsub_server_sup' with `Identity' as the
-%% signing key. A stale entry pointing at a dead pid is replaced
+%% @doc Idempotently start a pubsub_server for `Realm' under
+%% `RegistryPid', signing with `Identity'. If a live server already
+%% exists, returns its pid; otherwise spawns a new one and records
+%% the mapping. A stale entry pointing at a dead pid is replaced
 %% transparently.
--spec register(realm(), identity()) ->
+-spec register(pid(), realm(), identity()) ->
         {ok, pid()} | {error, term()}.
-register(<<_:256>> = Realm, Identity) ->
-    gen_server:call(?MODULE, {register, Realm, Identity}).
+register(RegistryPid, <<_:256>> = Realm, Identity) ->
+    gen_server:call(RegistryPid, {register, Realm, Identity}).
 
-%% @doc Find the pubsub_server pid for `Realm' or report `not_found'.
--spec lookup(realm()) -> {ok, pid()} | {error, not_found}.
-lookup(<<_:256>> = Realm) ->
-    gen_server:call(?MODULE, {lookup, Realm}).
+%% @doc Find the pubsub_server pid for `Realm' under `RegistryPid',
+%% or report `not_found'.
+-spec lookup(pid(), realm()) -> {ok, pid()} | {error, not_found}.
+lookup(RegistryPid, <<_:256>> = Realm) ->
+    gen_server:call(RegistryPid, {lookup, Realm}).
 
 %% @doc Route a SUBSCRIBE / UNSUBSCRIBE / EVENT frame for `Realm' to
 %% the matching pubsub_server. Returns the matched local subscribers
 %% (empty list for SUBSCRIBE / UNSUBSCRIBE) or `{error, not_found}'
 %% if no server is registered for `Realm'. The realm tag is supplied
-%% explicitly — the caller is responsible for extracting it from
-%% the frame and confirming the dispatch target.
--spec dispatch_frame(realm(), <<_:256>>, hecate_frame:frame()) ->
+%% explicitly — the caller is responsible for extracting it from the
+%% frame and confirming the dispatch target.
+-spec dispatch_frame(pid(), realm(), <<_:256>>, hecate_frame:frame()) ->
         {ok, [<<_:256>>]} | {error, not_found}.
-dispatch_frame(<<_:256>> = Realm, From, Frame) ->
-    gen_server:call(?MODULE, {dispatch_frame, Realm, From, Frame}).
+dispatch_frame(RegistryPid, <<_:256>> = Realm, From, Frame) ->
+    gen_server:call(RegistryPid, {dispatch_frame, Realm, From, Frame}).
 
--spec stop() -> ok.
-stop() ->
-    gen_server:stop(?MODULE).
+%% @doc Snapshot the realm tags currently materialised under
+%% `RegistryPid'. Used by status pages + tests.
+-spec list_realms(pid()) -> [realm()].
+list_realms(RegistryPid) ->
+    gen_server:call(RegistryPid, list_realms).
+
+%% @doc Stop the registry. Uses reason `shutdown' (not the default
+%% `normal') so the registry's spawn-linked pubsub_servers receive
+%% the exit signal and terminate alongside it. Without this, normal
+%% exit does not propagate to non-trapping linked workers.
+-spec stop(pid()) -> ok.
+stop(RegistryPid) ->
+    gen_server:stop(RegistryPid, shutdown, 5_000).
 
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
 
-init([]) ->
-    {ok, #state{}}.
+%% trap_exit: the registry spawn-links its pubsub_servers. A worker
+%% crash arrives as `{'EXIT', Pid, Reason}' which `handle_info/2'
+%% uses to clear the realm map.
+init(Opts) ->
+    process_flag(trap_exit, true),
+    {ok, #state{default_identity = maps:get(identity, Opts, undefined)}}.
 
 handle_call({register, Realm, Identity}, _From, S) ->
-    case maps:find(Realm, S#state.by_realm) of
-        {ok, Pid} ->
-            handle_existing(Realm, Pid, Identity, S);
-        error ->
-            do_register(Realm, Identity, S)
-    end;
+    do_register_call(Realm, Identity, maps:find(Realm, S#state.by_realm), S);
 handle_call({lookup, Realm}, _From, S) ->
-    Reply = case maps:find(Realm, S#state.by_realm) of
-                {ok, Pid} -> {ok, Pid};
-                error     -> {error, not_found}
-            end,
-    {reply, Reply, S};
+    {reply, lookup_reply(maps:find(Realm, S#state.by_realm)), S};
 handle_call({dispatch_frame, Realm, From, Frame}, _From, S) ->
-    do_dispatch(Realm, From, Frame, S);
+    do_dispatch(Realm, From, Frame, maps:find(Realm, S#state.by_realm), S);
+handle_call(list_realms, _From, S) ->
+    {reply, maps:keys(S#state.by_realm), S};
 handle_call(_Other, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info({'DOWN', Ref, process, _Pid, _Reason}, S) ->
-    {noreply, drop_ref(Ref, S)};
+handle_info({'EXIT', Pid, _Reason}, S) ->
+    {noreply, drop_pid(Pid, S)};
 handle_info(_Info, S) ->
     {noreply, S}.
 
 terminate(_Reason, _State) ->
+    %% Linked workers are taken down automatically by the runtime;
+    %% no manual teardown required.
     ok.
 
 %%====================================================================
 %% Helpers
 %%====================================================================
 
-handle_existing(Realm, Pid, Identity, S) ->
-    case is_process_alive(Pid) of
-        true ->
-            {reply, {ok, Pid}, S};
-        false ->
-            do_register(Realm, Identity, drop_realm(Realm, S))
+do_register_call(Realm, Identity, {ok, Pid}, S) ->
+    handle_existing(Realm, Pid, Identity, is_process_alive(Pid), S);
+do_register_call(Realm, Identity, error, S) ->
+    do_spawn_server(Realm, Identity, S).
+
+handle_existing(_Realm, Pid, _Identity, true, S) ->
+    {reply, {ok, Pid}, S};
+handle_existing(Realm, _Pid, Identity, false, S) ->
+    %% The process is dead but the EXIT message has not been
+    %% drained yet. Drop it now so the new server lands on a clean
+    %% slate.
+    do_spawn_server(Realm, Identity, drop_realm(Realm, S)).
+
+do_spawn_server(Realm, Identity, S) ->
+    on_server_started(Realm,
+                      hecate_pubsub_server:start_link(
+                          #{realm => Realm, identity => Identity}),
+                      S).
+
+on_server_started(Realm, {ok, Pid}, S) ->
+    {reply, {ok, Pid},
+     S#state{by_realm = (S#state.by_realm)#{Realm => Pid},
+             by_pid   = (S#state.by_pid)#{Pid => Realm}}};
+on_server_started(_Realm, {error, _} = E, S) ->
+    {reply, E, S}.
+
+lookup_reply({ok, Pid}) -> {ok, Pid};
+lookup_reply(error)     -> {error, not_found}.
+
+do_dispatch(_Realm, _From, _Frame, error, S) ->
+    {reply, {error, not_found}, S};
+do_dispatch(Realm, From, Frame, {ok, Pid}, S) ->
+    forward_frame(Realm, Pid, From, Frame, S).
+
+forward_frame(Realm, Pid, From, Frame, S) ->
+    try hecate_pubsub_server:process_frame(Pid, From, Frame) of
+        Subs -> {reply, {ok, Subs}, S}
+    catch
+        exit:{noproc, _} ->
+            {reply, {error, not_found}, drop_realm(Realm, S)}
     end.
 
-do_register(Realm, Identity, S) ->
-    case hecate_pubsub_server_sup:start_server(
-           #{realm => Realm, identity => Identity}) of
-        {ok, Pid} ->
-            Ref      = erlang:monitor(process, Pid),
-            ByRealm2 = maps:put(Realm, Pid, S#state.by_realm),
-            ByRef2   = maps:put(Ref, Realm, S#state.by_ref),
-            {reply, {ok, Pid},
-             S#state{by_realm = ByRealm2, by_ref = ByRef2}};
-        {error, _} = Error ->
-            {reply, Error, S}
-    end.
-
-do_dispatch(Realm, From, Frame, S) ->
-    case maps:find(Realm, S#state.by_realm) of
-        {ok, Pid} ->
-            try hecate_pubsub_server:process_frame(Pid, From, Frame) of
-                Subs -> {reply, {ok, Subs}, S}
-            catch
-                exit:{noproc, _} ->
-                    {reply, {error, not_found}, drop_realm(Realm, S)}
-            end;
-        error ->
-            {reply, {error, not_found}, S}
-    end.
-
-drop_ref(Ref, S) ->
-    case maps:find(Ref, S#state.by_ref) of
-        {ok, Realm} ->
-            S#state{
-                by_realm = maps:remove(Realm, S#state.by_realm),
-                by_ref   = maps:remove(Ref, S#state.by_ref)
-            };
-        error ->
-            S
+drop_pid(Pid, S) ->
+    case maps:find(Pid, S#state.by_pid) of
+        {ok, Realm} -> drop_realm(Realm, S);
+        error       -> S
     end.
 
 drop_realm(Realm, S) ->
+    Pid = maps:get(Realm, S#state.by_realm, undefined),
     S#state{
         by_realm = maps:remove(Realm, S#state.by_realm),
-        by_ref   = maps:filter(fun(_, V) -> V =/= Realm end, S#state.by_ref)
+        by_pid   = drop_pid_entry(Pid, S#state.by_pid)
     }.
+
+drop_pid_entry(undefined, ByPid) -> ByPid;
+drop_pid_entry(Pid, ByPid)       -> maps:remove(Pid, ByPid).

@@ -9,7 +9,7 @@
 | Phase | Status | Notes |
 |---|---|---|
 | 1 | ✅ shipped | identity registry + identity_sup skeleton; rebar3 override for macula debug_info |
-| 2 | pending | de-singleton high-level gen_servers |
+| 2 | ✅ shipped | de-singletoned pubsub_registry + content_announcer; deleted pubsub_server_sup; identity_sup wires per-identity registry + announcer |
 | 3 | pending | per-identity QUIC bind + routing |
 | 4 | pending | identity config loader + boot |
 | 5 | pending | admin API |

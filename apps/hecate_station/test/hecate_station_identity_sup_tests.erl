@@ -1,14 +1,17 @@
-%% @doc Eunit suite for the per-identity supervisor (Phase 1).
+%% @doc Eunit suite for the per-identity supervisor.
 %%
-%% Phase 1 deliverable: lay the OTP shape. The supervisor itself
-%% has no children yet — Phase 2/3 wire the per-identity workers
-%% in. The tests here verify:
+%% Verifies:
 %%
 %% <ul>
-%%   <li>start_link succeeds and returns a live, child-less
-%%       supervisor pid;</li>
-%%   <li>multiple identity_sup instances coexist in one BEAM (no
-%%       `{local, _}' name registration);</li>
+%%   <li>start_link succeeds and returns a live supervisor pid
+%%       carrying the de-singletonised pubsub_registry as a
+%%       per-identity child;</li>
+%%   <li>passing the announcer prerequisites (identity / station_id
+%%       / endpoint) brings up the content_announcer alongside the
+%%       registry;</li>
+%%   <li>multiple identity_sup instances coexist in one BEAM with
+%%       disjoint pubsub_registry pids (no `{local, _}'
+%%       collisions);</li>
 %%   <li>graceful shutdown via the parent's `exit(Sup, shutdown)'
 %%       takes the sup down cleanly.</li>
 %% </ul>
@@ -32,9 +35,30 @@ start_link_returns_live_supervisor_test() ->
     {ok, Sup} = ?SUP:start_link(opts(<<"identity-a">>)),
     ?assert(is_pid(Sup)),
     ?assert(is_process_alive(Sup)),
-    %% Phase 1 children list is empty — Phase 2/3 reparents the
-    %% per-identity workers (station_server, swim, dht, overlay).
-    ?assertEqual([], supervisor:which_children(Sup)),
+    %% Phase 2 wires pubsub_registry as the always-on per-identity
+    %% child. The content_announcer is opt-in; absent identity /
+    %% station_id / endpoint it is omitted (this is the path the
+    %% Phase 1 lifecycle tests still travel through `opts/1').
+    Ids = lists:sort(
+        [Id || {Id, _, _, _} <- supervisor:which_children(Sup)]),
+    ?assertEqual([hecate_pubsub_registry], Ids),
+    ok = shutdown(Sup).
+
+start_link_with_announcer_opts_includes_announcer_test() ->
+    process_flag(trap_exit, true),
+    Kp = macula_identity:generate(),
+    Opts = #{
+        identity_key => <<"identity-a">>,
+        identity     => Kp,
+        station_id   => macula_identity:public(Kp),
+        endpoint     => <<"quic://test:4433">>
+    },
+    {ok, Sup} = ?SUP:start_link(Opts),
+    Ids = lists:sort(
+        [Id || {Id, _, _, _} <- supervisor:which_children(Sup)]),
+    ?assertEqual(lists:sort([hecate_pubsub_registry,
+                             hecate_content_announcer]),
+                 Ids),
     ok = shutdown(Sup).
 
 multiple_identity_sups_coexist_test() ->
@@ -45,6 +69,28 @@ multiple_identity_sups_coexist_test() ->
     [?assert(is_process_alive(P)) || P <- [A, B, C]],
     ?assertEqual(3, length(lists:usort([A, B, C]))),
     [ok = shutdown(P) || P <- [A, B, C]].
+
+multi_identity_sups_have_disjoint_registries_test() ->
+    process_flag(trap_exit, true),
+    {ok, A} = ?SUP:start_link(opts(<<"identity-a">>)),
+    {ok, B} = ?SUP:start_link(opts(<<"identity-b">>)),
+    RegA = registry_pid(A),
+    RegB = registry_pid(B),
+    ?assertNotEqual(RegA, RegB),
+    [?assert(is_process_alive(P)) || P <- [RegA, RegB]],
+    %% Subscribe to a realm under A; B's registry must not see it.
+    R  = crypto:strong_rand_bytes(32),
+    Kp = macula_identity:generate(),
+    {ok, _ServerA} = hecate_pubsub_registry:register(RegA, R, Kp),
+    ?assertEqual([R], hecate_pubsub_registry:list_realms(RegA)),
+    ?assertEqual([], hecate_pubsub_registry:list_realms(RegB)),
+    ok = shutdown(A),
+    ok = shutdown(B).
+
+registry_pid(Sup) ->
+    [Pid] = [P || {hecate_pubsub_registry, P, _, _}
+                  <- supervisor:which_children(Sup)],
+    Pid.
 
 graceful_shutdown_takes_sup_down_test() ->
     process_flag(trap_exit, true),
