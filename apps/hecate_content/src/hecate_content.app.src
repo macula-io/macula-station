@@ -3,7 +3,7 @@
     {vsn, "0.1.0"},
     {registered, [hecate_content_sup, hecate_content_store, hecate_content_transfer]},
     {mod, {hecate_content_app, []}},
-    {applications, [kernel, stdlib, crypto, hecate_frame, hecate_record, macula]},
+    {applications, [kernel, stdlib, crypto, hecate_frame, hecate_record, hecate_dht, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

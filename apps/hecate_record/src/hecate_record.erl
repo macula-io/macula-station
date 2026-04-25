@@ -22,6 +22,7 @@
     realm_stations/2, realm_stations/3,
     realm_member_endorsement/2, realm_member_endorsement/3,
     procedure_advertisement/3, procedure_advertisement/4,
+    content_announcement/3, content_announcement/4,
     foundation_seed_list/2, foundation_seed_list/3,
     foundation_parameter/3, foundation_parameter/4,
     foundation_realm_trust_list/2, foundation_realm_trust_list/3,
@@ -55,6 +56,7 @@
     realm_stations_opts/0,
     realm_member_endorsement_opts/0,
     procedure_advertisement_opts/0,
+    content_announcement_opts/0,
     foundation_seed/0,
     foundation_seed_list_opts/0,
     foundation_parameter_opts/0,
@@ -76,6 +78,7 @@
 -define(TYPE_FOUNDATION_PARAMETER,         16#0E).
 -define(TYPE_FOUNDATION_REALM_TRUST_LIST,  16#0F).
 -define(TYPE_FOUNDATION_T3_ATTESTATION,    16#10).
+-define(TYPE_CONTENT_ANNOUNCEMENT,         16#11).
 
 %% Domain separation for derived storage keys (Part 3 §3.3).
 -define(STORAGE_DOMAIN_STATION_SET,    <<"station_set">>).
@@ -134,6 +137,13 @@
     rate_limit_qps     => non_neg_integer(),
     max_concurrency    => non_neg_integer(),
     ttl_ms             => pos_integer()
+}.
+
+-type content_announcement_opts() :: #{
+    name        => binary(),
+    size        => non_neg_integer(),
+    chunk_count => non_neg_integer(),
+    ttl_ms      => pos_integer()
 }.
 
 -type foundation_seed() :: #{
@@ -300,6 +310,29 @@ procedure_advertisement(AdvertiserNode, ProcedureUri, ServingStation, Opts)
     Payload = procedure_advertisement_payload(AdvertiserNode, ProcedureUri,
                                               ServingStation, Opts),
     envelope(?TYPE_PROCEDURE_ADVERTISEMENT, AdvertiserNode, Payload, Opts).
+
+%%------------------------------------------------------------------
+%% Constructors — content_announcement (Part 6 §9.x)
+%%
+%% Signed announcement that `AnnouncerNode' is hosting the content
+%% identified by `MCID' (34-byte Macula Content IDentifier) and
+%% reachable at `Endpoint'. Optional metadata fields carry the
+%% manifest's display name, byte size, and chunk count so locators
+%% can prioritise without fetching the manifest first.
+%%------------------------------------------------------------------
+
+-spec content_announcement(macula_identity:pubkey(), binary(), binary()) -> record().
+content_announcement(AnnouncerNode, MCID, Endpoint) ->
+    content_announcement(AnnouncerNode, MCID, Endpoint, #{}).
+
+-spec content_announcement(macula_identity:pubkey(), binary(), binary(),
+                            content_announcement_opts()) -> record().
+content_announcement(AnnouncerNode, MCID, Endpoint, Opts)
+  when is_binary(AnnouncerNode), byte_size(AnnouncerNode) =:= 32,
+       is_binary(MCID), byte_size(MCID) =:= 34,
+       is_binary(Endpoint) ->
+    Payload = content_announcement_payload(AnnouncerNode, MCID, Endpoint, Opts),
+    envelope(?TYPE_CONTENT_ANNOUNCEMENT, AnnouncerNode, Payload, Opts).
 
 %%------------------------------------------------------------------
 %% Constructors — foundation_seed_list (Part 6 §9.14)
@@ -627,6 +660,16 @@ procedure_advertisement_payload(AdvertiserNode, ProcedureUri,
 with_uint(Map, _Key, undefined) -> Map;
 with_uint(Map,  Key, N) when is_integer(N), N >= 0 ->
     Map#{ {text, Key} => N }.
+
+content_announcement_payload(AnnouncerNode, MCID, Endpoint, Opts) ->
+    Base = #{
+        {text, <<"announcer_node">>} => AnnouncerNode,
+        {text, <<"mcid">>}           => MCID,
+        {text, <<"endpoint">>}       => {text, Endpoint}
+    },
+    M1 = with_text(Base, <<"name">>,        maps:get(name, Opts, undefined)),
+    M2 = with_uint(M1,   <<"size">>,        maps:get(size, Opts, undefined)),
+    with_uint(M2,        <<"chunk_count">>, maps:get(chunk_count, Opts, undefined)).
 
 foundation_seed_list_payload(Version, ValidFrom, ValidUntil, Seeds) ->
     #{

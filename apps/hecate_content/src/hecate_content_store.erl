@@ -38,7 +38,9 @@
     %% Maintenance
     gc/0, stats/0, verify_integrity/0,
     %% Path helpers (testing)
-    block_path/1, manifest_path/1
+    block_path/1, manifest_path/1,
+    %% Eventing — pg group used for manifest_stored notifications
+    events_group/0
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -217,7 +219,7 @@ do_delete_block(<<_:8, _:8, Hash:32/binary>>, S) ->
 %%====================================================================
 
 do_put_manifest(Manifest, S) ->
-    <<_:8, _:8, Hash:32/binary>> = maps:get(mcid, Manifest),
+    <<_:8, _:8, Hash:32/binary>> = MCID = maps:get(mcid, Manifest),
     Path = manifest_path_in(Hash, S#state.base_dir),
     ok = filelib:ensure_dir(Path),
     {ok, Encoded} = hecate_content_manifest:encode(Manifest),
@@ -227,7 +229,26 @@ do_put_manifest(Manifest, S) ->
             maps:get(chunk_count, Manifest),
             erlang:system_time(second)},
     ets:insert(S#state.manifest_index, {Hash, Info}),
+    notify_subscribers({manifest_stored, MCID, Manifest}),
     ok.
+
+%% @doc pg group used to broadcast `{manifest_stored, MCID, Manifest}'
+%% messages. Subscribers (e.g. `hecate_content_announcer') join this
+%% group and react.
+-spec events_group() -> atom().
+events_group() ->
+    hecate_content_events.
+
+notify_subscribers(Event) ->
+    Members = pg_safe_get_members(events_group()),
+    lists:foreach(fun(P) -> P ! Event end, Members).
+
+pg_safe_get_members(Group) ->
+    try pg:get_members(Group) of
+        Pids -> Pids
+    catch
+        _:_ -> []
+    end.
 
 do_get_manifest(<<_:8, _:8, Hash:32/binary>>, S) ->
     fetch_manifest(ets:member(S#state.manifest_index, Hash), Hash, S).
