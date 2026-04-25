@@ -138,7 +138,7 @@ drain_exits() ->
 
 signed_url() ->
     Kp = macula_identity:generate(),
-    Record = hecate_record:sign(
-               hecate_record:node_record(
+    Record = macula_record:sign(
+               macula_record:node_record(
                  macula_identity:public(Kp), [], 0), Kp),
     hecate_bootstrap_peer_url:encode(Record, []).

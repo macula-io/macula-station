@@ -3,7 +3,7 @@
 %% Reads the foundation's latest `AnchorPublished(bytes)' event from
 %% a foundation-deployed contract via `eth_getLogs'. Ethereum has
 %% effectively no size limit on log data, so the event's bytes
-%% argument carries the `hecate_record:encode/1' envelope of the
+%% argument carries the `macula_record:encode/1' envelope of the
 %% foundation seed list directly — no URL indirection, no hash
 %% verification step (the Ed25519 signature on the inner record is
 %% the trust anchor).

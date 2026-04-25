@@ -145,21 +145,21 @@ run_tick(#state{dht = Dht, self_id = SelfId} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec process_record(hecate_record:record(), macula_identity:pubkey(),
+-spec process_record(macula_record:record(), macula_identity:pubkey(),
                      #state{}, outcome()) -> outcome().
 process_record(Record, SelfId, State, Acc0) ->
     Acc = bump(Acc0, records_seen),
-    maybe_republish(hecate_record:key(Record) =:= SelfId,
+    maybe_republish(macula_record:key(Record) =:= SelfId,
                     Record, State, Acc).
 
--spec maybe_republish(boolean(), hecate_record:record(),
+-spec maybe_republish(boolean(), macula_record:record(),
                       #state{}, outcome()) -> outcome().
 maybe_republish(false, _Record, _State, Acc) ->
     Acc;
 maybe_republish(true, Record,
                 #state{dht = Dht, identity = Identity,
                        store_opts = StoreOpts}, Acc) ->
-    Fresh = hecate_record:refresh(Record, Identity),
+    Fresh = macula_record:refresh(Record, Identity),
     ok    = hecate_dht:put_record(Dht, Fresh),
     account(hecate_dht:store(Dht, Fresh, StoreOpts), bump(Acc, owned)).
 

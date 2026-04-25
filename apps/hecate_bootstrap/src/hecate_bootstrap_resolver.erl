@@ -15,7 +15,7 @@
 %%
 %% Each implementation is responsible for issuing the lookup, parsing
 %% the DoH response, extracting the PKARR/CBOR payload, and returning
-%% the raw `hecate_record' bytes. Decoding, signature verification,
+%% the raw `macula_record' bytes. Decoding, signature verification,
 %% and corroboration are done by the orchestrator — resolvers MUST
 %% NOT verify signatures themselves (a single trusted resolver is a
 %% trust-anchor failure mode).

@@ -4,7 +4,7 @@
     {registered, [hecate_bootstrap_sup]},
     {mod, {hecate_bootstrap_app, []}},
     {applications, [kernel, stdlib, crypto, inets, ssl,
-                    macula, hecate_record]},
+                    macula]},
     {env, [{responder, disabled}]},
     {modules, []},
     {licenses, ["Apache-2.0"]},

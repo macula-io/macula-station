@@ -53,11 +53,11 @@
 
 %% @doc Build a peer URL from a signed `node_record' and a list of
 %% address hints. The record MUST already be signed
-%% (`hecate_record:sign/2').
--spec encode(hecate_record:record(), [map()]) -> peer_url().
+%% (`macula_record:sign/2').
+-spec encode(macula_record:record(), [map()]) -> peer_url().
 encode(Record, Addresses)
   when is_map(Record), is_list(Addresses) ->
-    RecBin = hecate_record:encode(Record),
+    RecBin = macula_record:encode(Record),
     Payload = #{
         {text, <<"r">>} => RecBin,
         {text, <<"a">>} => Addresses
@@ -72,7 +72,7 @@ encode(Record, Addresses)
 %% decoded, signature-verified, non-expired `node_record' and
 %% `Addresses' is the hint list (may be empty).
 -spec decode(binary()) ->
-        {ok, hecate_record:record(), [map()]} | {error, decode_error()}.
+        {ok, macula_record:record(), [map()]} | {error, decode_error()}.
 decode(Bin) when is_binary(Bin) ->
     case split_scheme(Bin) of
         {ok, B64}   -> decode_b64(B64);
@@ -110,14 +110,14 @@ validate_shape(_Bin, Addrs) when not is_list(Addrs)  -> {error, bad_addresses};
 validate_shape(Bin, Addrs)                           -> decode_record(Bin, Addrs).
 
 decode_record(Bin, Addrs) ->
-    verify_record(hecate_record:decode(Bin), Addrs).
+    verify_record(macula_record:decode(Bin), Addrs).
 
 verify_record({error, _}, _Addrs)  -> {error, bad_record};
 verify_record({ok, Record}, Addrs) ->
-    check_type(hecate_record:type(Record), Record, Addrs).
+    check_type(macula_record:type(Record), Record, Addrs).
 
 check_type(16#01, Record, Addrs) ->
-    check_verify(hecate_record:verify(Record), Addrs);
+    check_verify(macula_record:verify(Record), Addrs);
 check_type(_, _Record, _Addrs) ->
     {error, wrong_type}.
 

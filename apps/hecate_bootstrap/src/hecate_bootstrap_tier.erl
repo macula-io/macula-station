@@ -19,7 +19,7 @@
 
 -type verified_peer() :: #{
     node_id      := macula_identity:pubkey(),
-    record       := hecate_record:record(),
+    record       := macula_record:record(),
     addresses    := [map()],
     tier         := tier(),
     via          := module(),

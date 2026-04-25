@@ -90,7 +90,7 @@ build_find_value(<<_:256>> = Key, <<_:256>> = Origin, Identity) ->
 
 %% @doc Build a signed VALUE response carrying one or more records.
 -spec build_value_reply(Key :: hecate_dht_xor:id(),
-                        [hecate_record:record()],
+                        [macula_record:record()],
                         macula_identity:key_pair()) -> hecate_frame:frame().
 build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
     hecate_frame:sign(
@@ -98,7 +98,7 @@ build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
       Identity).
 
 %% @doc Build a signed STORE request carrying a record to persist.
--spec build_store(hecate_record:record(),
+-spec build_store(macula_record:record(),
                   macula_identity:key_pair()) -> hecate_frame:frame().
 build_store(Record, Identity) when is_map(Record) ->
     hecate_frame:sign(hecate_frame:store(#{record => Record}), Identity).

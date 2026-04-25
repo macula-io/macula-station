@@ -14,8 +14,8 @@ send_store_records_replica_on_custodian_test() ->
     Record = signed_record(),
     {ok, #{stored := true, reason := undefined}} =
         hecate_dht:send_store(A, BId, Record),
-    [Stored] = hecate_dht:find_local_record(B, hecate_record:storage_key(Record)),
-    ?assertEqual(hecate_record:key(Record), hecate_record:key(Stored)),
+    [Stored] = hecate_dht:find_local_record(B, macula_record:storage_key(Record)),
+    ?assertEqual(macula_record:key(Record), macula_record:key(Stored)),
     stop_net(Net).
 
 send_store_no_transport_returns_error_test() ->
@@ -190,8 +190,8 @@ dummy_ref(NodeId) ->
 
 signed_record() ->
     Kp = macula_identity:generate(),
-    hecate_record:sign(
-        hecate_record:node_record(macula_identity:public(Kp), [], 0),
+    macula_record:sign(
+        macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp).
 
 diverse_constraints(K) ->

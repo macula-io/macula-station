@@ -51,12 +51,12 @@
 %% Returns `{ok, Roles}' with the endorsed role list on success, or
 %% `{error, Reason}' otherwise. Callers typically treat any error as
 %% a rejection and drop the pending join.
--spec verify_endorsement(hecate_record:record(), realm(), node_id()) ->
+-spec verify_endorsement(macula_record:record(), realm(), node_id()) ->
         {ok, [binary()]} | {error, verify_error()}.
 verify_endorsement(Record, Realm, Member)
   when is_binary(Realm),  byte_size(Realm)  =:= 32,
        is_binary(Member), byte_size(Member) =:= 32 ->
-    verify_shape_then_payload(hecate_record:verify(Record), Realm, Member).
+    verify_shape_then_payload(macula_record:verify(Record), Realm, Member).
 
 verify_shape_then_payload({error, Reason}, _Realm, _Member) ->
     {error, Reason};
@@ -108,13 +108,13 @@ role_to_binary(R)        when is_binary(R) -> R.
 %% The joining station signs the frame with `Identity' so the
 %% receiver can bind the join attempt to the candidate member key
 %% (the endorsement binds it to the realm).
--spec build_join(realm(), node_id(), hecate_record:record(),
+-spec build_join(realm(), node_id(), macula_record:record(),
                  macula_identity:key_pair()) -> hecate_frame:frame().
 build_join(Realm, NewMember, Endorsement, Identity)
   when is_binary(Realm), byte_size(Realm) =:= 32,
        is_binary(NewMember), byte_size(NewMember) =:= 32,
        is_map(Endorsement) ->
-    _Encoded = hecate_record:encode(Endorsement),
+    _Encoded = macula_record:encode(Endorsement),
     hecate_frame:sign(hecate_frame:hyparview_join(#{
         realm      => Realm,
         new_member => NewMember

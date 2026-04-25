@@ -88,7 +88,7 @@ prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
              _State = hecate_station_app:prep_stop(#{}),
              %% Tombstone now in the local DHT.
              [Tomb] = hecate_dht:find_local_record(Dht, Pub),
-             ?assertEqual(16#0C, hecate_record:type(Tomb)),
+             ?assertEqual(16#0C, macula_record:type(Tomb)),
              %% Cache file on disk.
              CacheDir = maps:get(cache_dir, Ctx),
              ?assert(filelib:is_regular(
@@ -129,7 +129,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
             %% tag (0x0C); its payload carries the superseded
             %% node_record tag (0x01 — what `tombstone_type/0'
             %% reports).
-            ?assertEqual(16#0C, hecate_record:type(Stored)),
+            ?assertEqual(16#0C, macula_record:type(Stored)),
             _ = Ctx
          end}
     end}.
@@ -176,10 +176,10 @@ teardown_app(Ctx) -> teardown_dir(Ctx).
 
 tombstone(Kp, Reason) ->
     Pub = macula_identity:public(Kp),
-    Unsigned = hecate_record:tombstone(Pub,
+    Unsigned = macula_record:tombstone(Pub,
                                        hecate_station:tombstone_type(),
                                        Reason),
-    hecate_record:sign(Unsigned, Kp).
+    macula_record:sign(Unsigned, Kp).
 
 %%------------------------------------------------------------------
 %% Env + dir helpers — mirror hecate_station_admin_tests shapes so

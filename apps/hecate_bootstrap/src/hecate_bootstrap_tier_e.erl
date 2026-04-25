@@ -38,7 +38,7 @@ collect([U | Rest], Acc) ->
 
 accumulate({ok, Record, Addrs}, Rest, Acc) ->
     Peer = #{
-        node_id   => hecate_record:key(Record),
+        node_id   => macula_record:key(Record),
         record    => Record,
         addresses => Addrs,
         tier      => e,

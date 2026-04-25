@@ -143,7 +143,7 @@ do_announce(_MCID, _Manifest, #state{dht = undefined}) ->
     {error, dht_not_configured};
 do_announce(MCID, Manifest, S) ->
     Record = build_record(MCID, Manifest, S),
-    Signed = hecate_record:sign(Record, S#state.identity),
+    Signed = macula_record:sign(Record, S#state.identity),
     publish(S#state.dht, Signed).
 
 build_record(MCID, Manifest, S) ->
@@ -153,7 +153,7 @@ build_record(MCID, Manifest, S) ->
         chunk_count => maps:get(chunk_count, Manifest, 0),
         ttl_ms      => S#state.ttl_ms
     },
-    hecate_record:content_announcement(
+    macula_record:content_announcement(
         S#state.station_id, MCID, S#state.endpoint, Opts).
 
 publish(Dht, Record) ->

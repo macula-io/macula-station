@@ -98,7 +98,7 @@
 -type find_node_result() :: {ok, [hecate_frame:station_ref()]}
                           | {error, timeout | no_transport | term()}.
 
--type find_value_result() :: {value, [hecate_record:record()]}
+-type find_value_result() :: {value, [macula_record:record()]}
                            | {nodes, [hecate_frame:station_ref()]}
                            | {error, timeout | no_transport | term()}.
 
@@ -253,27 +253,27 @@ find_value(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
     gen_server:call(Pid, {find_value, Key, PeerId, Timeout}, Timeout + 1_000).
 
 -spec send_store(pid(), macula_identity:pubkey(),
-                 hecate_record:record()) -> send_store_result().
+                 macula_record:record()) -> send_store_result().
 send_store(Pid, PeerId, Record) ->
     send_store(Pid, PeerId, Record, ?DEFAULT_STORE_TIMEOUT_MS).
 
--spec send_store(pid(), macula_identity:pubkey(), hecate_record:record(),
+-spec send_store(pid(), macula_identity:pubkey(), macula_record:record(),
                  pos_integer()) -> send_store_result().
 send_store(Pid, <<_:256>> = PeerId, Record, Timeout)
   when is_map(Record), is_integer(Timeout), Timeout > 0 ->
     gen_server:call(Pid, {send_store, PeerId, Record, Timeout},
                     Timeout + 1_000).
 
--spec put_record(pid(), hecate_record:record()) -> ok.
+-spec put_record(pid(), macula_record:record()) -> ok.
 put_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {put_record, Record}).
 
 -spec find_local_record(pid(), hecate_dht_xor:id()) ->
-        [hecate_record:record()].
+        [macula_record:record()].
 find_local_record(Pid, <<_:256>> = Key) ->
     gen_server:call(Pid, {find_local_record, Key}).
 
--spec list_records(pid()) -> [hecate_record:record()].
+-spec list_records(pid()) -> [macula_record:record()].
 list_records(Pid) ->
     gen_server:call(Pid, list_records).
 
@@ -281,7 +281,7 @@ list_records(Pid) ->
 record_count(Pid) ->
     gen_server:call(Pid, record_count).
 
--spec delete_record(pid(), hecate_record:record()) -> ok.
+-spec delete_record(pid(), macula_record:record()) -> ok.
 delete_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {delete_record, Record}).
 
@@ -586,30 +586,30 @@ dispatch_find_value_timeout({{From, _Timer}, NewP}, S) ->
 %% of the same procedure_uri).
 %%=====================================================================
 
--spec store_put(ets:tid(), hecate_record:record()) -> ok.
+-spec store_put(ets:tid(), macula_record:record()) -> ok.
 store_put(Ets, Record) ->
-    StorageKey  = hecate_record:storage_key(Record),
-    EnvelopeKey = hecate_record:key(Record),
+    StorageKey  = macula_record:storage_key(Record),
+    EnvelopeKey = macula_record:key(Record),
     Keep = [Tup || {_, R} = Tup <- ets:lookup(Ets, StorageKey),
-                   hecate_record:key(R) =/= EnvelopeKey],
+                   macula_record:key(R) =/= EnvelopeKey],
     ets:delete(Ets, StorageKey),
     ets:insert(Ets, [{StorageKey, Record} | Keep]),
     ok.
 
 -spec store_lookup(ets:tid(), hecate_dht_xor:id()) ->
-          [hecate_record:record()].
+          [macula_record:record()].
 store_lookup(Ets, StorageKey) ->
     [R || {_, R} <- ets:lookup(Ets, StorageKey)].
 
 %% @doc Remove a single record (identified by storage key + envelope
 %% owner) while preserving other records from other owners that
 %% share the same storage key.
--spec store_delete(ets:tid(), hecate_record:record()) -> ok.
+-spec store_delete(ets:tid(), macula_record:record()) -> ok.
 store_delete(Ets, Record) ->
-    StorageKey  = hecate_record:storage_key(Record),
-    EnvelopeKey = hecate_record:key(Record),
+    StorageKey  = macula_record:storage_key(Record),
+    EnvelopeKey = macula_record:key(Record),
     Keep = [Tup || {_, R} = Tup <- ets:lookup(Ets, StorageKey),
-                   hecate_record:key(R) =/= EnvelopeKey],
+                   macula_record:key(R) =/= EnvelopeKey],
     ets:delete(Ets, StorageKey),
     ets:insert(Ets, Keep),
     ok.
@@ -618,7 +618,7 @@ store_delete(Ets, Record) ->
 %% Wire op: STORE outgoing + STORE_ACK correlation
 %%=====================================================================
 
--spec dispatch_send_store(macula_identity:pubkey(), hecate_record:record(),
+-spec dispatch_send_store(macula_identity:pubkey(), macula_record:record(),
                           pos_integer(), gen_server:from(), #state{}) ->
           {reply, send_store_result(), #state{}} | {noreply, #state{}}.
 dispatch_send_store(_PeerId, _Record, _Timeout, _From,
@@ -632,7 +632,7 @@ dispatch_send_store(PeerId, Record, Timeout, From,
                            pending_stores = P} = S) ->
     Frame = hecate_dht_protocol:build_store(Record, Id),
     Send(PeerId, Frame),
-    Key = hecate_record:storage_key(Record),
+    Key = macula_record:storage_key(Record),
     TimerRef = erlang:send_after(Timeout, self(),
                                  {send_store_timeout, Key, PeerId}),
     {noreply, S#state{pending_stores =
@@ -664,22 +664,22 @@ on_store(_Frame, _From, #state{send_frame = undefined} = S) ->
     S;
 on_store(Frame, FromNodeId, S) ->
     Record = maps:get(record, Frame),
-    persist_if_valid(hecate_record:verify(Record), Record, FromNodeId, S).
+    persist_if_valid(macula_record:verify(Record), Record, FromNodeId, S).
 
--spec persist_if_valid({ok, hecate_record:record()} | {error, term()},
-                       hecate_record:record(),
+-spec persist_if_valid({ok, macula_record:record()} | {error, term()},
+                       macula_record:record(),
                        macula_identity:pubkey(), #state{}) -> #state{}.
 persist_if_valid({ok, Record}, _Orig, FromNodeId,
                  #state{record_store = Ets, identity = Id,
                         send_frame = Send} = S) ->
     store_put(Ets, Record),
-    Key   = hecate_record:storage_key(Record),
+    Key   = macula_record:storage_key(Record),
     Reply = hecate_dht_protocol:build_store_ack(Key, true, undefined, Id),
     Send(FromNodeId, Reply),
     S;
 persist_if_valid({error, Reason}, Record, FromNodeId,
                  #state{identity = Id, send_frame = Send} = S) ->
-    Key   = hecate_record:storage_key(Record),
+    Key   = macula_record:storage_key(Record),
     Reply = hecate_dht_protocol:build_store_ack(Key, false, Reason, Id),
     Send(FromNodeId, Reply),
     S.
@@ -848,7 +848,7 @@ on_find_value(Frame, FromNodeId, #state{record_store = Ets} = S) ->
     Key = maps:get(key, Frame),
     reply_find_value(store_lookup(Ets, Key), Key, FromNodeId, S).
 
--spec reply_find_value([hecate_record:record()], hecate_dht_xor:id(),
+-spec reply_find_value([macula_record:record()], hecate_dht_xor:id(),
                        macula_identity:pubkey(), #state{}) -> #state{}.
 reply_find_value([], Key, FromNodeId,
                  #state{identity = Id, send_frame = Send, rt = Rt, k = K} = S) ->
@@ -874,7 +874,7 @@ on_value(Frame, FromNodeId, #state{pending_find_values = P} = S) ->
     resolve_value(maps:take({FromNodeId, Key}, P), Records, S).
 
 -spec resolve_value({{gen_server:from(), reference()}, map()} | error,
-                    [hecate_record:record()], #state{}) -> #state{}.
+                    [macula_record:record()], #state{}) -> #state{}.
 resolve_value(error, _Records, S) ->
     S;
 resolve_value({{From, Timer}, NewP}, Records, S) ->

@@ -51,7 +51,7 @@ init_per_suite(Cfg) -> Cfg.
 end_per_suite(_Cfg) -> ok.
 
 init_per_testcase(_Case, Cfg) ->
-    application:unset_env(hecate_record, foundation_pubkeys),
+    application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:init(),
     hecate_bootstrap_mdns_fake:init(),
     hecate_bootstrap_dht_fake:init(),
@@ -60,7 +60,7 @@ init_per_testcase(_Case, Cfg) ->
     Cfg.
 
 end_per_testcase(_Case, _Cfg) ->
-    application:unset_env(hecate_record, foundation_pubkeys),
+    application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:reset(),
     hecate_bootstrap_mdns_fake:reset(),
     hecate_bootstrap_dht_fake:reset(),
@@ -114,34 +114,34 @@ foundation_record_trust_boundary(_Cfg) ->
     FoundationKp = macula_identity:generate(),
     Fk = macula_identity:public(FoundationKp),
     ImpostorKp = macula_identity:generate(),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
 
     %% Trusted path: foundation parameter signed by foundation key.
-    GoodR = hecate_record:sign(
-              hecate_record:foundation_parameter(
+    GoodR = macula_record:sign(
+              macula_record:foundation_parameter(
                 Fk, <<"puzzle_difficulty">>, 8),
               FoundationKp),
-    {ok, _} = hecate_foundation:verify_record(GoodR),
+    {ok, _} = macula_foundation:verify_record(GoodR),
 
     %% Untrusted path: same record type, signed by a key that is NOT
     %% on the foundation list.
     ImpostorPub = macula_identity:public(ImpostorKp),
-    BadR = hecate_record:sign(
-             hecate_record:foundation_parameter(
+    BadR = macula_record:sign(
+             macula_record:foundation_parameter(
                ImpostorPub, <<"puzzle_difficulty">>, 8),
              ImpostorKp),
-    {error, not_foundation_signed} = hecate_foundation:verify_record(BadR),
+    {error, not_foundation_signed} = macula_foundation:verify_record(BadR),
 
     %% Wrong type (node_record): rejected even from the trusted key.
-    NodeR = hecate_record:sign(
-              hecate_record:node_record(Fk, [], 0), FoundationKp),
-    {error, wrong_type} = hecate_foundation:verify_record(NodeR),
+    NodeR = macula_record:sign(
+              macula_record:node_record(Fk, [], 0), FoundationKp),
+    {error, wrong_type} = macula_foundation:verify_record(NodeR),
     ok.
 
 foundation_seed_list_signed_by_trusted_key(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
 
     Seeds = [
         #{node_id => crypto:strong_rand_bytes(32),
@@ -151,12 +151,12 @@ foundation_seed_list_signed_by_trusted_key(_Cfg) ->
         #{node_id => crypto:strong_rand_bytes(32),
           addresses => [], tier => 3}
     ],
-    R = hecate_record:sign(
-          hecate_record:foundation_seed_list(Fk, Seeds), Kp),
-    {ok, Verified} = hecate_foundation:verify_record(R),
-    16#0D = hecate_record:type(Verified),
+    R = macula_record:sign(
+          macula_record:foundation_seed_list(Fk, Seeds), Kp),
+    {ok, Verified} = macula_foundation:verify_record(R),
+    16#0D = macula_record:type(Verified),
     %% Storage key must be domain-separated (not equal to Fk).
-    SK = hecate_record:storage_key(Verified),
+    SK = macula_record:storage_key(Verified),
     true = SK =/= Fk,
     ok.
 
@@ -167,7 +167,7 @@ foundation_seed_list_signed_by_trusted_key(_Cfg) ->
 tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Bytes = signed_seed_list_bytes(Kp, Fk, 5),
     Resolvers = [
         {hecate_bootstrap_tier_a_fake, <<"r1">>},
@@ -190,7 +190,7 @@ tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
 tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Bytes = signed_seed_list_bytes(Kp, Fk, 3),
     %% Only one resolver corroborates — threshold is 2, so Tier A fails.
     hecate_bootstrap_tier_a_fake:set(<<"r1">>, Fk, {ok, Bytes}),
@@ -247,8 +247,8 @@ tier_b_wins_cascade_when_tier_a_has_no_resolvers(_Cfg) ->
 make_peer() ->
     Kp  = macula_identity:generate(),
     Pub = macula_identity:public(Kp),
-    Rec = hecate_record:sign(
-            hecate_record:node_record(Pub, [], 0), Kp),
+    Rec = macula_record:sign(
+            macula_record:node_record(Pub, [], 0), Kp),
     #{pub => Pub, signed_record => Rec, port => 7000,
       tier => 0, addr => rand_addr_v6()}.
 
@@ -300,11 +300,11 @@ registry_handshake(Peers) ->
 tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
                  Fk, tier_c_seeds(5)), Kp),
-    DnsPacket = tier_c_pkarr_dns(hecate_record:encode(Record)),
+    DnsPacket = tier_c_pkarr_dns(macula_record:encode(Record)),
     Item = hecate_bootstrap_bep44:sign(1, DnsPacket, Kp),
     hecate_bootstrap_dht_fake:set(
       hecate_bootstrap_bep44:target_id(Fk), Item),
@@ -357,12 +357,12 @@ tier_c_chunk(Bin, Max) ->
 tier_d_wins_when_a_b_c_are_down(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
                  Fk, tier_c_seeds(4)), Kp),
     hecate_bootstrap_chain_fake:set(
-      bitcoin, hecate_record:encode(Record)),
+      bitcoin, macula_record:encode(Record)),
     Tiers = full_cascade_tiers(Fk,
                                #{tier_c_working => false,
                                  tier_d_chains  => [{bitcoin, #{}}]}),
@@ -378,7 +378,7 @@ tier_d_wins_when_a_b_c_are_down(_Cfg) ->
 
 full_cascade_all_tiers_down_returns_failure(_Cfg) ->
     Fk = crypto:strong_rand_bytes(32),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
     hecate_bootstrap_chain_fake:fail(bitcoin,  chain_unreachable),
     hecate_bootstrap_chain_fake:fail(ethereum, chain_unreachable),
     Tiers = full_cascade_tiers(Fk,
@@ -399,7 +399,7 @@ full_cascade_all_tiers_down_returns_failure(_Cfg) ->
 full_cascade_under_time_budget(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
     %% Only Tier E has peers; cascade must fall through A+B+C+D.
     Urls = [phase6_signed_url() || _ <- lists:seq(1, 3)],
     Tiers = full_cascade_tiers(Fk,
@@ -453,8 +453,8 @@ full_cascade_tiers(Fk, Opts) ->
 
 phase6_signed_url() ->
     Kp = macula_identity:generate(),
-    Record = hecate_record:sign(
-               hecate_record:node_record(
+    Record = macula_record:sign(
+               macula_record:node_record(
                  macula_identity:public(Kp), [], 0), Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
 
@@ -469,11 +469,11 @@ tier_d_eth_adapter_end_to_end(_Cfg) ->
                  "aabbccddeeff00112233445566778899">>,
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(
                  Fk, tier_c_seeds(3)), Kp),
-    RecordBytes = hecate_record:encode(Record),
+    RecordBytes = macula_record:encode(Record),
     Log = eth_log(Contract, Topic, <<"0x2a">>, RecordBytes),
     RpcBody = iolist_to_binary(
                 json:encode(
@@ -549,8 +549,8 @@ unregister_fake(Name) ->
 
 signed_url() ->
     Kp = macula_identity:generate(),
-    Record = hecate_record:sign(
-               hecate_record:node_record(
+    Record = macula_record:sign(
+               macula_record:node_record(
                  macula_identity:public(Kp), [], 0),
                Kp),
     hecate_bootstrap_peer_url:encode(Record, []).
@@ -559,6 +559,6 @@ signed_seed_list_bytes(Kp, Fk, N) ->
     Seeds = [#{node_id   => crypto:strong_rand_bytes(32),
                addresses => [],
                tier      => 4} || _ <- lists:seq(1, N)],
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(Fk, Seeds), Kp),
-    hecate_record:encode(Record).
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(Fk, Seeds), Kp),
+    macula_record:encode(Record).

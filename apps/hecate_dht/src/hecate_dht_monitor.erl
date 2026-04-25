@@ -231,15 +231,15 @@ count(Match, Field, Reports) ->
 -spec replica_report(#state{}) -> replica_report().
 replica_report(#state{dht = Dht, self_id = SelfId, k = K}) ->
     Records = hecate_dht:list_records(Dht),
-    Owned   = [R || R <- Records, hecate_record:key(R) =:= SelfId],
+    Owned   = [R || R <- Records, macula_record:key(R) =:= SelfId],
     Summaries = [replica_summary(R, Dht, K) || R <- Owned],
     #{owned_records => length(Owned),
       placement_summaries => Summaries}.
 
--spec replica_summary(hecate_record:record(), hecate_dht:dht(),
+-spec replica_summary(macula_record:record(), hecate_dht:dht(),
                       pos_integer()) -> replica_summary().
 replica_summary(Record, Dht, K) ->
-    StorageKey = hecate_record:storage_key(Record),
+    StorageKey = macula_record:storage_key(Record),
     Entries    = hecate_dht:k_closest(Dht, StorageKey, K),
     Refs       = [hecate_dht_protocol:entry_to_station_ref(E) || E <- Entries],
     Placement  = hecate_dht_placement:place(

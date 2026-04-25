@@ -243,10 +243,10 @@
 
 -type value_spec()         :: #{
     key     := id256(),
-    records := [hecate_record:record()]
+    records := [macula_record:record()]
 }.
 
--type store_spec()         :: #{record := hecate_record:record()}.
+-type store_spec()         :: #{record := macula_record:record()}.
 
 -type store_ack_spec()     :: #{
     key    := id256(),
@@ -255,7 +255,7 @@
 }.
 
 -type replicate_spec()     :: #{
-    record        := hecate_record:record(),
+    record        := macula_record:record(),
     new_custodian := boolean()
 }.
 
@@ -729,7 +729,7 @@ validate_asn(N) when is_integer(N), N >= 0 -> ok.
 validate_addresses([])                        -> ok;
 validate_addresses([A | Rest]) when is_map(A) -> validate_addresses(Rest).
 
--spec validate_record(hecate_record:record()) -> ok.
+-spec validate_record(macula_record:record()) -> ok.
 validate_record(#{type := _, key := <<_:256>>, payload := P}) when is_map(P) ->
     ok.
 
@@ -1160,7 +1160,7 @@ base(FrameType, Caps) ->
     #{
         version      => ?PROTOCOL_VERSION,
         frame_type   => FrameType,
-        frame_id     => hecate_record_uuid:v7(),
+        frame_id     => macula_record_uuid:v7(),
         sent_at_ms   => erlang:system_time(millisecond),
         capabilities => Caps,
         realm        => undefined,

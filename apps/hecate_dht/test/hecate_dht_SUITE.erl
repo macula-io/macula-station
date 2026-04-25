@@ -155,11 +155,11 @@ fleet_lifecycle_loops_observed(_Config) ->
 
     %% Owned record + an already-expired record so all three loops
     %% have something concrete to do every tick.
-    OwnedRecord = hecate_record:sign(
-                    hecate_record:node_record(SelfId, [], 0), Kp),
+    OwnedRecord = macula_record:sign(
+                    macula_record:node_record(SelfId, [], 0), Kp),
     ok = hecate_dht:put_record(Dht, OwnedRecord),
-    Stale = hecate_record:sign(
-              hecate_record:node_record(macula_identity:public(
+    Stale = macula_record:sign(
+              macula_record:node_record(macula_identity:public(
                                           macula_identity:generate()),
                                         [], 0, #{ttl_ms => 1}),
               Kp),

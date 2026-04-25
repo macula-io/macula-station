@@ -9,7 +9,6 @@
         macula,
         hecate_frame,
         hecate_peering,
-        hecate_record,
         hecate_transport,
         hecate_dht,
         hecate_swim,

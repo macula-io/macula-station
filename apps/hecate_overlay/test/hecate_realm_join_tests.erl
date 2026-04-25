@@ -25,10 +25,10 @@ accepts_multiple_roles_test() ->
 rejects_unsigned_endorsement_test() ->
     {_AdminKp, RealmId} = admin(),
     Member = crypto:strong_rand_bytes(32),
-    Unsigned = hecate_record:realm_member_endorsement(
+    Unsigned = macula_record:realm_member_endorsement(
                  RealmId,
                  #{realm => RealmId, member_node => Member, roles => []}),
-    %% hecate_record:verify returns {error, bad_record} for unsigned.
+    %% macula_record:verify returns {error, bad_record} for unsigned.
     ?assertEqual({error, bad_record},
                  hecate_realm_join:verify_endorsement(Unsigned, RealmId, Member)).
 
@@ -36,19 +36,19 @@ rejects_wrong_signer_test() ->
     {_AdminKp, RealmId} = admin(),
     Impostor = macula_identity:generate(),
     Member = crypto:strong_rand_bytes(32),
-    R = hecate_record:realm_member_endorsement(
+    R = macula_record:realm_member_endorsement(
           RealmId,
           #{realm => RealmId, member_node => Member, roles => [<<"peer">>]}),
     %% Impostor signs — signature verifies against payload's realm key,
     %% which is the admin key, so the signature check must fail.
-    Bad = hecate_record:sign(R, Impostor),
+    Bad = macula_record:sign(R, Impostor),
     ?assertEqual({error, signature_invalid},
                  hecate_realm_join:verify_endorsement(Bad, RealmId, Member)).
 
 rejects_wrong_type_test() ->
     {AdminKp, RealmId} = admin(),
     %% realm_directory is a different type (0x03).
-    R = hecate_record:sign(hecate_record:realm_directory(
+    R = macula_record:sign(macula_record:realm_directory(
                              RealmId, <<"demo">>, RealmId), AdminKp),
     Member = crypto:strong_rand_bytes(32),
     ?assertEqual({error, wrong_type},
@@ -74,11 +74,11 @@ rejects_not_yet_valid_test() ->
     {AdminKp, RealmId} = admin(),
     Member = crypto:strong_rand_bytes(32),
     Future = erlang:system_time(millisecond) + 60 * 1000,
-    R0 = hecate_record:realm_member_endorsement(
+    R0 = macula_record:realm_member_endorsement(
            RealmId,
            #{realm => RealmId, member_node => Member, roles => []},
            #{valid_from => Future, valid_until => Future + 1000}),
-    R = hecate_record:sign(R0, AdminKp),
+    R = macula_record:sign(R0, AdminKp),
     ?assertEqual({error, not_yet_valid},
                  hecate_realm_join:verify_endorsement(R, RealmId, Member)).
 
@@ -88,13 +88,13 @@ rejects_endorsement_expired_test() ->
     NowMs = erlang:system_time(millisecond),
     %% valid_until is in the past; but record envelope itself must
     %% not be expired — give envelope a fresh 5min ttl via opts.
-    R0 = hecate_record:realm_member_endorsement(
+    R0 = macula_record:realm_member_endorsement(
            RealmId,
            #{realm => RealmId, member_node => Member, roles => []},
            #{valid_from  => NowMs - 10_000,
              valid_until => NowMs - 5_000,
              ttl_ms      => 5 * 60 * 1000}),
-    R = hecate_record:sign(R0, AdminKp),
+    R = macula_record:sign(R0, AdminKp),
     ?assertEqual({error, endorsement_expired},
                  hecate_realm_join:verify_endorsement(R, RealmId, Member)).
 
@@ -123,7 +123,7 @@ admin() ->
     {Kp, macula_identity:public(Kp)}.
 
 signed_endorsement(AdminKp, RealmId, Member, Roles) ->
-    R = hecate_record:realm_member_endorsement(
+    R = macula_record:realm_member_endorsement(
           RealmId,
           #{realm => RealmId, member_node => Member, roles => Roles}),
-    hecate_record:sign(R, AdminKp).
+    macula_record:sign(R, AdminKp).

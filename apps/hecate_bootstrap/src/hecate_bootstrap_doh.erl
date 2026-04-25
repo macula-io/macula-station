@@ -22,7 +22,7 @@
 %%
 %% Wire format is handled by the undocumented-but-stable `inet_dns'
 %% OTP module. No DNSSEC — trust is earned at the record layer
-%% (`hecate_foundation:verify_record/1') and corroboration layer
+%% (`macula_foundation:verify_record/1') and corroboration layer
 %% (`hecate_bootstrap_tier_a'), not at the DNS layer.
 -module(hecate_bootstrap_doh).
 

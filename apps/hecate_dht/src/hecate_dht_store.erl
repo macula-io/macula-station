@@ -62,13 +62,13 @@
 %% Public API
 %%=====================================================================
 
--spec store(hecate_dht:dht(), hecate_record:record()) -> result().
+-spec store(hecate_dht:dht(), macula_record:record()) -> result().
 store(Dht, Record) ->
     store(Dht, Record, #{}).
 
--spec store(hecate_dht:dht(), hecate_record:record(), opts()) -> result().
+-spec store(hecate_dht:dht(), macula_record:record(), opts()) -> result().
 store(Dht, Record, Opts) when is_map(Record), is_map(Opts) ->
-    Key         = hecate_record:storage_key(Record),
+    Key         = macula_record:storage_key(Record),
     K           = maps:get(k, Opts, ?DEFAULT_K),
     Quorum      = maps:get(quorum, Opts, ?DEFAULT_QUORUM),
     Constraints = resolve_constraints(Opts, K),
@@ -108,7 +108,7 @@ pick_candidates(error, Dht, Key, K, Opts) ->
 %% Dispatch + ack collection
 %%=====================================================================
 
--spec dispatch_placement(hecate_dht:dht(), hecate_record:record(),
+-spec dispatch_placement(hecate_dht:dht(), macula_record:record(),
                          hecate_dht_placement:placement_result(),
                          pos_integer(), opts()) -> result().
 dispatch_placement(_Dht, _Record, #{chosen := []} = Placement, _Quorum,
@@ -125,7 +125,7 @@ dispatch_placement(Dht, Record, Placement, Quorum, Opts) ->
     Outcome = outcome_of(Placement, A, N, T),
     classify(A, Quorum, Outcome).
 
--spec spawn_workers(hecate_dht:dht(), hecate_record:record(),
+-spec spawn_workers(hecate_dht:dht(), macula_record:record(),
                     [hecate_frame:station_ref()], pos_integer(),
                     reference()) -> ok.
 spawn_workers(Dht, Record, Chosen, PerStore, Tag) ->

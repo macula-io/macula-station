@@ -11,9 +11,9 @@ roundtrip_empty_hints_test() ->
     {Url, OrigRecord} = build_url([]),
     {ok, Decoded, Addrs} = hecate_bootstrap_peer_url:decode(Url),
     ?assertEqual([], Addrs),
-    ?assertEqual(hecate_record:key(OrigRecord), hecate_record:key(Decoded)),
-    ?assertEqual(hecate_record:version(OrigRecord),
-                 hecate_record:version(Decoded)).
+    ?assertEqual(macula_record:key(OrigRecord), macula_record:key(Decoded)),
+    ?assertEqual(macula_record:version(OrigRecord),
+                 macula_record:version(Decoded)).
 
 roundtrip_with_address_hints_test() ->
     Addr1 = #{
@@ -63,8 +63,8 @@ decode_wrong_record_type_test() ->
     AdminKp = macula_identity:generate(),
     RealmId = macula_identity:public(AdminKp),
     Member  = crypto:strong_rand_bytes(32),
-    Endorsement = hecate_record:sign(
-        hecate_record:realm_member_endorsement(
+    Endorsement = macula_record:sign(
+        macula_record:realm_member_endorsement(
           RealmId, #{realm => RealmId, member_node => Member,
                      roles => [<<"member">>]}),
         AdminKp),
@@ -82,9 +82,9 @@ decode_rejects_tampered_record_test() ->
 
 decode_rejects_expired_record_test() ->
     Kp = macula_identity:generate(),
-    R = hecate_record:node_record(macula_identity:public(Kp), [], 0,
+    R = macula_record:node_record(macula_identity:public(Kp), [], 0,
                                   #{ttl_ms => 1}),
-    Signed = hecate_record:sign(R, Kp),
+    Signed = macula_record:sign(R, Kp),
     Url = hecate_bootstrap_peer_url:encode(Signed, []),
     timer:sleep(5),
     ?assertEqual({error, expired},
@@ -96,7 +96,7 @@ decode_rejects_expired_record_test() ->
 
 build_url(Addrs) ->
     Kp = macula_identity:generate(),
-    Record = hecate_record:sign(
-        hecate_record:node_record(macula_identity:public(Kp), [], 0),
+    Record = macula_record:sign(
+        macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
     {hecate_bootstrap_peer_url:encode(Record, Addrs), Record}.

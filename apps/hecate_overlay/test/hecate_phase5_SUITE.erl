@@ -59,11 +59,11 @@ realm_join_rejects_bogus_endorsement(_Cfg) ->
         %% Build endorsement but sign with the impostor — verify must fail.
         RealEnd = phase5_helper:endorse(Net, RealAdmin, Realm, joiner),
         JoinerPub = pubkey_of(Net, joiner),
-        Bogus0 = hecate_record:realm_member_endorsement(
+        Bogus0 = macula_record:realm_member_endorsement(
                    Realm,
                    #{realm => Realm, member_node => JoinerPub,
                      roles => [<<"peer">>]}),
-        Bogus = hecate_record:sign(Bogus0, Impostor),
+        Bogus = macula_record:sign(Bogus0, Impostor),
         phase5_helper:join(Net, joiner, seed, Realm, Bogus),
         %% Seed must NOT admit the bogus joiner.
         Active = phase5_helper:active_view(Net, seed, Realm),

@@ -39,8 +39,8 @@ tick_replicates_record_to_known_peer_test() ->
 
     %% B must now have the replicated record.
     [Stored] = hecate_dht:find_local_record(B,
-                                            hecate_record:storage_key(Record)),
-    ?assertEqual(hecate_record:key(Record), hecate_record:key(Stored)),
+                                            macula_record:storage_key(Record)),
+    ?assertEqual(macula_record:key(Record), macula_record:key(Stored)),
     stop_replicator(R),
     stop_net(Net).
 
@@ -200,6 +200,6 @@ peer_spec(NodeId) ->
 
 signed_record() ->
     Kp = macula_identity:generate(),
-    hecate_record:sign(
-        hecate_record:node_record(macula_identity:public(Kp), [], 0),
+    macula_record:sign(
+        macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp).

@@ -103,10 +103,10 @@ pubkey_of(#{stations := Map}, Name) ->
 
 endorse(#{stations := Map}, Admin, Realm, Name) ->
     #station{pubkey = Pub} = maps:get(Name, Map),
-    R = hecate_record:realm_member_endorsement(
+    R = macula_record:realm_member_endorsement(
           Realm,
           #{realm => Realm, member_node => Pub, roles => [<<"peer">>]}),
-    hecate_record:sign(R, Admin).
+    macula_record:sign(R, Admin).
 
 %% @doc Wire A→B and B→A into each other's active view for `Realm'
 %% without going through the full hyparview handshake. Used by

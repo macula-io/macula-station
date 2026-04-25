@@ -34,7 +34,7 @@
     listen_addr  :: {inet:ip_address() | string(), inet:port_number()},
     swim         :: pid(),
     peers        :: #{pid() => peer_entry()},
-    tombstones   :: [hecate_record:record()]
+    tombstones   :: [macula_record:record()]
 }).
 
 -type peer_entry() :: #{
@@ -57,10 +57,10 @@
 start_link(Spec) ->
     gen_server:start_link(?MODULE, Spec, []).
 
--spec stop(pid()) -> {ok, [hecate_record:record()]}.
+-spec stop(pid()) -> {ok, [macula_record:record()]}.
 stop(Pid) -> stop(Pid, operator_stop).
 
--spec stop(pid(), atom()) -> {ok, [hecate_record:record()]}.
+-spec stop(pid(), atom()) -> {ok, [macula_record:record()]}.
 stop(Pid, Reason) -> gen_server:call(Pid, {stop, Reason}, 10_000).
 
 -spec identity(pid()) -> macula_identity:key_pair().
@@ -75,7 +75,7 @@ connect_to(Pid, Target) -> gen_server:call(Pid, {connect_to, Target}, 10_000).
 -spec peers(pid()) -> [{pid(), peer_entry()}].
 peers(Pid) -> gen_server:call(Pid, peers).
 
--spec tombstones(pid()) -> [hecate_record:record()].
+-spec tombstones(pid()) -> [macula_record:record()].
 tombstones(Pid) -> gen_server:call(Pid, tombstones).
 
 -spec swim_members(pid()) -> [hecate_swim:member()].
@@ -318,5 +318,5 @@ drain_and_tombstone(Reason, #state{config = #{identity := Kp}, peers = Peers,
 build_tombstone(Kp, Reason) ->
     Pub = macula_identity:public(Kp),
     %% Tombstone the node_record (type 0x01).
-    Unsigned = hecate_record:tombstone(Pub, 16#01, Reason),
-    hecate_record:sign(Unsigned, Kp).
+    Unsigned = macula_record:tombstone(Pub, 16#01, Reason),
+    macula_record:sign(Unsigned, Kp).

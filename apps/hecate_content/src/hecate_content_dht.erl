@@ -10,7 +10,7 @@
 %% V2 difference from V1: V1 directly called `macula_routing_server'
 %% via `whereis/1'. V2 leaves the integration to the caller because
 %% hecate-station's DHT API is record-oriented (signed envelopes via
-%% `hecate_record') rather than raw key-value, and the appropriate
+%% `macula_record') rather than raw key-value, and the appropriate
 %% record-type construction is a domain concern, not infrastructure.
 -module(hecate_content_dht).
 
@@ -89,7 +89,7 @@ normalise(P) when is_map(P) ->
 
 %% @doc Build a `{Key, Value}' tuple for a content announcement.
 %% Caller is responsible for wrapping `Value' in a signed
-%% `hecate_record' envelope and feeding it to `hecate_dht:put_record/2'.
+%% `macula_record' envelope and feeding it to `hecate_dht:put_record/2'.
 -spec create_announcement(mcid(), binary(), binary(), map()) ->
         {<<_:256>>, provider_info()}.
 create_announcement(MCID, NodeId, Endpoint, ManifestInfo) ->

@@ -16,8 +16,8 @@ find_value_hit_returns_value_from_peer_test() ->
     %% Seed B's record store with a realm_directory record.
     RealmKp  = macula_identity:generate(),
     RealmId  = macula_identity:public(RealmKp),
-    Rec = hecate_record:sign(
-            hecate_record:realm_directory(RealmId, <<"test realm">>,
+    Rec = macula_record:sign(
+            macula_record:realm_directory(RealmId, <<"test realm">>,
                                           RealmId),
             RealmKp),
     ok = hecate_dht:put_record(B, Rec),
@@ -25,8 +25,8 @@ find_value_hit_returns_value_from_peer_test() ->
     Result = hecate_dht:find_value(A, RealmId, BId),
     ?assertMatch({value, [_]}, Result),
     {value, [Returned]} = Result,
-    ?assertEqual(hecate_record:storage_key(Rec),
-                 hecate_record:storage_key(Returned)),
+    ?assertEqual(macula_record:storage_key(Rec),
+                 macula_record:storage_key(Returned)),
     stop_pair(Net).
 
 %%---------------------------------------------------------------------
@@ -62,12 +62,12 @@ find_value_returns_all_records_at_storage_key_test() ->
 
     Kp1 = macula_identity:generate(),
     Kp2 = macula_identity:generate(),
-    Rec1 = hecate_record:sign(
-             hecate_record:procedure_advertisement(
+    Rec1 = macula_record:sign(
+             macula_record:procedure_advertisement(
                  macula_identity:public(Kp1), Uri,
                  crypto:strong_rand_bytes(32)), Kp1),
-    Rec2 = hecate_record:sign(
-             hecate_record:procedure_advertisement(
+    Rec2 = macula_record:sign(
+             macula_record:procedure_advertisement(
                  macula_identity:public(Kp2), Uri,
                  crypto:strong_rand_bytes(32)), Kp2),
     ok = hecate_dht:put_record(B, Rec1),

@@ -65,13 +65,13 @@ replica_summary_emitted_for_owned_records_test() ->
     {Dht, Kp} = start_dht(),
     SelfId = macula_identity:public(Kp),
     %% Owner-signed record (envelope key matches self_id).
-    Record = hecate_record:sign(hecate_record:node_record(SelfId, [], 0), Kp),
+    Record = macula_record:sign(macula_record:node_record(SelfId, [], 0), Kp),
     ok = hecate_dht:put_record(Dht, Record),
     Mon = start_monitor(Dht, #{self_id => SelfId}),
     Replicas = maps:get(replicas, hecate_dht_monitor:report(Mon)),
     ?assertEqual(1, maps:get(owned_records, Replicas)),
     [Summary] = maps:get(placement_summaries, Replicas),
-    ?assertEqual(hecate_record:storage_key(Record),
+    ?assertEqual(macula_record:storage_key(Record),
                  maps:get(storage_key, Summary)),
     %% No peers in the RT → degraded.
     ?assert(maps:get(degraded, Summary)),
@@ -83,8 +83,8 @@ replica_summary_skips_records_owned_by_others_test() ->
     SelfId = macula_identity:public(Kp),
     %% Stranger-signed record.
     KpStranger = macula_identity:generate(),
-    Record = hecate_record:sign(
-               hecate_record:node_record(macula_identity:public(KpStranger),
+    Record = macula_record:sign(
+               macula_record:node_record(macula_identity:public(KpStranger),
                                          [], 0),
                KpStranger),
     ok = hecate_dht:put_record(Dht, Record),

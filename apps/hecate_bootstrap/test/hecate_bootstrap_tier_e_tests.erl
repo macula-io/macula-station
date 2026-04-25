@@ -58,7 +58,7 @@ probe_preserves_address_hints_test() ->
 
 build_url(Addrs) ->
     Kp = macula_identity:generate(),
-    Record = hecate_record:sign(
-        hecate_record:node_record(macula_identity:public(Kp), [], 0),
+    Record = macula_record:sign(
+        macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
     {hecate_bootstrap_peer_url:encode(Record, Addrs), Kp}.

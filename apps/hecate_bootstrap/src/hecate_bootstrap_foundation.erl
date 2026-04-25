@@ -4,19 +4,19 @@
 %% trust boundary against whatever bytes its transport hands back:
 %%
 %% <ol>
-%%   <li>Decode the raw CBOR as a `hecate_record:record()'
+%%   <li>Decode the raw CBOR as a `macula_record:record()'
 %%       — <em>safely</em>: external bytes may be arbitrary garbage
 %%       and `macula_record_cbor:decode/1' crashes on malformed
 %%       input rather than returning `{error, _}'.</li>
 %%   <li>Validate the record against the firmware-embedded foundation
-%%       trust anchor (`hecate_foundation:verify_record/1').</li>
+%%       trust anchor (`macula_foundation:verify_record/1').</li>
 %%   <li>Walk `foundation_seed_list' payload seeds and emit one
 %%       `verified_peer()' per seed, stamped with the caller's cascade
 %%       tier atom and `via' module name.</li>
 %% </ol>
 %%
 %% This module is the single home for steps (1) and (3). Step (2) is
-%% `hecate_foundation:verify_record/1' directly — one public trust
+%% `macula_foundation:verify_record/1' directly — one public trust
 %% anchor, no duplication. Tier-specific integrity checks (storage
 %% key for Tier A, BEP 44 signature for Tier C) remain tier-local.
 %%
@@ -36,9 +36,9 @@
 %% `{error, bad_record_bytes}' so a single garbage response cannot
 %% crash a probe worker and force its tier to time out.
 -spec decode_record_bytes(binary()) ->
-          {ok, hecate_record:record()} | {error, decode_error()}.
+          {ok, macula_record:record()} | {error, decode_error()}.
 decode_record_bytes(Bytes) when is_binary(Bytes) ->
-    try hecate_record:decode(Bytes) of
+    try macula_record:decode(Bytes) of
         {ok, _} = Ok   -> Ok;
         {error, _} = E -> E
     catch
@@ -54,15 +54,15 @@ decode_record_bytes(Bytes) when is_binary(Bytes) ->
 %%
 %% Records of other types (or records whose payload omits `seeds')
 %% yield an empty list rather than crashing — defensive because the
-%% caller has already performed `hecate_foundation:verify_record/1',
+%% caller has already performed `macula_foundation:verify_record/1',
 %% but foundation may publish record types we don't know how to
 %% enumerate seeds from.
--spec peers_from_record(hecate_record:record(),
+-spec peers_from_record(macula_record:record(),
                         hecate_bootstrap_tier:tier(),
                         module()) ->
           [hecate_bootstrap_tier:verified_peer()].
 peers_from_record(Record, Tier, Via) ->
-    Payload = hecate_record:payload(Record),
+    Payload = macula_record:payload(Record),
     Seeds   = maps:get({text, <<"seeds">>}, Payload, []),
     [seed_to_peer(Record, Seed, Tier, Via) || Seed <- Seeds].
 

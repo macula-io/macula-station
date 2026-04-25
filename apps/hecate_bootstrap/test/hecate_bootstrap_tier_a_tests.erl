@@ -31,11 +31,11 @@ setup() ->
     hecate_bootstrap_tier_a_fake:init(),
     Kp     = macula_identity:generate(),
     Fk     = macula_identity:public(Kp),
-    application:set_env(hecate_record, foundation_pubkeys, [Fk]),
+    application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Seeds  = sample_seeds(3),
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(Fk, Seeds), Kp),
-    Bytes  = hecate_record:encode(Record),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(Fk, Seeds), Kp),
+    Bytes  = macula_record:encode(Record),
     #{kp     => Kp,
       fk     => Fk,
       seeds  => Seeds,
@@ -43,7 +43,7 @@ setup() ->
       bytes  => Bytes}.
 
 cleanup(_Ctx) ->
-    application:unset_env(hecate_record, foundation_pubkeys),
+    application:unset_env(macula_record, foundation_pubkeys),
     hecate_bootstrap_tier_a_fake:reset(),
     ok.
 
@@ -93,12 +93,12 @@ wrong_storage_key_rejected(#{kp := Kp, fk := Fk}) ->
     fun() ->
         OtherKp     = macula_identity:generate(),
         OtherFk     = macula_identity:public(OtherKp),
-        application:set_env(hecate_record, foundation_pubkeys,
+        application:set_env(macula_record, foundation_pubkeys,
                             [Fk, OtherFk]),
-        OtherRecord = hecate_record:sign(
-                        hecate_record:foundation_seed_list(
+        OtherRecord = macula_record:sign(
+                        macula_record:foundation_seed_list(
                           OtherFk, sample_seeds(2)), OtherKp),
-        OtherBytes  = hecate_record:encode(OtherRecord),
+        OtherBytes  = macula_record:encode(OtherRecord),
         %% Resolvers return a record whose storage key matches
         %% OtherFk, but we ask about Fk — must be rejected even
         %% though signature + signer pair are individually valid.
@@ -107,10 +107,10 @@ wrong_storage_key_rejected(#{kp := Kp, fk := Fk}) ->
         ok = canned(?URL_C, Fk, {ok, OtherBytes}),
         %% Re-sign with the original Kp so signer trust passes; only
         %% the storage-key check should fail.
-        Resigned = hecate_record:sign(
-                     hecate_record:foundation_seed_list(
+        Resigned = macula_record:sign(
+                     macula_record:foundation_seed_list(
                        OtherFk, sample_seeds(2)), Kp),
-        ResignedBytes = hecate_record:encode(Resigned),
+        ResignedBytes = macula_record:encode(Resigned),
         ok = canned(?URL_A, Fk, {ok, ResignedBytes}),
         ok = canned(?URL_B, Fk, {ok, ResignedBytes}),
         ok = canned(?URL_C, Fk, {ok, ResignedBytes}),
@@ -194,7 +194,7 @@ sample_seeds(N) ->
 %% against the trusted foundation list.
 impostor_bytes(Fk) ->
     ImpostorKp = macula_identity:generate(),
-    Record = hecate_record:sign(
-               hecate_record:foundation_seed_list(Fk, sample_seeds(2)),
+    Record = macula_record:sign(
+               macula_record:foundation_seed_list(Fk, sample_seeds(2)),
                ImpostorKp),
-    hecate_record:encode(Record).
+    macula_record:encode(Record).

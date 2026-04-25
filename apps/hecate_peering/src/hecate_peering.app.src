@@ -3,7 +3,7 @@
     {vsn, "2.0.0-alpha.1"},
     {registered, [hecate_peering_sup]},
     {mod, {hecate_peering_app, []}},
-    {applications, [kernel, stdlib, hecate_frame, hecate_transport, hecate_record, macula, hecate_diagnostics]},
+    {applications, [kernel, stdlib, hecate_frame, hecate_transport, macula, hecate_diagnostics]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

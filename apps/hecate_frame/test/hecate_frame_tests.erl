@@ -549,8 +549,8 @@ sample_station_ref() ->
 
 sample_record() ->
     Kp = macula_identity:generate(),
-    Node = hecate_record:node_record(macula_identity:public(Kp), [], 0),
-    hecate_record:sign(Node, Kp).
+    Node = macula_record:node_record(macula_identity:public(Kp), [], 0),
+    macula_record:sign(Node, Kp).
 
 %%------------------------------------------------------------------
 %% CALL / RESULT / ERROR frames — Part 6 §5
@@ -570,7 +570,7 @@ call_has_required_header_fields_test() ->
 call_with_optional_fields_test() ->
     Caller = crypto:strong_rand_bytes(32),
     F = hecate_frame:call(#{
-        call_id      => hecate_record_uuid:v7(),
+        call_id      => macula_record_uuid:v7(),
         procedure    => <<"realm/acme/weather/forecast/get_v1">>,
         realm        => crypto:strong_rand_bytes(32),
         payload      => #{city => <<"Brussels">>},
@@ -603,7 +603,7 @@ call_sign_verify_wire_roundtrip_test() ->
 result_has_required_fields_test() ->
     Responded = crypto:strong_rand_bytes(32),
     F = hecate_frame:result(#{
-        call_id      => hecate_record_uuid:v7(),
+        call_id      => macula_record_uuid:v7(),
         payload      => #{ok => true},
         responded_by => Responded
     }),
@@ -614,14 +614,14 @@ result_has_required_fields_test() ->
 result_rejects_wrong_responded_by_size_test() ->
     ?assertError(function_clause,
                  hecate_frame:result(#{
-                     call_id      => hecate_record_uuid:v7(),
+                     call_id      => macula_record_uuid:v7(),
                      payload      => ok,
                      responded_by => <<0:64>>})).
 
 result_wire_roundtrip_test() ->
     Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:result(#{
-            call_id      => hecate_record_uuid:v7(),
+            call_id      => macula_record_uuid:v7(),
             payload      => <<"hello">>,
             responded_by => macula_identity:public(Kp)
         }), Kp),
@@ -632,7 +632,7 @@ result_wire_roundtrip_test() ->
 
 call_error_carries_code_and_derived_name_test() ->
     F = hecate_frame:call_error(#{
-        call_id     => hecate_record_uuid:v7(),
+        call_id     => macula_record_uuid:v7(),
         code        => 16#01,
         reported_by => crypto:strong_rand_bytes(32)
     }),
@@ -645,7 +645,7 @@ call_error_carries_code_and_derived_name_test() ->
 call_error_with_offending_hop_and_detail_test() ->
     Hop = crypto:strong_rand_bytes(32),
     F = hecate_frame:call_error(#{
-        call_id       => hecate_record_uuid:v7(),
+        call_id       => macula_record_uuid:v7(),
         code          => 16#02,
         reported_by   => crypto:strong_rand_bytes(32),
         detail        => <<"backend down">>,
@@ -662,14 +662,14 @@ call_error_rejects_unknown_code_test() ->
     %% propagates out of the constructor.
     ?assertError({bolt4_unknown, _, _},
                  hecate_frame:call_error(#{
-                     call_id => hecate_record_uuid:v7(),
+                     call_id => macula_record_uuid:v7(),
                      code    => 99,
                      reported_by => crypto:strong_rand_bytes(32)})).
 
 call_error_rejects_wrong_offending_hop_size_test() ->
     ?assertError(function_clause,
                  hecate_frame:call_error(#{
-                     call_id     => hecate_record_uuid:v7(),
+                     call_id     => macula_record_uuid:v7(),
                      code        => 16#01,
                      reported_by => crypto:strong_rand_bytes(32),
                      offending_hop => <<0:64>>})).
@@ -677,7 +677,7 @@ call_error_rejects_wrong_offending_hop_size_test() ->
 call_error_wire_roundtrip_test() ->
     Kp = macula_identity:generate(),
     F = hecate_frame:sign(hecate_frame:call_error(#{
-            call_id     => hecate_record_uuid:v7(),
+            call_id     => macula_record_uuid:v7(),
             code        => 16#0E,
             reported_by => macula_identity:public(Kp)
         }), Kp),
@@ -696,7 +696,7 @@ sample_call() ->
 
 sample_call(Caller) ->
     hecate_frame:call(#{
-        call_id     => hecate_record_uuid:v7(),
+        call_id     => macula_record_uuid:v7(),
         procedure   => <<"realm/acme/weather/forecast/get_v1">>,
         realm       => crypto:strong_rand_bytes(32),
         payload     => #{city => <<"Brussels">>},
@@ -708,7 +708,7 @@ sample_call(Caller) ->
 %% test guard rejection.
 spec_with(Field, BadValue) ->
     Base = #{
-        call_id     => hecate_record_uuid:v7(),
+        call_id     => macula_record_uuid:v7(),
         procedure   => <<"foo">>,
         realm       => crypto:strong_rand_bytes(32),
         payload     => ok,

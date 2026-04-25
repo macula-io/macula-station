@@ -43,7 +43,7 @@
         fun((SrcAddr :: inet:ip6_address(),
              Port    :: 1..65535,
              ExpectedNodeId :: macula_identity:pubkey()) ->
-              {ok, hecate_record:record()} | {error, term()}).
+              {ok, macula_record:record()} | {error, term()}).
 
 -type probe_opts() :: #{
     udp_transport => module(),
@@ -102,10 +102,10 @@ classify({ok, Record}, C)     -> match_identity(Record, C);
 classify({error, _Reason}, _C) -> false.
 
 match_identity(Record, #{node_id := Expected} = C) ->
-    check_key(hecate_record:key(Record), Expected, Record, C).
+    check_key(macula_record:key(Record), Expected, Record, C).
 
 check_key(Expected, Expected, Record, C) ->
-    verified(hecate_record:verify(Record), Record, C);
+    verified(macula_record:verify(Record), Record, C);
 check_key(_Other, _Expected, _Record, _C) ->
     false.
 
@@ -114,7 +114,7 @@ verified({error, _}, _Record, _C) -> false.
 
 to_peer(Record, #{src_addr := Src, port := Port}) ->
     #{
-        node_id   => hecate_record:key(Record),
+        node_id   => macula_record:key(Record),
         record    => Record,
         addresses => [#{ {text, <<"ip">>}   => {text, ip_to_text(Src)},
                          {text, <<"port">>} => Port }],

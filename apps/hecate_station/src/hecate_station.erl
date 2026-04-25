@@ -43,11 +43,11 @@
 start_link(Spec) ->
     hecate_station_server:start_link(Spec).
 
--spec stop(pid()) -> {ok, [hecate_record:record()]}.
+-spec stop(pid()) -> {ok, [macula_record:record()]}.
 stop(Pid) ->
     hecate_station_server:stop(Pid).
 
--spec stop(pid(), atom()) -> {ok, [hecate_record:record()]}.
+-spec stop(pid(), atom()) -> {ok, [macula_record:record()]}.
 stop(Pid, Reason) ->
     hecate_station_server:stop(Pid, Reason).
 
@@ -68,7 +68,7 @@ connect_to(Pid, Target) ->
 peers(Pid) ->
     hecate_station_server:peers(Pid).
 
--spec tombstones(pid()) -> [hecate_record:record()].
+-spec tombstones(pid()) -> [macula_record:record()].
 tombstones(Pid) ->
     hecate_station_server:tombstones(Pid).
 
@@ -134,7 +134,7 @@ admin_port_of(E)            -> E.
 %%------------------------------------------------------------------
 
 %% The record type tombstoned by `shutdown/0,1'. A station's
-%% `node_record' lives under type tag `0x01' (see `hecate_record'
+%% `node_record' lives under type tag `0x01' (see `macula_record'
 %% docs); the tombstone carries that tag so peers mark the right
 %% record superseded.
 -define(NODE_RECORD_TYPE, 16#01).
@@ -197,8 +197,8 @@ publish_tombstone(Dht, Kp, Reason) ->
 
 build_tombstone(Kp, Reason) ->
     Pub      = macula_identity:public(Kp),
-    Unsigned = hecate_record:tombstone(Pub, ?NODE_RECORD_TYPE, Reason),
-    hecate_record:sign(Unsigned, Kp).
+    Unsigned = macula_record:tombstone(Pub, ?NODE_RECORD_TYPE, Reason),
+    macula_record:sign(Unsigned, Kp).
 
 flush_cache() ->
     flush_cache_if_running(cache()).
