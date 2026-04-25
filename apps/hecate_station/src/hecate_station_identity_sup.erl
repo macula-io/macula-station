@@ -215,7 +215,41 @@ seed_dht_handlers(Sup, #{handler_registry := HrPid} = Opts, DhtPid) ->
 on_dht_handlers(_Sup, _Opts, _DhtPid, {error, R}) ->
     {error, {dht_handlers_start_failed, R}};
 on_dht_handlers(Sup, Opts, DhtPid, {ok, _Pid}) ->
-    seed_announcer(Sup, Opts, DhtPid).
+    seed_dht_custodians(Sup, Opts, DhtPid).
+
+%% DHT custodians — periodic background tasks that propagate this
+%% identity's view of the mesh:
+%%
+%%   * `hecate_dht_replicate'  — every interval, push K-nearest copies
+%%     of foreign records this identity caches locally so they survive
+%%     individual peer churn.
+%%   * `hecate_dht_republish'  — every interval, the identity owner
+%%     reissues + re-publishes the records it owns (e.g. its own
+%%     node_record), so the K-nearest set follows churn.
+%%   * `hecate_dht_expire'     — every interval, prune records past
+%%     their `expires_at'.
+%%
+%% Without these the per-identity DHT is local-only — records never
+%% reach K-nearest peers, peers never refresh their copies, expired
+%% records stay forever. Default 1h cadence is fine for production;
+%% tests don't rely on tick timing.
+seed_dht_custodians(Sup, Opts, DhtPid) ->
+    Specs = [replicate_spec(DhtPid),
+             republish_spec(DhtPid, Opts),
+             expire_spec(DhtPid)],
+    seed_each(Sup, Specs, Opts, DhtPid, fun seed_announcer/3,
+              dht_custodian_start_failed).
+
+seed_each(_Sup, [], Opts, DhtPid, Next, _Tag) ->
+    Next(_Sup, Opts, DhtPid);
+seed_each(Sup, [Spec | Rest], Opts, DhtPid, Next, Tag) ->
+    on_each(Sup, Rest, Opts, DhtPid, Next, Tag,
+            supervisor:start_child(Sup, Spec)).
+
+on_each(_Sup, _Rest, _Opts, _DhtPid, _Next, Tag, {error, R}) ->
+    {error, {Tag, R}};
+on_each(Sup, Rest, Opts, DhtPid, Next, Tag, {ok, _Pid}) ->
+    seed_each(Sup, Rest, Opts, DhtPid, Next, Tag).
 
 %% Per-identity announcer publishes this station's `node_record'
 %% (Macula V2 type 0x01) into the local DHT on init + refreshes
@@ -357,6 +391,31 @@ add_announcer_optionals(Base, Src) ->
             error   -> Acc
         end
     end, Base, Optional).
+
+replicate_spec(DhtPid) ->
+    #{id       => hecate_dht_replicate,
+      start    => {hecate_dht_replicate, start_link, [#{dht => DhtPid}]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_dht_replicate]}.
+
+republish_spec(DhtPid, #{identity := Kp}) ->
+    Opts = #{dht => DhtPid, identity => Kp},
+    #{id       => hecate_dht_republish,
+      start    => {hecate_dht_republish, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_dht_republish]}.
+
+expire_spec(DhtPid) ->
+    #{id       => hecate_dht_expire,
+      start    => {hecate_dht_expire, start_link, [#{dht => DhtPid}]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_dht_expire]}.
 
 observer_spec(DhtPid, SwimPid, IdentityOpts) ->
     Opts = #{
