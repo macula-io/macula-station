@@ -329,6 +329,9 @@ seed_fact_publisher(Sup, Opts, DhtPid, ObsPid) ->
 on_fact_publisher(_Sup, _Opts, _DhtPid, _ObsPid, {error, R}) ->
     {error, {fact_publisher_start_failed, R}};
 on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
+    logger:info(
+      "[identity_sup] fact_publisher started pid=~p — installing DHT callback",
+      [FpPid]),
     install_dht_callback(DhtPid, FpPid),
     seed_listener(Sup, Opts, ObsPid).
 
@@ -340,7 +343,9 @@ install_dht_callback(DhtPid, FpPid) ->
            DhtPid,
            fun(Record) ->
                hecate_station_fact_publisher:on_record_stored(FpPid, Record)
-           end).
+           end),
+    logger:info("[identity_sup] DHT callback installed: dht=~p fp=~p",
+                [DhtPid, FpPid]).
 
 seed_listener(Sup, Opts, ObsPid) ->
     on_listener(supervisor:start_child(Sup, listener_spec(Opts, ObsPid))).

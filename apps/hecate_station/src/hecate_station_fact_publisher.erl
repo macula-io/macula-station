@@ -104,7 +104,11 @@ handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
 handle_cast({record_stored, Record}, S) ->
-    classify(macula_record:type(Record), Record, S),
+    Type = macula_record:type(Record),
+    logger:info(
+      "[fact_publisher] record_stored type=~p kind=~s",
+      [Type, payload_kind(macula_record:payload(Record))]),
+    classify(Type, Record, S),
     {noreply, S};
 handle_cast(_, S) ->
     {noreply, S}.
@@ -171,8 +175,14 @@ publish_event(Topic, Record, S) ->
 publish_to({ok, Server}, Topic, Record, S) ->
     Payload                = macula_record:encode(Record),
     {Frame, Subscribers}   = hecate_pubsub_server:publish(Server, Topic, Payload),
+    logger:info(
+      "[fact_publisher] publish topic=~s subscribers=~b",
+      [Topic, length(Subscribers)]),
     fan_out(Subscribers, Frame, S);
-publish_to({error, _Reason}, _Topic, _Record, _S) ->
+publish_to({error, Reason}, Topic, _Record, _S) ->
+    logger:warning(
+      "[fact_publisher] ensure_server failed for topic=~s reason=~p",
+      [Topic, Reason]),
     ok.
 
 ensure_server(#state{pubsub_registry = Reg, identity = Kp}) ->
@@ -188,10 +198,16 @@ deliver_to(NodeId, Frame, #state{peer_observer = Obs}) ->
     deliver_via_conn(hecate_station_peer_observer:conn_for(Obs, NodeId), Frame).
 
 deliver_via_conn({ok, ConnPid}, Frame) ->
+    logger:info(
+      "[fact_publisher] send_frame pid=~p topic=~s",
+      [ConnPid, maps:get(topic, Frame, undefined)]),
     catch macula_peering:send_frame(ConnPid, Frame),
     ok;
-deliver_via_conn(error, _Frame) ->
+deliver_via_conn(error, Frame) ->
     %% Subscriber's connection is gone. The pubsub_server will learn
     %% via inbound UNSUBSCRIBE on reconnect (or never, if the peer
     %% stays gone — pubsub_server has no liveness tracking yet).
+    logger:info(
+      "[fact_publisher] subscriber conn missing topic=~s",
+      [maps:get(topic, Frame, undefined)]),
     ok.

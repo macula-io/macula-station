@@ -220,12 +220,19 @@ send_reply_to({ok, ConnPid}, Reply) ->
 %% works without explicit pre-registration.
 deliver_pubsub(_Verified, _Frame, _NodeId,
                #state{pubsub_registry = undefined}) ->
+    logger:warning("[peer_observer] pubsub frame dropped — no registry"),
     ok;
-deliver_pubsub({error, _}, _Frame, _NodeId, _S) ->
+deliver_pubsub({error, Reason}, _Frame, _NodeId, _S) ->
+    logger:warning("[peer_observer] pubsub frame verify failed: ~p", [Reason]),
     ok;
 deliver_pubsub({ok, Verified}, _Frame, NodeId,
                #state{pubsub_registry = Reg}) ->
     Realm = maps:get(realm, Verified),
+    Topic = maps:get(topic, Verified, undefined),
+    Type  = macula_frame:frame_type(Verified),
+    logger:info(
+      "[peer_observer] pubsub ~s realm=~p topic=~s",
+      [Type, Realm, Topic]),
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
     ok.
 
