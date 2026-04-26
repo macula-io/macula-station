@@ -39,8 +39,12 @@ jobs:
           path: |
             _build
             ~/.cache/rebar3
-          key: ${{ runner.os }}-otp${{ matrix.otp }}-${{ hashFiles('**/rebar.config', '**/*.app.src') }}
-          restore-keys: ${{ runner.os }}-otp${{ matrix.otp }}-
+          key: ${{ runner.os }}-otp${{ matrix.otp }}-${{ hashFiles('**/rebar.config', '**/rebar.lock', '**/*.app.src') }}
+          # No `restore-keys' — partial fallback restores stale
+          # `_build/default/lib/macula' from before a rebar.lock bump
+          # (rebar3 doesn't re-fetch deps when source is already
+          # present, so a stale dep silently sticks around). Only
+          # exact key matches; cold-cache on miss is the cost.
 
       - name: Compile
         run: rebar3 compile
