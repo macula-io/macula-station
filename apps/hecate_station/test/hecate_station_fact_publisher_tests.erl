@@ -48,18 +48,25 @@ cleanup(#{publisher := Pub, registry := Reg, observer := Obs}) ->
 %%====================================================================
 
 fact_publisher_test_() ->
+    %% 30s eunit timeout per test — leaves headroom for the 5s
+    %% receive timeout in `assert_publish_lands' to fire and dump
+    %% its diagnostic map. Default 5s eunit timeout would race
+    %% the receive timer.
     {foreach,
      fun setup/0,
      fun cleanup/1,
      [
          fun(Ctx) ->
-             ?_test(station_record_lands_on_station_topic(Ctx))
+             {timeout, 30,
+              fun() -> station_record_lands_on_station_topic(Ctx) end}
          end,
          fun(Ctx) ->
-             ?_test(daemon_record_lands_on_daemon_topic(Ctx))
+             {timeout, 30,
+              fun() -> daemon_record_lands_on_daemon_topic(Ctx) end}
          end,
          fun(Ctx) ->
-             ?_test(unknown_record_type_is_ignored(Ctx))
+             {timeout, 30,
+              fun() -> unknown_record_type_is_ignored(Ctx) end}
          end
      ]}.
 
