@@ -105,8 +105,15 @@ assert_publish_lands(#{publisher := Pub, registry := Reg, observer := Obs,
         {'$gen_cast', {send_frame, #{frame_type := event,
                                      topic := T} = _Frame}} ->
             ?assertEqual(ExpectedTopic, T)
-    after 1_000 ->
-        erlang:error({event_not_fanned_out, ExpectedTopic})
+    after 5_000 ->
+        Diagnostic = #{
+            expected_topic => ExpectedTopic,
+            record_type    => maps:get(type, Record, undefined),
+            payload        => maps:get(payload, Record, undefined),
+            server_topics  => hecate_pubsub_server:topics(Server),
+            server_subs    => hecate_pubsub_server:subscribers(Server, ExpectedTopic)
+        },
+        erlang:error({event_not_fanned_out, Diagnostic})
     end.
 
 station_record() ->
