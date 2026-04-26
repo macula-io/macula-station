@@ -101,7 +101,7 @@ remove_peer(Pid, NodeId)
   when is_binary(NodeId), byte_size(NodeId) =:= 32 ->
     gen_server:cast(Pid, {remove_peer, NodeId}).
 
--spec handle_frame(pid(), macula_identity:pubkey(), hecate_frame:frame()) -> ok.
+-spec handle_frame(pid(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Pid, FromNodeId, Frame)
   when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32, is_map(Frame) ->
     gen_server:cast(Pid, {swim_frame, FromNodeId, Frame}).
@@ -266,9 +266,9 @@ pick_one(L)  ->
 send_ping(Round, Target, ConnPid,
           #state{identity = Id, config = #{ping_timeout_ms := Ms},
                  probes = P} = S) ->
-    Ping = hecate_frame:swim_ping(#{round => Round, incarnation => 0,
+    Ping = macula_frame:swim_ping(#{round => Round, incarnation => 0,
                                     piggyback => []}),
-    Signed = hecate_frame:sign(Ping, Id),
+    Signed = macula_frame:sign(Ping, Id),
     _ = hecate_peering:send_frame(ConnPid, Signed),
     Ref = erlang:send_after(Ms, self(), {ping_timeout, Round, Target}),
     Probe = #{round => Round, target => Target, timer_ref => Ref},
@@ -301,13 +301,13 @@ on_ping(From, #{round := Round}, #state{identity = Id} = S) ->
     S1 = maybe_touch_alive(From, S),
     case maps:get(From, S1#state.members, undefined) of
         #{conn_pid := ConnPid} when is_pid(ConnPid) ->
-            Ack = hecate_frame:swim_ack(#{
+            Ack = macula_frame:swim_ack(#{
                 round       => Round,
                 responder   => S1#state.self_node_id,
                 incarnation => 0,
                 piggyback   => []
             }),
-            Signed = hecate_frame:sign(Ack, Id),
+            Signed = macula_frame:sign(Ack, Id),
             _ = hecate_peering:send_frame(ConnPid, Signed),
             S1;
         _ ->

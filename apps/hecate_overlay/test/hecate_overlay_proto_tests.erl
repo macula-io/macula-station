@@ -12,9 +12,9 @@ build_join_returns_signed_frame_test() ->
     Self = macula_identity:public(Kp),
     Ctx = ctx(Kp, Self),
     Frame = hecate_overlay_proto:build_join(Ctx),
-    ?assertEqual(hyparview_join, hecate_frame:frame_type(Frame)),
+    ?assertEqual(hyparview_join, macula_frame:frame_type(Frame)),
     ?assertEqual(Self, maps:get(new_member, Frame)),
-    ?assertMatch({ok, _}, hecate_frame:verify(Frame, Self)).
+    ?assertMatch({ok, _}, macula_frame:verify(Frame, Self)).
 
 %%---------------------------------------------------------------------
 %% JOIN handler
@@ -33,7 +33,7 @@ join_adds_sender_to_active_and_replies_neighbor_high_test() ->
     ?assert(lists:any(
               fun({send, T, F}) ->
                   T =:= Joiner andalso
-                  hecate_frame:frame_type(F) =:= hyparview_neighbor andalso
+                  macula_frame:frame_type(F) =:= hyparview_neighbor andalso
                   maps:get(priority, F) =:= high
               end, Actions)).
 
@@ -52,7 +52,7 @@ join_with_existing_actives_forwards_join_test() ->
     {_View1, Actions} = hecate_overlay_proto:process(View0, Joiner,
                                                     Frame, Ctx),
     Forwards = [A || {send, T, F} = A <- Actions,
-                     hecate_frame:frame_type(F) =:= hyparview_forward_join,
+                     macula_frame:frame_type(F) =:= hyparview_forward_join,
                      T =/= Joiner],
     ?assertEqual(2, length(Forwards)),
     %% Each forward carries Joiner as new_member.
@@ -77,7 +77,7 @@ forward_join_with_zero_ttl_accepts_test() ->
     %% Reply NEIGHBOR(high) to the new member.
     ?assert(lists:any(fun({send, T, F}) ->
                           T =:= NewM andalso
-                          hecate_frame:frame_type(F) =:= hyparview_neighbor
+                          macula_frame:frame_type(F) =:= hyparview_neighbor
                       end, Actions)).
 
 forward_join_with_empty_active_accepts_test() ->
@@ -124,7 +124,7 @@ forward_join_above_zero_ttl_forwards_to_random_active_test() ->
     %% A single forward to Other (excludes Sender + NewM).
     [{send, T, F}] = Actions,
     ?assertEqual(Other, T),
-    ?assertEqual(hyparview_forward_join, hecate_frame:frame_type(F)),
+    ?assertEqual(hyparview_forward_join, macula_frame:frame_type(F)),
     %% TTL decremented.
     ?assertEqual(4, maps:get(ttl, F)).
 
@@ -171,7 +171,7 @@ disconnect_demotes_sender_test() ->
     View0  = hecate_overlay_view:add_active(
                hecate_overlay_view:new(Self), Sender),
     Ctx    = ctx(SelfKp, Self),
-    Frame  = hecate_frame:sign(hecate_frame:hyparview_disconnect(
+    Frame  = macula_frame:sign(macula_frame:hyparview_disconnect(
                                  #{realm => maps:get(realm, Ctx)}),
                                SelfKp),
     {View1, _} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
@@ -191,7 +191,7 @@ shuffle_with_zero_ttl_replies_and_merges_test() ->
     View0  = hecate_overlay_view:add_passive(
                hecate_overlay_view:new(Self), id(40)),
     Ctx    = ctx(SelfKp, Self),
-    Frame  = hecate_frame:sign(hecate_frame:hyparview_shuffle(
+    Frame  = macula_frame:sign(macula_frame:hyparview_shuffle(
                                  #{realm => maps:get(realm, Ctx),
                                    origin => Origin,
                                    ttl    => 0,
@@ -201,7 +201,7 @@ shuffle_with_zero_ttl_replies_and_merges_test() ->
         hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
     ?assertEqual(Origin, T),
     ?assertEqual(hyparview_shuffle_reply,
-                 hecate_frame:frame_type(ReplyFrame)),
+                 macula_frame:frame_type(ReplyFrame)),
     %% Incoming sample peers merged into passive view.
     ?assert(hecate_overlay_view:is_passive(id(30), View1)),
     ?assert(hecate_overlay_view:is_passive(id(31), View1)).
@@ -216,7 +216,7 @@ shuffle_with_positive_ttl_forwards_to_random_active_test() ->
                          hecate_overlay_view:new(Self),
                          [Sender, Other]),
     Ctx    = ctx(SelfKp, Self),
-    Frame  = hecate_frame:sign(hecate_frame:hyparview_shuffle(
+    Frame  = macula_frame:sign(macula_frame:hyparview_shuffle(
                                  #{realm => maps:get(realm, Ctx),
                                    origin => Origin,
                                    ttl    => 3,
@@ -225,7 +225,7 @@ shuffle_with_positive_ttl_forwards_to_random_active_test() ->
     {_, [{send, T, F}]} = hecate_overlay_proto:process(View0, Sender,
                                                        Frame, Ctx),
     ?assertEqual(Other, T),
-    ?assertEqual(hyparview_shuffle, hecate_frame:frame_type(F)),
+    ?assertEqual(hyparview_shuffle, macula_frame:frame_type(F)),
     ?assertEqual(2, maps:get(ttl, F)).
 
 shuffle_reply_merges_into_passive_test() ->
@@ -235,7 +235,7 @@ shuffle_reply_merges_into_passive_test() ->
     Sample = [id(70), id(71)],
     View0  = hecate_overlay_view:new(Self),
     Ctx    = ctx(SelfKp, Self),
-    Frame  = hecate_frame:sign(hecate_frame:hyparview_shuffle_reply(
+    Frame  = macula_frame:sign(macula_frame:hyparview_shuffle_reply(
                                  #{realm => maps:get(realm, Ctx),
                                    peer_sample => Sample}), SelfKp),
     {View1, []} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
@@ -268,7 +268,7 @@ build_fwd(NewMember, Ttl, Arwl, Prwl, _Sender) ->
     %% A fresh signing identity stands in for the sender; the
     %% handler only reads the frame's fields, not its signature.
     Kp = macula_identity:generate(),
-    hecate_frame:sign(hecate_frame:hyparview_forward_join(
+    macula_frame:sign(macula_frame:hyparview_forward_join(
                         #{realm      => crypto:strong_rand_bytes(32),
                           new_member => NewMember,
                           ttl        => Ttl,
@@ -276,5 +276,5 @@ build_fwd(NewMember, Ttl, Arwl, Prwl, _Sender) ->
                           prwl       => Prwl}), Kp).
 
 sign_neighbor(Priority, #{identity := Kp, realm := R}) ->
-    hecate_frame:sign(hecate_frame:hyparview_neighbor(
+    macula_frame:sign(macula_frame:hyparview_neighbor(
                         #{realm => R, priority => Priority}), Kp).

@@ -7,7 +7,7 @@
         kernel,
         stdlib,
         macula,
-        hecate_frame,
+        macula_frame,
         hecate_peering,
         hecate_transport,
         hecate_dht,

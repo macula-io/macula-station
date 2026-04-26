@@ -200,13 +200,13 @@ control({local_publish, Realm, Topic, Payload}, State) ->
 control({send_join, Realm, SeedPub, Endorsement}, State) ->
     JKp  = maps:get(kp, State),
     JPub = maps:get(pubkey, State),
-    Frame0 = hecate_frame:hyparview_join(
+    Frame0 = macula_frame:hyparview_join(
                #{realm => Realm, new_member => JPub}),
     %% Attach endorsement in a test-only side channel so the seed can
     %% verify it — the production wire format would piggyback in the
     %% JOIN frame's endorsement field (not part of the minimal JOIN
     %% record in Phase 5.2).
-    Frame = hecate_frame:sign(Frame0, JKp),
+    Frame = macula_frame:sign(Frame0, JKp),
     Env   = #{frame => Frame, endorsement => Endorsement,
               realm => Realm, joiner => JPub},
     route(State, SeedPub, {join_envelope, Env}),
@@ -259,7 +259,7 @@ admit_joiner(_Frame, Realm, Joiner, State) ->
         Pl1 = hecate_plumtree:add_peer(Pl, Joiner),
         RS#{view := V1, plum := Pl1}
     end),
-    Reply = hecate_frame:sign(hecate_frame:hyparview_neighbor(
+    Reply = macula_frame:sign(macula_frame:hyparview_neighbor(
                                 #{realm => Realm, priority => high}),
                               maps:get(kp, State1)),
     route(State1, Joiner, Reply),

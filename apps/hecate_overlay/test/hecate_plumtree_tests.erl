@@ -41,7 +41,7 @@ publish_emits_gossip_to_each_eager_peer_test() ->
     ?assertEqual([{MsgId, <<"hello">>}], Deliveries),
     %% Three GOSSIPs, one per eager peer.
     Sends = [F || {send, _, F} <- Actions,
-                  hecate_frame:frame_type(F) =:= plumtree_gossip],
+                  macula_frame:frame_type(F) =:= plumtree_gossip],
     ?assertEqual(3, length(Sends)),
     %% Targets are the three peers.
     Targets = lists:sort([T || {send, T, _} <- Actions]),
@@ -55,7 +55,7 @@ publish_emits_ihave_to_each_lazy_peer_test() ->
     %% PRUNE-style demotion. Easier shortcut: handle a PRUNE we
     %% receive from the peer, which moves it to lazy.
     S1 = hecate_plumtree:add_peer(S0, id(7)),
-    PruneFrame = hecate_frame:sign(hecate_frame:plumtree_prune(
+    PruneFrame = macula_frame:sign(macula_frame:plumtree_prune(
                                      #{realm => realm_for(S0)}), Kp),
     {S2, _, _} = hecate_plumtree:process(S1, id(7), PruneFrame),
     ?assertEqual([id(7)], hecate_plumtree:lazy_peers(S2)),
@@ -63,7 +63,7 @@ publish_emits_ihave_to_each_lazy_peer_test() ->
     {_, Actions, _} = hecate_plumtree:publish(S2, msg_id(), ok),
     [{send, T, F}] = Actions,
     ?assertEqual(id(7), T),
-    ?assertEqual(plumtree_ihave, hecate_frame:frame_type(F)).
+    ?assertEqual(plumtree_ihave, macula_frame:frame_type(F)).
 
 %%---------------------------------------------------------------------
 %% Receive GOSSIP — first time vs duplicate
@@ -77,7 +77,7 @@ receive_first_gossip_delivers_and_forwards_test() ->
     %% Other (not back to Sender).
     S1 = hecate_plumtree:add_peer(S0, Other),
     MsgId = msg_id(),
-    Frame = hecate_frame:sign(hecate_frame:plumtree_gossip(
+    Frame = macula_frame:sign(macula_frame:plumtree_gossip(
                                 #{realm => realm_for(S0),
                                   msg_id => MsgId,
                                   round => 0,
@@ -101,7 +101,7 @@ receive_duplicate_gossip_prunes_sender_test() ->
     MsgId = msg_id(),
     {S2, _, _} = hecate_plumtree:publish(S1, MsgId, <<"first">>),
     %% Now the sender duplicates the same GOSSIP.
-    Dup = hecate_frame:sign(hecate_frame:plumtree_gossip(
+    Dup = macula_frame:sign(macula_frame:plumtree_gossip(
                               #{realm => realm_for(S0),
                                 msg_id => MsgId,
                                 round => 1,
@@ -113,7 +113,7 @@ receive_duplicate_gossip_prunes_sender_test() ->
     %% PRUNE sent back to Sender.
     [{send, T, F}] = Actions,
     ?assertEqual(Sender, T),
-    ?assertEqual(plumtree_prune, hecate_frame:frame_type(F)),
+    ?assertEqual(plumtree_prune, macula_frame:frame_type(F)),
     %% Sender now lazy, not eager.
     ?assert(lists:member(Sender, hecate_plumtree:lazy_peers(S3))),
     ?assertNot(lists:member(Sender, hecate_plumtree:eager_peers(S3))).
@@ -126,14 +126,14 @@ ihave_for_unknown_msg_emits_graft_test() ->
     {Kp, S0} = fresh(),
     Sender = id(30),
     MsgId  = msg_id(),
-    Frame  = hecate_frame:sign(hecate_frame:plumtree_ihave(
+    Frame  = macula_frame:sign(macula_frame:plumtree_ihave(
                                  #{realm => realm_for(S0),
                                    msg_id => MsgId,
                                    round => 2}), Kp),
     {S1, [{send, T, F}], []} =
         hecate_plumtree:process(S0, Sender, Frame),
     ?assertEqual(Sender, T),
-    ?assertEqual(plumtree_graft, hecate_frame:frame_type(F)),
+    ?assertEqual(plumtree_graft, macula_frame:frame_type(F)),
     ?assertEqual(MsgId, maps:get(msg_id, F)),
     ?assertEqual(1, hecate_plumtree:missing_count(S1)).
 
@@ -142,7 +142,7 @@ ihave_for_known_msg_is_silent_test() ->
     Sender = id(31),
     MsgId  = msg_id(),
     {S1, _, _} = hecate_plumtree:publish(S0, MsgId, <<"already">>),
-    Frame = hecate_frame:sign(hecate_frame:plumtree_ihave(
+    Frame = macula_frame:sign(macula_frame:plumtree_ihave(
                                 #{realm => realm_for(S0),
                                   msg_id => MsgId,
                                   round => 1}), Kp),
@@ -158,14 +158,14 @@ graft_for_known_msg_replies_with_gossip_test() ->
     Sender = id(40),
     MsgId  = msg_id(),
     {S1, _, _} = hecate_plumtree:publish(S0, MsgId, <<"payload">>),
-    Frame = hecate_frame:sign(hecate_frame:plumtree_graft(
+    Frame = macula_frame:sign(macula_frame:plumtree_graft(
                                 #{realm => realm_for(S0),
                                   msg_id => MsgId,
                                   round => 0}), Kp),
     {S2, [{send, T, F}], []} =
         hecate_plumtree:process(S1, Sender, Frame),
     ?assertEqual(Sender, T),
-    ?assertEqual(plumtree_gossip, hecate_frame:frame_type(F)),
+    ?assertEqual(plumtree_gossip, macula_frame:frame_type(F)),
     ?assertEqual(<<"payload">>, maps:get(payload, F)),
     %% Sender added to eager.
     ?assert(lists:member(Sender, hecate_plumtree:eager_peers(S2))).
@@ -174,7 +174,7 @@ graft_for_unknown_msg_is_silent_test() ->
     {Kp, S0} = fresh(),
     Sender = id(41),
     MsgId  = msg_id(),
-    Frame = hecate_frame:sign(hecate_frame:plumtree_graft(
+    Frame = macula_frame:sign(macula_frame:plumtree_graft(
                                 #{realm => realm_for(S0),
                                   msg_id => MsgId,
                                   round => 0}), Kp),
@@ -190,7 +190,7 @@ prune_demotes_sender_to_lazy_test() ->
     {Kp, S0} = fresh(),
     Sender = id(50),
     S1 = hecate_plumtree:add_peer(S0, Sender),
-    Frame = hecate_frame:sign(hecate_frame:plumtree_prune(
+    Frame = macula_frame:sign(macula_frame:plumtree_prune(
                                 #{realm => realm_for(S0)}), Kp),
     {S2, [], []} = hecate_plumtree:process(S1, Sender, Frame),
     ?assert(lists:member(Sender, hecate_plumtree:lazy_peers(S2))),
@@ -254,5 +254,5 @@ msg_id() -> crypto:strong_rand_bytes(16).
 %% Filter actions to just GOSSIP/IHAVE for forwarding inspection.
 strip_metadata(Actions, _Kp) ->
     [A || {send, _, F} = A <- Actions,
-          (hecate_frame:frame_type(F) =:= plumtree_gossip
-           orelse hecate_frame:frame_type(F) =:= plumtree_ihave)].
+          (macula_frame:frame_type(F) =:= plumtree_gossip
+           orelse macula_frame:frame_type(F) =:= plumtree_ihave)].

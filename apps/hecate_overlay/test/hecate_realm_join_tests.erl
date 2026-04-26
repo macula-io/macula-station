@@ -108,11 +108,11 @@ build_join_frame_is_signed_hyparview_join_test() ->
     Member   = macula_identity:public(MemberKp),
     Endorsement = signed_endorsement(AdminKp, RealmId, Member, [<<"peer">>]),
     F = hecate_realm_join:build_join(RealmId, Member, Endorsement, MemberKp),
-    ?assertEqual(hyparview_join, hecate_frame:frame_type(F)),
+    ?assertEqual(hyparview_join, macula_frame:frame_type(F)),
     ?assertEqual(RealmId, maps:get(realm, F)),
     ?assertEqual(Member,  maps:get(new_member, F)),
     %% Signed by the joining member → verifies against Member pubkey.
-    ?assertMatch({ok, _}, hecate_frame:verify(F, Member)).
+    ?assertMatch({ok, _}, macula_frame:verify(F, Member)).
 
 %%=====================================================================
 %% Helpers

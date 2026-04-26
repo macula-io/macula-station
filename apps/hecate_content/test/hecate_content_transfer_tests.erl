@@ -71,7 +71,7 @@ transfer_test_() ->
 build_want_default_priority() ->
     M = mcid_for(<<"a">>),
     F = hecate_content_transfer:build_want([M]),
-    ?assertEqual(want, hecate_frame:frame_type(F)),
+    ?assertEqual(want, macula_frame:frame_type(F)),
     [B] = maps:get(blocks, F),
     ?assertEqual(128, maps:get(priority, B)).
 
@@ -84,19 +84,19 @@ build_want_custom_priority() ->
 build_have_carries_sizes() ->
     M = mcid_for(<<"a">>),
     F = hecate_content_transfer:build_have([{M, 4096}]),
-    ?assertEqual(have, hecate_frame:frame_type(F)),
+    ?assertEqual(have, macula_frame:frame_type(F)),
     [#{size := 4096}] = maps:get(blocks, F).
 
 build_manifest_req() ->
     M = mcid_for(<<"a">>),
     F = hecate_content_transfer:build_manifest_req(M),
-    ?assertEqual(manifest_req, hecate_frame:frame_type(F)),
+    ?assertEqual(manifest_req, macula_frame:frame_type(F)),
     ?assertEqual(M, maps:get(mcid, F)).
 
 build_cancel() ->
     Ms = [mcid_for(<<"a">>), mcid_for(<<"b">>)],
     F = hecate_content_transfer:build_cancel(Ms),
-    ?assertEqual(cancel, hecate_frame:frame_type(F)),
+    ?assertEqual(cancel, macula_frame:frame_type(F)),
     ?assertEqual(Ms, maps:get(blocks, F)).
 
 %%--- request tracking ---
@@ -140,15 +140,15 @@ process_inbound_want_returns_block_frame() ->
     Data = <<"want-me">>,
     MCID = mcid_for(Data),
     ok = hecate_content_store:put_block(MCID, Data),
-    Want = hecate_frame:want(#{blocks => [#{mcid => MCID, priority => 128}]}),
+    Want = macula_frame:want(#{blocks => [#{mcid => MCID, priority => 128}]}),
     {ok, BlockFrame} =
         hecate_content_transfer:process_inbound(<<0:256>>, Want),
-    ?assertEqual(block, hecate_frame:frame_type(BlockFrame)),
+    ?assertEqual(block, macula_frame:frame_type(BlockFrame)),
     ?assertEqual(Data, maps:get(payload, BlockFrame)).
 
 process_inbound_want_unknown_returns_error() ->
     Unknown = <<1, 16#55, (crypto:strong_rand_bytes(32))/binary>>,
-    Want = hecate_frame:want(#{blocks => [#{mcid => Unknown,
+    Want = macula_frame:want(#{blocks => [#{mcid => Unknown,
                                             priority => 128}]}),
     ?assertEqual({error, not_found},
                  hecate_content_transfer:process_inbound(<<0:256>>, Want)).
@@ -156,13 +156,13 @@ process_inbound_want_unknown_returns_error() ->
 process_inbound_block_stores_data() ->
     Data = <<"block">>,
     MCID = mcid_for(Data),
-    Frame = hecate_frame:block(#{mcid => MCID, payload => Data}),
+    Frame = macula_frame:block(#{mcid => MCID, payload => Data}),
     ?assertEqual(ok,
                  hecate_content_transfer:process_inbound(<<0:256>>, Frame)),
     ?assertEqual({ok, Data}, hecate_content_store:get_block(MCID)).
 
 process_inbound_have_is_ok() ->
-    Frame = hecate_frame:have(#{blocks => [#{mcid => mcid_for(<<"x">>),
+    Frame = macula_frame:have(#{blocks => [#{mcid => mcid_for(<<"x">>),
                                               size => 1}]}),
     ?assertEqual(ok,
                  hecate_content_transfer:process_inbound(<<0:256>>, Frame)).
@@ -170,21 +170,21 @@ process_inbound_have_is_ok() ->
 process_inbound_manifest_req_known() ->
     {ok, M} = hecate_content_manifest:create(<<"x">>),
     ok = hecate_content_store:put_manifest(M),
-    Frame = hecate_frame:manifest_req(#{mcid => maps:get(mcid, M)}),
+    Frame = macula_frame:manifest_req(#{mcid => maps:get(mcid, M)}),
     {ok, Res} = hecate_content_transfer:process_inbound(<<0:256>>, Frame),
-    ?assertEqual(manifest_res, hecate_frame:frame_type(Res)),
+    ?assertEqual(manifest_res, macula_frame:frame_type(Res)),
     ?assert(is_map(maps:get(manifest, Res))).
 
 process_inbound_manifest_req_unknown_returns_not_found_frame() ->
     UnknownMcid = <<1, 16#56, (crypto:strong_rand_bytes(32))/binary>>,
-    Frame = hecate_frame:manifest_req(#{mcid => UnknownMcid}),
+    Frame = macula_frame:manifest_req(#{mcid => UnknownMcid}),
     {ok, Res} = hecate_content_transfer:process_inbound(<<0:256>>, Frame),
     ?assertEqual(not_found, maps:get(manifest, Res)).
 
 process_inbound_cancel_drops_matching_requests() ->
     M  = mcid_for(<<"x">>),
     {ok, _Id} = hecate_content_transfer:request_blocks([M], <<"t">>),
-    Frame = hecate_frame:cancel(#{blocks => [M]}),
+    Frame = macula_frame:cancel(#{blocks => [M]}),
     ok = hecate_content_transfer:process_inbound(<<0:256>>, Frame),
     %% Cast — give it a moment to flush.
     timer:sleep(50),

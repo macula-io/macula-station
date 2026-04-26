@@ -1,7 +1,7 @@
 %% @doc CALL-frame dispatcher.
 %%
-%% Pure-function helpers that translate an inbound `hecate_frame:call'
-%% into a `hecate_frame:result' or `hecate_frame:call_error' by
+%% Pure-function helpers that translate an inbound `macula_frame:call'
+%% into a `macula_frame:result' or `macula_frame:call_error' by
 %% looking up the procedure in a per-identity
 %% `hecate_handler_registry' and invoking the registered handler.
 %%
@@ -31,7 +31,7 @@
 
 -export_type([dispatch_result/0]).
 
--type dispatch_result() :: hecate_frame:frame().
+-type dispatch_result() :: macula_frame:frame().
 
 %%====================================================================
 %% Public API
@@ -40,7 +40,7 @@
 %% @doc Dispatch a CALL frame against a registry.
 %% Returns the reply frame. The caller is responsible for signing
 %% and sending the frame on the originating connection.
--spec dispatch_call(hecate_frame:frame(),
+-spec dispatch_call(macula_frame:frame(),
                     pid(),
                     macula_identity:pubkey()) ->
     dispatch_result().
@@ -91,14 +91,14 @@ normalise({error, _} = Error) -> Error;
 normalise(Other)              -> Other.
 
 result_frame(#{call_id := CallId} = _Call, ResponderId, Payload) ->
-    hecate_frame:result(#{
+    macula_frame:result(#{
         call_id      => CallId,
         payload      => Payload,
         responded_by => ResponderId
     }).
 
 error_frame(#{call_id := CallId}, ResponderId, Code) ->
-    hecate_frame:call_error(#{
+    macula_frame:call_error(#{
         call_id     => CallId,
         code        => Code,
         reported_by => ResponderId

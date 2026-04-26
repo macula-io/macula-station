@@ -23,19 +23,19 @@ new_nonce_is_not_deterministic_test() ->
 build_ping_returns_signed_frame_and_nonce_test() ->
     Kp = macula_identity:generate(),
     {Frame, Nonce} = hecate_dht_protocol:build_ping(Kp),
-    ?assertEqual(ping, hecate_frame:frame_type(Frame)),
+    ?assertEqual(ping, macula_frame:frame_type(Frame)),
     ?assertEqual(Nonce, maps:get(nonce, Frame)),
-    ?assertEqual(64, byte_size(hecate_frame:signature(Frame))),
-    ?assertMatch({ok, _}, hecate_frame:verify(Frame, macula_identity:public(Kp))).
+    ?assertEqual(64, byte_size(macula_frame:signature(Frame))),
+    ?assertMatch({ok, _}, macula_frame:verify(Frame, macula_identity:public(Kp))).
 
 build_pong_echoes_nonce_and_is_signed_test() ->
     Kp = macula_identity:generate(),
     {_, Nonce} = hecate_dht_protocol:build_ping(Kp),
     Pong = hecate_dht_protocol:build_pong(Nonce, Kp),
-    ?assertEqual(pong, hecate_frame:frame_type(Pong)),
+    ?assertEqual(pong, macula_frame:frame_type(Pong)),
     ?assertEqual(Nonce, maps:get(nonce, Pong)),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(Pong, macula_identity:public(Kp))).
+                 macula_frame:verify(Pong, macula_identity:public(Kp))).
 
 build_pong_rejects_bad_nonce_size_test() ->
     Kp = macula_identity:generate(),
@@ -51,21 +51,21 @@ build_find_node_shape_test() ->
     Self = macula_identity:public(Kp),
     Key  = crypto:strong_rand_bytes(32),
     F = hecate_dht_protocol:build_find_node(Key, Self, 3, Kp),
-    ?assertEqual(find_node, hecate_frame:frame_type(F)),
+    ?assertEqual(find_node, macula_frame:frame_type(F)),
     ?assertEqual(Key,  maps:get(key,    F)),
     ?assertEqual(Self, maps:get(origin, F)),
     ?assertEqual(3,    maps:get(depth,  F)),
-    ?assertMatch({ok, _}, hecate_frame:verify(F, Self)).
+    ?assertMatch({ok, _}, macula_frame:verify(F, Self)).
 
 build_nodes_reply_converts_entries_test() ->
     Kp = macula_identity:generate(),
     Entries = [sample_entry(N) || N <- [1, 2, 3]],
     Key  = crypto:strong_rand_bytes(32),
     F = hecate_dht_protocol:build_nodes_reply(Key, Entries, Kp),
-    ?assertEqual(nodes, hecate_frame:frame_type(F)),
+    ?assertEqual(nodes, macula_frame:frame_type(F)),
     ?assertEqual(3, length(maps:get(nodes, F))),
     ?assertMatch({ok, _},
-                 hecate_frame:verify(F, macula_identity:public(Kp))).
+                 macula_frame:verify(F, macula_identity:public(Kp))).
 
 build_nodes_reply_empty_list_test() ->
     Kp = macula_identity:generate(),

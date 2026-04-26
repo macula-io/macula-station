@@ -24,7 +24,7 @@
     certfile       :: file:name_all(),
     keyfile        :: file:name_all(),
     %% Peering capability bits advertised in the CONNECT handshake
-    %% (`hecate_frame' feature negotiation). Stations are
+    %% (`macula_frame' feature negotiation). Stations are
     %% realm-agnostic infrastructure per the railroad mental model —
     %% realm identity, admission, and overlay belong to a separate
     %% `hecate-realm' / `macula-realm' service — so no realm

@@ -100,7 +100,7 @@ lookup(RegistryPid, <<_:256>> = Realm) ->
 %% if no server is registered for `Realm'. The realm tag is supplied
 %% explicitly — the caller is responsible for extracting it from the
 %% frame and confirming the dispatch target.
--spec dispatch_frame(pid(), realm(), <<_:256>>, hecate_frame:frame()) ->
+-spec dispatch_frame(pid(), realm(), <<_:256>>, macula_frame:frame()) ->
         {ok, [<<_:256>>]} | {error, not_found}.
 dispatch_frame(RegistryPid, <<_:256>> = Realm, From, Frame) ->
     gen_server:call(RegistryPid, {dispatch_frame, Realm, From, Frame}).

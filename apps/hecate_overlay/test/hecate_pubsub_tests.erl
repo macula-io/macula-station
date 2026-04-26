@@ -101,9 +101,9 @@ build_event_signs_with_identity_test() ->
                 payload => <<"data">>,
                 published_at_ms => 1},
     F = hecate_pubsub:build_event(State, PubSpec, Kp),
-    ?assertEqual(event,    hecate_frame:frame_type(F)),
+    ?assertEqual(event,    macula_frame:frame_type(F)),
     ?assertEqual(plumtree, maps:get(delivered_via, F)),
-    ?assertMatch({ok, _},  hecate_frame:verify(F, PubId)).
+    ?assertMatch({ok, _},  macula_frame:verify(F, PubId)).
 
 %%---------------------------------------------------------------------
 %% Inbound dispatch via process/3
@@ -150,7 +150,7 @@ id(N) -> <<N:256>>.
 
 event_frame(Realm, Topic) ->
     Kp = macula_identity:generate(),
-    hecate_frame:sign(hecate_frame:event(#{
+    macula_frame:sign(macula_frame:event(#{
         topic         => Topic,
         realm         => Realm,
         publisher     => macula_identity:public(Kp),
@@ -161,7 +161,7 @@ event_frame(Realm, Topic) ->
 
 sign_subscribe(Realm, Topic, Sub) ->
     Kp = macula_identity:generate(),
-    hecate_frame:sign(hecate_frame:subscribe(#{
+    macula_frame:sign(macula_frame:subscribe(#{
         topic      => Topic,
         realm      => Realm,
         subscriber => Sub
@@ -169,7 +169,7 @@ sign_subscribe(Realm, Topic, Sub) ->
 
 sign_unsubscribe(Realm, Topic, Sub) ->
     Kp = macula_identity:generate(),
-    hecate_frame:sign(hecate_frame:unsubscribe(#{
+    macula_frame:sign(macula_frame:unsubscribe(#{
         topic      => Topic,
         realm      => Realm,
         subscriber => Sub

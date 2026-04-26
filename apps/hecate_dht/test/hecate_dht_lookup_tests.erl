@@ -227,7 +227,7 @@ route_frame(Table, From, Dst, Frame) ->
     end.
 
 bump_stat(Stats, Dst, Frame) ->
-    Key = {Dst, hecate_frame:frame_type(Frame)},
+    Key = {Dst, macula_frame:frame_type(Frame)},
     maps:update_with(Key, fun(N) -> N + 1 end, 1, Stats).
 
 router_stats() ->

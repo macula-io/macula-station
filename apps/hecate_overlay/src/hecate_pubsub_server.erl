@@ -101,20 +101,20 @@ realm(Pid) ->
 %% layer (Plumtree, future commit) and for delivering to the matched
 %% local subscribers via the application channel.
 -spec publish(pid(), binary(), binary()) ->
-        {hecate_frame:frame(), [<<_:256>>]}.
+        {macula_frame:frame(), [<<_:256>>]}.
 publish(Pid, Topic, Payload) ->
     gen_server:call(Pid, {publish, Topic, Payload}).
 
 %% @doc Process an inbound EVENT frame received from the wire. Returns
 %% the matched local subscribers; the caller delivers.
--spec deliver_event(pid(), hecate_frame:frame()) -> [<<_:256>>].
+-spec deliver_event(pid(), macula_frame:frame()) -> [<<_:256>>].
 deliver_event(Pid, Frame) ->
     gen_server:call(Pid, {deliver_event, Frame}).
 
 %% @doc Generic frame dispatch — handles subscribe / unsubscribe /
 %% event uniformly. Returns the matched subscribers for event frames,
 %% empty list for subscribe / unsubscribe.
--spec process_frame(pid(), <<_:256>>, hecate_frame:frame()) -> [<<_:256>>].
+-spec process_frame(pid(), <<_:256>>, macula_frame:frame()) -> [<<_:256>>].
 process_frame(Pid, From, Frame) ->
     gen_server:call(Pid, {process_frame, From, Frame}).
 

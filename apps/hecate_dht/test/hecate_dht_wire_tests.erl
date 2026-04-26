@@ -65,8 +65,8 @@ pong_with_wrong_nonce_is_ignored_test() ->
         identity   => Kp,
         send_frame => fun(_, _) -> ok end
     }),
-    Spoof = hecate_frame:sign(
-              hecate_frame:pong(#{nonce => crypto:strong_rand_bytes(16)}),
+    Spoof = macula_frame:sign(
+              macula_frame:pong(#{nonce => crypto:strong_rand_bytes(16)}),
               Kp),
     ok = hecate_dht:handle_frame(D, SelfId, Spoof),
     %% Sanity call to sync: server must still respond.

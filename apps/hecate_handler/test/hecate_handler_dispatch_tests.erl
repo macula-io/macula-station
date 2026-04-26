@@ -21,7 +21,7 @@ fresh_registry() ->
 call_frame_for(Procedure, Payload) ->
     Caller = <<1:256>>,
     Realm  = <<2:256>>,
-    hecate_frame:call(#{
+    macula_frame:call(#{
         call_id     => crypto:strong_rand_bytes(16),
         procedure   => Procedure,
         realm       => Realm,
@@ -39,7 +39,7 @@ unknown_procedure_returns_call_error_test() ->
     SelfId = <<3:256>>,
     Frame  = call_frame_for(?PROC, <<"args">>),
     Reply  = hecate_handler_dispatch:dispatch_call(Frame, Reg, SelfId),
-    ?assertEqual(error, hecate_frame:frame_type(Reply)),
+    ?assertEqual(error, macula_frame:frame_type(Reply)),
     ?assertEqual(16#01, maps:get(code, Reply)),
     ?assertEqual(SelfId, maps:get(reported_by, Reply)),
     ?assertEqual(maps:get(call_id, Frame), maps:get(call_id, Reply)),
@@ -56,7 +56,7 @@ handler_ok_returns_result_test() ->
             fun(<<"args">>) -> {ok, <<"reply">>} end),
     Frame = call_frame_for(?PROC, <<"args">>),
     Reply = hecate_handler_dispatch:dispatch_call(Frame, Reg, SelfId),
-    ?assertEqual(result, hecate_frame:frame_type(Reply)),
+    ?assertEqual(result, macula_frame:frame_type(Reply)),
     ?assertEqual(<<"reply">>, maps:get(payload, Reply)),
     ?assertEqual(SelfId, maps:get(responded_by, Reply)),
     ?assertEqual(maps:get(call_id, Frame), maps:get(call_id, Reply)),
@@ -73,7 +73,7 @@ handler_error_returns_result_with_error_payload_test() ->
             fun(_) -> {error, bad_signature} end),
     Reply = hecate_handler_dispatch:dispatch_call(
               call_frame_for(?PROC, <<"x">>), Reg, SelfId),
-    ?assertEqual(result, hecate_frame:frame_type(Reply)),
+    ?assertEqual(result, macula_frame:frame_type(Reply)),
     ?assertEqual({error, bad_signature}, maps:get(payload, Reply)),
     catch hecate_handler_registry:stop(Reg).
 
@@ -88,7 +88,7 @@ handler_crash_returns_call_error_test() ->
             fun(_) -> error(boom) end),
     Frame = call_frame_for(?PROC, <<"x">>),
     Reply = hecate_handler_dispatch:dispatch_call(Frame, Reg, SelfId),
-    ?assertEqual(error, hecate_frame:frame_type(Reply)),
+    ?assertEqual(error, macula_frame:frame_type(Reply)),
     ?assertEqual(16#02, maps:get(code, Reply)),  %% temporary_relay_failure
     ?assertEqual(maps:get(call_id, Frame), maps:get(call_id, Reply)),
     catch hecate_handler_registry:stop(Reg).
@@ -104,7 +104,7 @@ module_function_handler_test() ->
             {?MODULE, mfa_handler}),
     Reply = hecate_handler_dispatch:dispatch_call(
               call_frame_for(?PROC, <<"input">>), Reg, SelfId),
-    ?assertEqual(result, hecate_frame:frame_type(Reply)),
+    ?assertEqual(result, macula_frame:frame_type(Reply)),
     ?assertEqual(<<"mfa-input">>, maps:get(payload, Reply)),
     catch hecate_handler_registry:stop(Reg).
 
@@ -122,6 +122,6 @@ bare_value_handler_returned_verbatim_test() ->
             fun(_) -> not_found end),
     Reply = hecate_handler_dispatch:dispatch_call(
               call_frame_for(?PROC, <<"x">>), Reg, SelfId),
-    ?assertEqual(result, hecate_frame:frame_type(Reply)),
+    ?assertEqual(result, macula_frame:frame_type(Reply)),
     ?assertEqual(not_found, maps:get(payload, Reply)),
     catch hecate_handler_registry:stop(Reg).

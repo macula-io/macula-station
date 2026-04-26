@@ -157,7 +157,7 @@ route(_Frame, undefined, _S) ->
 route(Frame, NodeId, S) ->
     dispatch(frame_category(Frame), Frame, NodeId, S).
 
-frame_category(Frame) -> classify(hecate_frame:frame_type(Frame)).
+frame_category(Frame) -> classify(macula_frame:frame_type(Frame)).
 
 classify(swim_ping)    -> swim;
 classify(swim_ack)     -> swim;
@@ -167,9 +167,9 @@ classify(call)         -> call;
 classify(_)            -> other.
 
 dispatch(swim, Frame, NodeId, #state{swim = Swim}) ->
-    deliver_swim(hecate_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
+    deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
 dispatch(call, Frame, NodeId, S) ->
-    deliver_call(hecate_frame:verify(Frame, NodeId), Frame, NodeId, S);
+    deliver_call(macula_frame:verify(Frame, NodeId), Frame, NodeId, S);
 dispatch(other, _Frame, _NodeId, _S) ->
     ok.
 

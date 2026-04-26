@@ -68,6 +68,6 @@ close(Pid, Reason) ->
 
 %% @doc Send a frame through the peer connection. Signs the frame with
 %% the local identity if it isn't already signed. Fire-and-forget.
--spec send_frame(pid(), hecate_frame:frame()) -> ok.
+-spec send_frame(pid(), macula_frame:frame()) -> ok.
 send_frame(Pid, Frame) when is_map(Frame) ->
     gen_statem:cast(Pid, {send_frame, Frame}).

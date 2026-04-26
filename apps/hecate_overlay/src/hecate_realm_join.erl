@@ -109,13 +109,13 @@ role_to_binary(R)        when is_binary(R) -> R.
 %% receiver can bind the join attempt to the candidate member key
 %% (the endorsement binds it to the realm).
 -spec build_join(realm(), node_id(), macula_record:record(),
-                 macula_identity:key_pair()) -> hecate_frame:frame().
+                 macula_identity:key_pair()) -> macula_frame:frame().
 build_join(Realm, NewMember, Endorsement, Identity)
   when is_binary(Realm), byte_size(Realm) =:= 32,
        is_binary(NewMember), byte_size(NewMember) =:= 32,
        is_map(Endorsement) ->
     _Encoded = macula_record:encode(Endorsement),
-    hecate_frame:sign(hecate_frame:hyparview_join(#{
+    macula_frame:sign(macula_frame:hyparview_join(#{
         realm      => Realm,
         new_member => NewMember
     }), Identity).

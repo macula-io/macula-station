@@ -79,7 +79,7 @@
 -define(DEFAULT_FIND_NODE_TIMEOUT_MS, 5_000).
 -define(DEFAULT_STORE_TIMEOUT_MS,     5_000).
 
--type send_fun() :: fun((macula_identity:pubkey(), hecate_frame:frame()) ->
+-type send_fun() :: fun((macula_identity:pubkey(), macula_frame:frame()) ->
                               ok | {error, term()}).
 
 -type opts() :: #{
@@ -95,11 +95,11 @@
 -type ping_result() :: {ok, #{rtt_ms := non_neg_integer()}}
                      | {error, timeout | no_transport | term()}.
 
--type find_node_result() :: {ok, [hecate_frame:station_ref()]}
+-type find_node_result() :: {ok, [macula_frame:station_ref()]}
                           | {error, timeout | no_transport | term()}.
 
 -type find_value_result() :: {value, [macula_record:record()]}
-                           | {nodes, [hecate_frame:station_ref()]}
+                           | {nodes, [macula_frame:station_ref()]}
                            | {error, timeout | no_transport | term()}.
 
 -type send_store_result() :: {ok, #{stored := boolean(),
@@ -237,7 +237,7 @@ find_node(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
   when is_integer(Timeout), Timeout > 0 ->
     gen_server:call(Pid, {find_node, Key, PeerId, Timeout}, Timeout + 1_000).
 
--spec handle_frame(pid(), macula_identity:pubkey(), hecate_frame:frame()) -> ok.
+-spec handle_frame(pid(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Pid, <<_:256>> = FromNodeId, Frame) when is_map(Frame) ->
     gen_server:cast(Pid, {frame, FromNodeId, Frame}).
 
@@ -656,7 +656,7 @@ dispatch_store_timeout({{From, _Timer}, NewP}, S) ->
 %% STORE_ACK so the requester learns the outcome.
 %%---------------------------------------------------------------------
 
--spec on_store(hecate_frame:frame(), macula_identity:pubkey(), #state{}) ->
+-spec on_store(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
 on_store(_Frame, _From, #state{identity = undefined} = S) ->
     S;
@@ -688,7 +688,7 @@ persist_if_valid({error, Reason}, Record, FromNodeId,
 %% Incoming STORE_ACK — correlate with outstanding STORE.
 %%---------------------------------------------------------------------
 
--spec on_store_ack(hecate_frame:frame(), macula_identity:pubkey(),
+-spec on_store_ack(macula_frame:frame(), macula_identity:pubkey(),
                    #state{}) -> #state{}.
 on_store_ack(Frame, FromNodeId, #state{pending_stores = P} = S) ->
     Key    = maps:get(key, Frame),
@@ -715,20 +715,20 @@ resolve_store_ack({{From, Timer}, NewP}, Stored, Reason, S) ->
 %% silently — logging lands with observability (Session 3.11).
 %%=====================================================================
 
--spec dispatch_frame(macula_identity:pubkey(), hecate_frame:frame(),
+-spec dispatch_frame(macula_identity:pubkey(), macula_frame:frame(),
                      #state{}) -> #state{}.
 dispatch_frame(FromNodeId, Frame, S) ->
     route_verified(hecate_dht_protocol:verify(Frame, FromNodeId),
                    FromNodeId, S).
 
--spec route_verified({ok, hecate_frame:frame()} | {error, term()},
+-spec route_verified({ok, macula_frame:frame()} | {error, term()},
                      macula_identity:pubkey(), #state{}) -> #state{}.
 route_verified({error, _Reason}, _FromNodeId, S) ->
     S;
 route_verified({ok, Frame}, FromNodeId, S) ->
-    route_by_type(hecate_frame:frame_type(Frame), Frame, FromNodeId, S).
+    route_by_type(macula_frame:frame_type(Frame), Frame, FromNodeId, S).
 
--spec route_by_type(hecate_frame:frame_type(), hecate_frame:frame(),
+-spec route_by_type(macula_frame:frame_type(), macula_frame:frame(),
                     macula_identity:pubkey(), #state{}) -> #state{}.
 route_by_type(ping,       F, From, S) -> on_ping(F, From, S);
 route_by_type(pong,       F, From, S) -> on_pong(F, From, S);
@@ -744,7 +744,7 @@ route_by_type(_,         _F, _From, S) -> S.
 %% Incoming PING → PONG
 %%---------------------------------------------------------------------
 
--spec on_ping(hecate_frame:frame(), macula_identity:pubkey(), #state{}) ->
+-spec on_ping(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
 on_ping(_Frame, _From, #state{identity = undefined} = S) ->
     S;
@@ -761,7 +761,7 @@ on_ping(Frame, FromNodeId,
 %% Incoming PONG — match outstanding PING, touch peer.
 %%---------------------------------------------------------------------
 
--spec on_pong(hecate_frame:frame(), macula_identity:pubkey(), #state{}) ->
+-spec on_pong(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
 on_pong(Frame, FromNodeId, #state{pending_pings = P} = S) ->
     Nonce = maps:get(nonce, Frame),
@@ -790,7 +790,7 @@ resolve_pong({ok, {TargetNodeId, From, TimerRef, Started}}, Nonce, TargetNodeId,
 %% Incoming FIND_NODE — reply with NODES (k-closest from RT).
 %%---------------------------------------------------------------------
 
--spec on_find_node(hecate_frame:frame(), macula_identity:pubkey(),
+-spec on_find_node(macula_frame:frame(), macula_identity:pubkey(),
                    #state{}) -> #state{}.
 on_find_node(_Frame, _From, #state{identity = undefined} = S) ->
     S;
@@ -810,7 +810,7 @@ on_find_node(Frame, FromNodeId,
 %% first (the FIND_VALUE path), fall through to pending_find_nodes.
 %%---------------------------------------------------------------------
 
--spec on_nodes(hecate_frame:frame(), macula_identity:pubkey(), #state{}) ->
+-spec on_nodes(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
 on_nodes(Frame, FromNodeId, #state{pending_find_values = PFV,
                                     pending_find_nodes  = PFN} = S) ->
@@ -821,7 +821,7 @@ on_nodes(Frame, FromNodeId, #state{pending_find_values = PFV,
 
 -spec route_nodes({{gen_server:from(), reference()}, map()} | error,
                   {{gen_server:from(), reference()}, map()} | error,
-                  [hecate_frame:station_ref()], #state{}) -> #state{}.
+                  [macula_frame:station_ref()], #state{}) -> #state{}.
 route_nodes({{From, Timer}, NewPFV}, _PFN, Refs, S) ->
     _ = erlang:cancel_timer(Timer),
     gen_server:reply(From, {nodes, Refs}),
@@ -838,7 +838,7 @@ route_nodes(error, error, _Refs, S) ->
 %% NODES (k-closest from the routing table) per Part 3 §4.5.
 %%---------------------------------------------------------------------
 
--spec on_find_value(hecate_frame:frame(), macula_identity:pubkey(),
+-spec on_find_value(macula_frame:frame(), macula_identity:pubkey(),
                     #state{}) -> #state{}.
 on_find_value(_Frame, _From, #state{identity = undefined} = S) ->
     S;
@@ -866,7 +866,7 @@ reply_find_value(Records, Key, FromNodeId,
 %% Incoming VALUE — correlate with outstanding FIND_VALUE.
 %%---------------------------------------------------------------------
 
--spec on_value(hecate_frame:frame(), macula_identity:pubkey(), #state{}) ->
+-spec on_value(macula_frame:frame(), macula_identity:pubkey(), #state{}) ->
           #state{}.
 on_value(Frame, FromNodeId, #state{pending_find_values = P} = S) ->
     Key = maps:get(key, Frame),

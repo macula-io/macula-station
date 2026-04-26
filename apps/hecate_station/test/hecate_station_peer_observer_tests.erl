@@ -84,10 +84,10 @@ signed_swim_ping_reaches_swim_test_() ->
         fun() ->
             {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
             Kp = maps:get(peer_kp, Ctx),
-            Ping = hecate_frame:swim_ping(#{round => 1,
+            Ping = macula_frame:swim_ping(#{round => 1,
                                             incarnation => 0,
                                             piggyback => []}),
-            Signed = hecate_frame:sign(Ping, Kp),
+            Signed = macula_frame:sign(Ping, Kp),
             Obs ! {hecate_peering, frame, ConnPid, Signed},
             %% There is no synchronous observer on SWIM receipt; let
             %% the cast land. On a bad signature the assertion below
@@ -102,10 +102,10 @@ unsigned_frame_is_dropped_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
             {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
-            %% Build an unsigned frame — `hecate_frame:verify/2'
+            %% Build an unsigned frame — `macula_frame:verify/2'
             %% returns `{error, _}', so the observer must drop it
             %% silently without crashing.
-            Unsigned = hecate_frame:swim_ping(#{round => 99,
+            Unsigned = macula_frame:swim_ping(#{round => 99,
                                                 incarnation => 0,
                                                 piggyback => []}),
             Obs ! {hecate_peering, frame, ConnPid, Unsigned},
@@ -119,9 +119,9 @@ frame_from_unknown_conn_is_dropped_test_() ->
         fun() ->
             Fake = spawn_dummy(),
             Kp   = macula_identity:generate(),
-            Ping = hecate_frame:swim_ping(#{round => 1, incarnation => 0,
+            Ping = macula_frame:swim_ping(#{round => 1, incarnation => 0,
                                             piggyback => []}),
-            Signed = hecate_frame:sign(Ping, Kp),
+            Signed = macula_frame:sign(Ping, Kp),
             Obs ! {hecate_peering, frame, Fake, Signed},
             timer:sleep(50),
             ?assert(is_process_alive(Obs))

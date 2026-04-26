@@ -83,7 +83,7 @@
     missing    := #{msg_id() => sets:set(peer())}
 }.
 
--type action()   :: {send, peer(), hecate_frame:frame()}.
+-type action()   :: {send, peer(), macula_frame:frame()}.
 -type delivery() :: {msg_id(), term()}.
 
 %%=====================================================================
@@ -150,7 +150,7 @@ publish(State, <<_:128>> = MsgId, Payload) ->
 %% Inbound dispatch
 %%=====================================================================
 
--spec process(state(), peer(), hecate_frame:frame()) ->
+-spec process(state(), peer(), macula_frame:frame()) ->
         {state(), [action()], [delivery()]}.
 process(State, From, #{frame_type := plumtree_gossip} = F) ->
     on_gossip(From, F, State);
@@ -167,7 +167,7 @@ process(State, _From, _Frame) ->
 %% Handlers
 %%=====================================================================
 
--spec on_gossip(peer(), hecate_frame:frame(), state()) ->
+-spec on_gossip(peer(), macula_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_gossip(From, Frame, State) ->
     MsgId   = maps:get(msg_id, Frame),
@@ -191,7 +191,7 @@ classify_gossip(false, From, MsgId, Round, Payload, State) ->
     Pushes   = build_pushes(State3, MsgId, Round + 1, Payload, From),
     {State3, Pushes, [{MsgId, Payload}]}.
 
--spec on_ihave(peer(), hecate_frame:frame(), state()) ->
+-spec on_ihave(peer(), macula_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_ihave(From, Frame, State) ->
     MsgId = maps:get(msg_id, Frame),
@@ -210,7 +210,7 @@ classify_ihave(false, From, MsgId, Round, State) ->
     Graft  = signed_graft(State, MsgId, Round + 1),
     {State1, [{send, From, Graft}], []}.
 
--spec on_graft(peer(), hecate_frame:frame(), state()) ->
+-spec on_graft(peer(), macula_frame:frame(), state()) ->
         {state(), [action()], [delivery()]}.
 on_graft(From, Frame, State) ->
     MsgId = maps:get(msg_id, Frame),
@@ -267,20 +267,20 @@ build_pushes(#{eager_push := E, lazy_push := L} = State,
         ++ [{send, P, signed_ihave(State, MsgId, Round)} || P <- Lazy].
 
 signed_gossip(#{realm := R, identity := Id}, MsgId, Round, Payload) ->
-    hecate_frame:sign(hecate_frame:plumtree_gossip(
+    macula_frame:sign(macula_frame:plumtree_gossip(
                         #{realm => R, msg_id => MsgId,
                           round => Round, payload => Payload}), Id).
 
 signed_ihave(#{realm := R, identity := Id}, MsgId, Round) ->
-    hecate_frame:sign(hecate_frame:plumtree_ihave(
+    macula_frame:sign(macula_frame:plumtree_ihave(
                         #{realm => R, msg_id => MsgId,
                           round => Round}), Id).
 
 signed_graft(#{realm := R, identity := Id}, MsgId, Round) ->
-    hecate_frame:sign(hecate_frame:plumtree_graft(
+    macula_frame:sign(macula_frame:plumtree_graft(
                         #{realm => R, msg_id => MsgId,
                           round => Round}), Id).
 
 signed_prune(#{realm := R, identity := Id}) ->
-    hecate_frame:sign(hecate_frame:plumtree_prune(
+    macula_frame:sign(macula_frame:plumtree_prune(
                         #{realm => R}), Id).

@@ -218,7 +218,7 @@ maybe_remove_swim_peer(ConnPid, Peers, Swim) ->
     end.
 
 dispatch_peer_frame(ConnPid, Frame, #state{swim = Swim, peers = Peers} = S) ->
-    case {hecate_frame:frame_type(Frame), maps:get(ConnPid, Peers, undefined)} of
+    case {macula_frame:frame_type(Frame), maps:get(ConnPid, Peers, undefined)} of
         {Type, #{peer_node_id := From}} when Type =:= swim_ping;
                                               Type =:= swim_ack;
                                               Type =:= swim_suspect;
@@ -238,7 +238,7 @@ dispatch_peer_frame(ConnPid, Frame, #state{swim = Swim, peers = Peers} = S) ->
     end.
 
 dispatch_swim(From, Frame, Swim) ->
-    case hecate_frame:verify(Frame, From) of
+    case macula_frame:verify(Frame, From) of
         {ok, _}          -> hecate_swim:handle_frame(Swim, From, Frame);
         {error, _Reason} -> ok
     end.
@@ -250,7 +250,7 @@ dispatch_swim(From, Frame, Swim) ->
 %% (which signs the frame with the local identity if it isn't
 %% already signed).
 dispatch_content(ConnPid, From, Frame) ->
-    case hecate_frame:verify(Frame, From) of
+    case macula_frame:verify(Frame, From) of
         {ok, Verified}  -> handle_content_reply(
                               ConnPid,
                               hecate_content_transfer:process_inbound(From, Verified));

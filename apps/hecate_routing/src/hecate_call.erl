@@ -73,7 +73,7 @@
 
 -type outcome() ::
       {ok, term()}
-    | {error, hecate_bolt4:name(), #{atom() => term()}}.
+    | {error, macula_bolt4:name(), #{atom() => term()}}.
 
 -type info() :: #{
     call_id       := <<_:128>>,
@@ -145,7 +145,7 @@ ack(Pid, Payload) ->
 
 %% @doc Driving event: ERROR frame received with a BOLT#4 code,
 %% optionally identifying the offending hop.
--spec ack_error(pid(), hecate_bolt4:name() | hecate_bolt4:code(),
+-spec ack_error(pid(), macula_bolt4:name() | macula_bolt4:code(),
                 macula_identity:pubkey() | undefined) -> ok.
 ack_error(Pid, CodeOrName, Hop) ->
     gen_statem:cast(Pid, {ack_error, CodeOrName, Hop}).
@@ -281,7 +281,7 @@ notify_pid(Pid, Outcome) when is_pid(Pid) ->
 normalise_code(Code) when is_atom(Code) ->
     Code;
 normalise_code(Code) when is_integer(Code) ->
-    hecate_bolt4:name(Code).
+    macula_bolt4:name(Code).
 
 hop_detail(undefined) ->
     #{};

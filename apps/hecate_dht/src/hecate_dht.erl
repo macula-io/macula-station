@@ -228,7 +228,7 @@ store(Dht, Record) ->
 store(Dht, Record, Opts) ->
     hecate_dht_store:store(Dht, Record, Opts).
 
--spec handle_frame(dht(), macula_identity:pubkey(), hecate_frame:frame()) -> ok.
+-spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Dht, FromNodeId, Frame) ->
     hecate_dht_server:handle_frame(Dht, FromNodeId, Frame).
 

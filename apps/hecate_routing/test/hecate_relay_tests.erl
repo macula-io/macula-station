@@ -14,7 +14,7 @@ forward_advances_source_route_and_returns_next_hop_test() ->
     DestId = macula_identity:public(macula_identity:generate()),
 
     %% Build the source route with self at the head.
-    SR  = hecate_source_route:new([SelfId, NextId, DestId],
+    SR  = macula_source_route:new([SelfId, NextId, DestId],
                                   future_deadline()),
     Frame = build_call(Kp, SR),
     Ctx = ctx(Kp, fun(_) -> true end),
@@ -22,25 +22,25 @@ forward_advances_source_route_and_returns_next_hop_test() ->
     {forward, ReturnedNext, Frame1} =
         hecate_relay:process_call(Frame, Ctx),
     %% Returned next hop is the truncated NodeId of NextId.
-    ?assertEqual(hecate_source_route:truncate_hop(NextId), ReturnedNext),
+    ?assertEqual(macula_source_route:truncate_hop(NextId), ReturnedNext),
     %% The frame's source_route field has advanced: current_hop = 1.
-    {ok, SR1} = hecate_source_route:decode(maps:get(source_route, Frame1)),
-    ?assertEqual(1, hecate_source_route:current_hop(SR1)).
+    {ok, SR1} = macula_source_route:decode(maps:get(source_route, Frame1)),
+    ?assertEqual(1, macula_source_route:current_hop(SR1)).
 
 forward_at_first_intermediate_hop_with_three_hop_path_test() ->
     Kp = macula_identity:generate(),
     SelfId = macula_identity:public(Kp),
     Mid    = macula_identity:public(macula_identity:generate()),
     Dest   = macula_identity:public(macula_identity:generate()),
-    SR     = hecate_source_route:new([SelfId, Mid, Dest], future_deadline()),
+    SR     = macula_source_route:new([SelfId, Mid, Dest], future_deadline()),
     Frame  = build_call(Kp, SR),
 
     {forward, _NextHop, Frame1} =
         hecate_relay:process_call(Frame,
                                   ctx(Kp, fun(_) -> true end)),
-    {ok, SR1} = hecate_source_route:decode(maps:get(source_route, Frame1)),
-    ?assertEqual(1, hecate_source_route:current_hop(SR1)),
-    ?assertNot(hecate_source_route:is_complete(SR1)).
+    {ok, SR1} = macula_source_route:decode(maps:get(source_route, Frame1)),
+    ?assertEqual(1, macula_source_route:current_hop(SR1)),
+    ?assertNot(macula_source_route:is_complete(SR1)).
 
 %%---------------------------------------------------------------------
 %% Deliver locally — final hop
@@ -51,8 +51,8 @@ deliver_local_when_we_are_the_final_hop_test() ->
     SelfId = macula_identity:public(Kp),
     Mid    = macula_identity:public(macula_identity:generate()),
     %% Path: [Mid, SelfId]. We're the final hop after one advance.
-    SR0    = hecate_source_route:new([Mid, SelfId], future_deadline()),
-    SR     = hecate_source_route:advance(SR0),  %% current_hop = 1 (us)
+    SR0    = macula_source_route:new([Mid, SelfId], future_deadline()),
+    SR     = macula_source_route:advance(SR0),  %% current_hop = 1 (us)
     Frame  = build_call(Kp, SR),
 
     Action = hecate_relay:process_call(Frame,
@@ -82,7 +82,7 @@ position_mismatch_yields_invalid_path_header_test() ->
     Kp = macula_identity:generate(),
     %% Path lists a different NodeId at the current hop.
     Other = macula_identity:public(macula_identity:generate()),
-    SR    = hecate_source_route:new([Other,
+    SR    = macula_source_route:new([Other,
                                      macula_identity:public(Kp)],
                                     future_deadline()),
     Frame = build_call(Kp, SR),
@@ -96,7 +96,7 @@ position_mismatch_yields_invalid_path_header_test() ->
 
 expired_deadline_yields_expiry_too_soon_test() ->
     Kp = macula_identity:generate(),
-    SR = hecate_source_route:new([macula_identity:public(Kp),
+    SR = macula_source_route:new([macula_identity:public(Kp),
                                   random_id()],
                                  1),  %% deadline in the past
     Frame = build_call(Kp, SR),
@@ -114,7 +114,7 @@ duplicate_hop_yields_loop_detected_test() ->
     Other = macula_identity:public(macula_identity:generate()),
     %% Path repeats a hop — the loop check fires before position
     %% checks, so the order in the path doesn't matter.
-    SR = hecate_source_route:new([Self, Other, Other], future_deadline()),
+    SR = macula_source_route:new([Self, Other, Other], future_deadline()),
     Frame = build_call(Kp, SR),
     Action = hecate_relay:process_call(Frame,
                                        ctx(Kp, fun(_) -> true end)),
@@ -128,16 +128,16 @@ dead_next_peer_yields_unknown_next_peer_with_hop_attribution_test() ->
     Kp = macula_identity:generate(),
     SelfId = macula_identity:public(Kp),
     Dead = macula_identity:public(macula_identity:generate()),
-    SR = hecate_source_route:new([SelfId, Dead, random_id()],
+    SR = macula_source_route:new([SelfId, Dead, random_id()],
                                  future_deadline()),
     Frame = build_call(Kp, SR),
     Action = hecate_relay:process_call(Frame,
                                        ctx(Kp, fun(_) -> false end)),
     {reply_error, ErrFrame, _Origin} = Action,
-    ?assertEqual(error, hecate_frame:frame_type(ErrFrame)),
+    ?assertEqual(error, macula_frame:frame_type(ErrFrame)),
     ?assertEqual(unknown_next_peer, maps:get(name, ErrFrame)),
     %% offending_hop is the (zero-padded) Dead hop prefix.
-    HopPrefix = hecate_source_route:truncate_hop(Dead),
+    HopPrefix = macula_source_route:truncate_hop(Dead),
     OffHop = maps:get(offending_hop, ErrFrame),
     ?assertEqual(HopPrefix, binary:part(OffHop, 0, 16)).
 
@@ -149,7 +149,7 @@ dead_next_peer_yields_unknown_next_peer_with_hop_attribution_test() ->
 error_frame_is_signed_and_carries_originator_test() ->
     Kp = macula_identity:generate(),
     SelfId = macula_identity:public(Kp),
-    SR = hecate_source_route:new([SelfId, random_id()], 1),  %% expired
+    SR = macula_source_route:new([SelfId, random_id()], 1),  %% expired
     CallerKp = macula_identity:generate(),
     CallerId = macula_identity:public(CallerKp),
     Frame = (build_call(Kp, SR))#{caller := CallerId},
@@ -158,7 +158,7 @@ error_frame_is_signed_and_carries_originator_test() ->
         hecate_relay:process_call(Frame,
                                   ctx(Kp, fun(_) -> true end)),
     ?assertEqual(CallerId, Origin),
-    ?assertMatch({ok, _}, hecate_frame:verify(ErrFrame, SelfId)),
+    ?assertMatch({ok, _}, macula_frame:verify(ErrFrame, SelfId)),
     ?assertEqual(SelfId, maps:get(reported_by, ErrFrame)),
     %% source_route_partial is the original incoming SR bytes.
     ?assertEqual(maps:get(source_route, Frame),
@@ -170,7 +170,7 @@ error_frame_is_signed_and_carries_originator_test() ->
 
 deadline_check_uses_context_supplied_now_ms_test() ->
     Kp = macula_identity:generate(),
-    SR = hecate_source_route:new([macula_identity:public(Kp),
+    SR = macula_source_route:new([macula_identity:public(Kp),
                                   random_id()],
                                  1_000_000),  %% deadline = 1_000_000ms
     Frame = build_call(Kp, SR),
@@ -197,26 +197,26 @@ ctx(Kp, AliveFn) ->
     }.
 
 build_call(Kp, SR) ->
-    hecate_frame:sign(
-      hecate_frame:call(#{
+    macula_frame:sign(
+      macula_frame:call(#{
         call_id      => crypto:strong_rand_bytes(16),
         procedure    => <<"realm/acme/proc/v1">>,
         realm        => crypto:strong_rand_bytes(32),
         payload      => <<"hello">>,
         deadline_ms  => future_deadline(),
         caller       => macula_identity:public(macula_identity:generate()),
-        source_route => hecate_source_route:encode(SR)
+        source_route => macula_source_route:encode(SR)
       }), Kp).
 
 sample_sr(Kp) ->
-    hecate_source_route:new([macula_identity:public(Kp), random_id()],
+    macula_source_route:new([macula_identity:public(Kp), random_id()],
                             future_deadline()).
 
 assert_error_action({reply_error, ErrFrame, _Origin}, ExpectedName, Kp) ->
-    ?assertEqual(error, hecate_frame:frame_type(ErrFrame)),
+    ?assertEqual(error, macula_frame:frame_type(ErrFrame)),
     ?assertEqual(ExpectedName, maps:get(name, ErrFrame)),
     %% Verify signed by us.
     ?assertMatch({ok, _},
-                 hecate_frame:verify(ErrFrame, macula_identity:public(Kp)));
+                 macula_frame:verify(ErrFrame, macula_identity:public(Kp)));
 assert_error_action(Other, ExpectedName, _Kp) ->
     erlang:error({unexpected_action, Other, expected_error, ExpectedName}).

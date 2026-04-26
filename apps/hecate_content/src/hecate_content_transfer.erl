@@ -2,8 +2,8 @@
 %%
 %% Tracks outbound block requests and processes inbound WANT / HAVE /
 %% BLOCK / MANIFEST_REQ / MANIFEST_RES / CANCEL frames. All wire
-%% framing goes through `hecate_frame'; signing is the caller's
-%% responsibility (`hecate_frame:sign/2') so this module stays free
+%% framing goes through `macula_frame'; signing is the caller's
+%% responsibility (`macula_frame:sign/2') so this module stays free
 %% of identity state.
 %%
 %% This gen_server does not own the network — wire I/O lives in the
@@ -41,7 +41,7 @@
 }).
 
 -record(request, {
-    mcids       :: [hecate_frame:mcid()],
+    mcids       :: [macula_frame:mcid()],
     target_node :: binary(),
     created_at  :: integer(),
     status      :: pending | complete | cancelled
@@ -65,31 +65,31 @@ stop() -> gen_server:stop(?SERVER).
 %% Outbound frame builders (pure)
 %%====================================================================
 
--spec build_want([hecate_frame:mcid() | hecate_frame:want_entry()]) ->
-        hecate_frame:frame().
+-spec build_want([macula_frame:mcid() | macula_frame:want_entry()]) ->
+        macula_frame:frame().
 build_want(McidsOrEntries) ->
     build_want(McidsOrEntries, ?DEFAULT_PRIORITY).
 
--spec build_want([hecate_frame:mcid() | hecate_frame:want_entry()],
-                 hecate_frame:want_priority()) ->
-        hecate_frame:frame().
+-spec build_want([macula_frame:mcid() | macula_frame:want_entry()],
+                 macula_frame:want_priority()) ->
+        macula_frame:frame().
 build_want(McidsOrEntries, DefaultPrio) ->
     Entries = [normalise_want(E, DefaultPrio) || E <- McidsOrEntries],
-    hecate_frame:want(#{blocks => Entries}).
+    macula_frame:want(#{blocks => Entries}).
 
--spec build_have([{hecate_frame:mcid(), non_neg_integer()}]) ->
-        hecate_frame:frame().
+-spec build_have([{macula_frame:mcid(), non_neg_integer()}]) ->
+        macula_frame:frame().
 build_have(Entries) ->
     Blocks = [#{mcid => M, size => S} || {M, S} <- Entries],
-    hecate_frame:have(#{blocks => Blocks}).
+    macula_frame:have(#{blocks => Blocks}).
 
--spec build_manifest_req(hecate_frame:mcid()) -> hecate_frame:frame().
+-spec build_manifest_req(macula_frame:mcid()) -> macula_frame:frame().
 build_manifest_req(MCID) ->
-    hecate_frame:manifest_req(#{mcid => MCID}).
+    macula_frame:manifest_req(#{mcid => MCID}).
 
--spec build_cancel([hecate_frame:mcid()]) -> hecate_frame:frame().
+-spec build_cancel([macula_frame:mcid()]) -> macula_frame:frame().
 build_cancel(MCIDs) ->
-    hecate_frame:cancel(#{blocks => MCIDs}).
+    macula_frame:cancel(#{blocks => MCIDs}).
 
 normalise_want(MCID, DefaultPrio) when is_binary(MCID) ->
     #{mcid => MCID, priority => DefaultPrio};
@@ -100,7 +100,7 @@ normalise_want(#{mcid := _} = Entry, _DefaultPrio) ->
 %% Request tracking
 %%====================================================================
 
--spec request_blocks([hecate_frame:mcid()], binary()) -> {ok, binary()}.
+-spec request_blocks([macula_frame:mcid()], binary()) -> {ok, binary()}.
 request_blocks(MCIDs, TargetNode) ->
     gen_server:call(?SERVER, {request_blocks, MCIDs, TargetNode}).
 
@@ -125,14 +125,14 @@ request_info(RequestId) ->
 %%====================================================================
 
 %% @doc Process an inbound content frame. `From' is the verified
-%% sender pubkey (caller has already run `hecate_frame:verify/2').
+%% sender pubkey (caller has already run `macula_frame:verify/2').
 %%
 %% Returns `{ok, Frame}' for the frame the caller should send back
 %% (BLOCK in response to WANT, MANIFEST_RES in response to
 %% MANIFEST_REQ), `ok' for fire-and-forget frames (HAVE,
 %% MANIFEST_RES, CANCEL), or `{error, Reason}' on failure.
--spec process_inbound(macula_identity:pubkey(), hecate_frame:frame()) ->
-        ok | {ok, hecate_frame:frame()} | {error, term()}.
+-spec process_inbound(macula_identity:pubkey(), macula_frame:frame()) ->
+        ok | {ok, macula_frame:frame()} | {error, term()}.
 process_inbound(_From, #{frame_type := want} = Frame) ->
     gen_server:call(?SERVER, {process_want, Frame});
 process_inbound(_From, #{frame_type := have}) ->
@@ -210,7 +210,7 @@ do_process_want(#{blocks := [#{mcid := MCID} | _]}) ->
     fetch_for_want(hecate_content_store:get_block(MCID), MCID).
 
 fetch_for_want({ok, Data}, MCID) ->
-    {ok, hecate_frame:block(#{mcid => MCID, payload => Data})};
+    {ok, macula_frame:block(#{mcid => MCID, payload => Data})};
 fetch_for_want({error, _} = E, _MCID) ->
     E.
 
@@ -221,9 +221,9 @@ do_process_manifest_req(#{mcid := MCID}) ->
     fetch_manifest_response(hecate_content_store:get_manifest(MCID), MCID).
 
 fetch_manifest_response({ok, Manifest}, MCID) ->
-    {ok, hecate_frame:manifest_res(#{mcid => MCID, manifest => Manifest})};
+    {ok, macula_frame:manifest_res(#{mcid => MCID, manifest => Manifest})};
 fetch_manifest_response({error, not_found}, MCID) ->
-    {ok, hecate_frame:manifest_res(#{mcid => MCID, manifest => not_found})}.
+    {ok, macula_frame:manifest_res(#{mcid => MCID, manifest => not_found})}.
 
 drop_cancelled(MCIDs, S) ->
     ets:foldl(
