@@ -162,7 +162,18 @@ on_sup_started({ok, Sup}, Opts) ->
 attempt_phase3(_Sup, _Opts, false) ->
     skipped;
 attempt_phase3(Sup, Opts, true) ->
-    seed_handler_registry(Sup, Opts).
+    %% pubsub_registry is started by `static_children/1' before
+    %% on_sup_started fires; look it up here so every downstream
+    %% step that needs it (observer, fact_publisher) gets the pid.
+    PsReg = pubsub_registry_pid(Sup),
+    seed_handler_registry(Sup, Opts#{pubsub_registry => PsReg}).
+
+pubsub_registry_pid(Sup) ->
+    Children = supervisor:which_children(Sup),
+    on_lookup(lists:keyfind(hecate_pubsub_registry, 1, Children)).
+
+on_lookup({_, Pid, _, _}) when is_pid(Pid) -> Pid;
+on_lookup(_)                               -> undefined.
 
 on_phase3_done(Sup, skipped)        -> {ok, Sup};
 on_phase3_done(Sup, ok)             -> {ok, Sup};
@@ -295,14 +306,41 @@ on_swim(Sup, Opts, DhtPid, {ok, SwimPid}) ->
     seed_observer(Sup, Opts, DhtPid, SwimPid).
 
 seed_observer(Sup, Opts, DhtPid, SwimPid) ->
-    on_observer(Sup, Opts,
+    on_observer(Sup, Opts, DhtPid,
                 supervisor:start_child(Sup,
                                        observer_spec(DhtPid, SwimPid, Opts))).
 
-on_observer(_Sup, _Opts, {error, R}) ->
+on_observer(_Sup, _Opts, _DhtPid, {error, R}) ->
     {error, {observer_start_failed, R}};
-on_observer(Sup, Opts, {ok, ObsPid}) ->
+on_observer(Sup, Opts, DhtPid, {ok, ObsPid}) ->
+    seed_fact_publisher(Sup, Opts, DhtPid, ObsPid).
+
+%% Fact publisher translates record-store events into typed business
+%% events on the peering pubsub channel. Started AFTER observer
+%% (needs ObsPid) and AFTER pubsub_registry (in static children) but
+%% BEFORE listener — so the very first inbound peer that subscribes
+%% sees a live publisher.
+seed_fact_publisher(Sup, Opts, DhtPid, ObsPid) ->
+    on_fact_publisher(Sup, Opts, DhtPid, ObsPid,
+                      supervisor:start_child(
+                        Sup,
+                        fact_publisher_spec(Opts, ObsPid))).
+
+on_fact_publisher(_Sup, _Opts, _DhtPid, _ObsPid, {error, R}) ->
+    {error, {fact_publisher_start_failed, R}};
+on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
+    install_dht_callback(DhtPid, FpPid),
     seed_listener(Sup, Opts, ObsPid).
+
+%% Bind the DHT's `on_record_stored' callback to the publisher. The
+%% DHT server stores the function and invokes it after every
+%% successful `store_put' (own put + incoming custodian STORE).
+install_dht_callback(DhtPid, FpPid) ->
+    ok = hecate_dht:set_on_record_stored(
+           DhtPid,
+           fun(Record) ->
+               hecate_station_fact_publisher:on_record_stored(FpPid, Record)
+           end).
 
 seed_listener(Sup, Opts, ObsPid) ->
     on_listener(supervisor:start_child(Sup, listener_spec(Opts, ObsPid))).
@@ -422,6 +460,7 @@ observer_spec(DhtPid, SwimPid, IdentityOpts) ->
         dht              => DhtPid,
         swim             => SwimPid,
         handler_registry => maps:get(handler_registry, IdentityOpts, undefined),
+        pubsub_registry  => maps:get(pubsub_registry, IdentityOpts, undefined),
         self_id          => self_id_of(IdentityOpts)
     },
     #{id       => hecate_station_peer_observer,
@@ -430,6 +469,20 @@ observer_spec(DhtPid, SwimPid, IdentityOpts) ->
       shutdown => 5_000,
       type     => worker,
       modules  => [hecate_station_peer_observer]}.
+
+fact_publisher_spec(IdentityOpts, ObsPid) ->
+    Opts = #{
+        pubsub_registry => maps:get(pubsub_registry, IdentityOpts),
+        peer_observer   => ObsPid,
+        identity        => maps:get(identity, IdentityOpts),
+        identity_key    => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_fact_publisher,
+      start    => {hecate_station_fact_publisher, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_fact_publisher]}.
 
 %% observer_spec/3 only fires through the Phase-3 chain, which is
 %% gated by `has_listener_opts/1' — `identity' is therefore always

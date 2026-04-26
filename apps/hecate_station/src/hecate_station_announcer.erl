@@ -114,7 +114,11 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
     }.
 
 node_record_opts(Opts) ->
-    Base = #{ttl_ms => maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS)},
+    %% Stations always emit `kind = station' so subscribers can route
+    %% station-presence events on `_mesh.station.*' topics distinct
+    %% from `_mesh.daemon.*'. Macula 3.10.1+.
+    Base = #{ttl_ms => maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS),
+             kind   => <<"station">>},
     %% Macula 3.4+ accepts hostname/endpoint/city/country/lat/lng on
     %% node_record so the realm dashboard can render the station
     %% without a side-channel topology poll.

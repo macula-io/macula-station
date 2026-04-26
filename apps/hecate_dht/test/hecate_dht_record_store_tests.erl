@@ -112,3 +112,78 @@ fresh_server_record_count_is_zero_test() ->
     {D, _} = start(),
     ?assertEqual(0, hecate_dht:record_count(D)),
     hecate_dht:stop(D).
+
+%%---------------------------------------------------------------------
+%% on_record_stored callback fires after every store_put
+%%---------------------------------------------------------------------
+
+on_record_stored_callback_fires_for_put_record_test() ->
+    {D, _} = start(),
+    OwnerKp  = macula_identity:generate(),
+    NodeId   = macula_identity:public(OwnerKp),
+    Test     = self(),
+    Ref      = make_ref(),
+    ok = hecate_dht:set_on_record_stored(
+           D, fun(R) -> Test ! {Ref, R} end),
+    Record = macula_record:sign(
+               macula_record:node_record(NodeId, [], 0), OwnerKp),
+    ok = hecate_dht:put_record(D, Record),
+    receive
+        {Ref, Got} -> ?assertEqual(Record, Got)
+    after 1_000 ->
+        erlang:error(callback_did_not_fire)
+    end,
+    hecate_dht:stop(D).
+
+on_record_stored_callback_can_be_replaced_test() ->
+    {D, _} = start(),
+    OwnerKp = macula_identity:generate(),
+    Test    = self(),
+    R1Ref   = make_ref(),
+    R2Ref   = make_ref(),
+    ok = hecate_dht:set_on_record_stored(
+           D, fun(_) -> Test ! {R1Ref, fired} end),
+    ok = hecate_dht:set_on_record_stored(
+           D, fun(_) -> Test ! {R2Ref, fired} end),
+    Record = macula_record:sign(
+               macula_record:node_record(
+                 macula_identity:public(OwnerKp), [], 0), OwnerKp),
+    ok = hecate_dht:put_record(D, Record),
+    receive
+        {R1Ref, fired} -> erlang:error(stale_callback_fired);
+        {R2Ref, fired} -> ok
+    after 1_000 ->
+        erlang:error(replacement_callback_did_not_fire)
+    end,
+    hecate_dht:stop(D).
+
+on_record_stored_callback_can_be_cleared_test() ->
+    {D, _} = start(),
+    OwnerKp = macula_identity:generate(),
+    Test    = self(),
+    Ref     = make_ref(),
+    ok = hecate_dht:set_on_record_stored(
+           D, fun(_) -> Test ! {Ref, fired} end),
+    ok = hecate_dht:set_on_record_stored(D, undefined),
+    Record = macula_record:sign(
+               macula_record:node_record(
+                 macula_identity:public(OwnerKp), [], 0), OwnerKp),
+    ok = hecate_dht:put_record(D, Record),
+    receive
+        {Ref, fired} -> erlang:error(cleared_callback_fired)
+    after 200 -> ok
+    end,
+    hecate_dht:stop(D).
+
+on_record_stored_callback_crash_does_not_kill_dht_test() ->
+    {D, _} = start(),
+    OwnerKp = macula_identity:generate(),
+    ok = hecate_dht:set_on_record_stored(
+           D, fun(_) -> erlang:error(boom) end),
+    Record = macula_record:sign(
+               macula_record:node_record(
+                 macula_identity:public(OwnerKp), [], 0), OwnerKp),
+    ok = hecate_dht:put_record(D, Record),
+    %% DHT is still alive after callback crash.
+    ?assertEqual(1, hecate_dht:record_count(D)),
+    hecate_dht:stop(D).

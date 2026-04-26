@@ -63,7 +63,8 @@
     list_records/1,
     record_count/1,
     delete_record/2,
-    handle_frame/3
+    handle_frame/3,
+    set_on_record_stored/2
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -82,6 +83,13 @@
 -type send_fun() :: fun((macula_identity:pubkey(), macula_frame:frame()) ->
                               ok | {error, term()}).
 
+%% Optional hook fired after every successful `store_put' — both
+%% own `put_record/2' calls and incoming custodian STORE frames
+%% land here. Receivers (e.g. `publish_record_facts') translate
+%% the record into a typed business event on the peering pubsub
+%% channel.
+-type on_record_stored_fun() :: fun((macula_record:record()) -> any()).
+
 -type opts() :: #{
     self_id               := hecate_dht_xor:id(),
     k                     => pos_integer(),
@@ -89,7 +97,8 @@
     identity              => macula_identity:key_pair(),
     send_frame            => send_fun(),
     ping_timeout_ms       => pos_integer(),
-    find_node_timeout_ms  => pos_integer()
+    find_node_timeout_ms  => pos_integer(),
+    on_record_stored      => on_record_stored_fun()
 }.
 
 -type ping_result() :: {ok, #{rtt_ms := non_neg_integer()}}
@@ -147,7 +156,8 @@
     pending_stores = #{}       :: #{{macula_identity:pubkey(),
                                      hecate_dht_xor:id()} =>
                                     {gen_server:from(), reference()}},
-    record_store                :: ets:tid()
+    record_store                :: ets:tid(),
+    on_record_stored            :: on_record_stored_fun() | undefined
 }).
 
 %%=====================================================================
@@ -285,6 +295,16 @@ record_count(Pid) ->
 delete_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {delete_record, Record}).
 
+%% @doc Install (or replace) the `on_record_stored' callback at
+%% runtime. Used by the identity supervisor to wire the DHT to a
+%% `hecate_station_fact_publisher' that starts later in the boot
+%% chain (the publisher depends on observer + pubsub_registry, which
+%% in turn depend on DHT — late wiring breaks the cycle).
+-spec set_on_record_stored(pid(), on_record_stored_fun() | undefined) -> ok.
+set_on_record_stored(Pid, Fun)
+  when is_pid(Pid), (is_function(Fun, 1) orelse Fun =:= undefined) ->
+    gen_server:call(Pid, {set_on_record_stored, Fun}).
+
 %%=====================================================================
 %% gen_server callbacks
 %%=====================================================================
@@ -305,7 +325,8 @@ init(#{self_id := Self} = Opts) ->
                                         ?DEFAULT_PING_TIMEOUT_MS),
         find_node_timeout_ms = maps:get(find_node_timeout_ms, Opts,
                                         ?DEFAULT_FIND_NODE_TIMEOUT_MS),
-        record_store         = Ets
+        record_store         = Ets,
+        on_record_stored     = maps:get(on_record_stored, Opts, undefined)
     }}.
 
 handle_call(self_id, _From, #state{self_id = Self} = S) ->
@@ -355,6 +376,7 @@ handle_call({send_store, PeerId, Record, Timeout}, From, S) ->
 
 handle_call({put_record, Record}, _From, #state{record_store = Ets} = S) ->
     store_put(Ets, Record),
+    notify_record_stored(Record, S),
     {reply, ok, S};
 
 handle_call({find_local_record, Key}, _From, #state{record_store = Ets} = S) ->
@@ -365,6 +387,9 @@ handle_call(list_records, _From, #state{record_store = Ets} = S) ->
 
 handle_call(record_count, _From, #state{record_store = Ets} = S) ->
     {reply, ets:info(Ets, size), S};
+
+handle_call({set_on_record_stored, Fun}, _From, S) ->
+    {reply, ok, S#state{on_record_stored = Fun}};
 
 handle_call({delete_record, Record}, _From, #state{record_store = Ets} = S) ->
     store_delete(Ets, Record),
@@ -596,6 +621,15 @@ store_put(Ets, Record) ->
     ets:insert(Ets, [{StorageKey, Record} | Keep]),
     ok.
 
+%% Fire the optional `on_record_stored' callback. Wrapped so a
+%% misbehaving callback never destabilises the DHT server.
+-spec notify_record_stored(macula_record:record(), #state{}) -> ok.
+notify_record_stored(_Record, #state{on_record_stored = undefined}) ->
+    ok;
+notify_record_stored(Record, #state{on_record_stored = Fun}) ->
+    catch Fun(Record),
+    ok.
+
 -spec store_lookup(ets:tid(), hecate_dht_xor:id()) ->
           [macula_record:record()].
 store_lookup(Ets, StorageKey) ->
@@ -673,6 +707,7 @@ persist_if_valid({ok, Record}, _Orig, FromNodeId,
                  #state{record_store = Ets, identity = Id,
                         send_frame = Send} = S) ->
     store_put(Ets, Record),
+    notify_record_stored(Record, S),
     Key   = macula_record:storage_key(Record),
     Reply = hecate_dht_protocol:build_store_ack(Key, true, undefined, Id),
     Send(FromNodeId, Reply),

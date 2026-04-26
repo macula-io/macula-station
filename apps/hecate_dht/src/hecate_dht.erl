@@ -52,6 +52,7 @@
     record_count/1,
     delete_record/2,
     handle_frame/3,
+    set_on_record_stored/2,
     version/0
 ]).
 
@@ -231,6 +232,11 @@ store(Dht, Record, Opts) ->
 -spec handle_frame(dht(), macula_identity:pubkey(), macula_frame:frame()) -> ok.
 handle_frame(Dht, FromNodeId, Frame) ->
     hecate_dht_server:handle_frame(Dht, FromNodeId, Frame).
+
+-spec set_on_record_stored(dht(),
+        fun((macula_record:record()) -> any()) | undefined) -> ok.
+set_on_record_stored(Dht, Fun) ->
+    hecate_dht_server:set_on_record_stored(Dht, Fun).
 
 %%=====================================================================
 %% Version

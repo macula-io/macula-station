@@ -56,6 +56,10 @@
     %% dropped silently. Identity_sup wires it in when the handler
     %% app is part of the per-identity child set.
     handler_registry     :: pid() | undefined,
+    %% Per-identity pubsub registry (Sprint A: SUBSCRIBE / UNSUBSCRIBE
+    %% / EVENT frames route through here, keyed by realm tag).
+    %% Optional: when undefined, those frames are dropped silently.
+    pubsub_registry      :: pid() | undefined,
     %% This station's own identity — RESULT / call_error frames
     %% carry it as the `responded_by' / `reported_by' pubkey so the
     %% caller knows who answered.
@@ -92,6 +96,7 @@ init(#{dht := Dht, swim := Swim} = Opts)
     {ok, #state{dht              = Dht,
                 swim             = Swim,
                 handler_registry = maps:get(handler_registry, Opts, undefined),
+                pubsub_registry  = maps:get(pubsub_registry, Opts, undefined),
                 self_id          = maps:get(self_id, Opts, undefined),
                 peers            = #{},
                 conns            = #{}}}.
@@ -164,12 +169,17 @@ classify(swim_ack)     -> swim;
 classify(swim_suspect) -> swim;
 classify(swim_confirm) -> swim;
 classify(call)         -> call;
+classify(subscribe)    -> pubsub;
+classify(unsubscribe)  -> pubsub;
+classify(event)        -> pubsub;
 classify(_)            -> other.
 
 dispatch(swim, Frame, NodeId, #state{swim = Swim}) ->
     deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
 dispatch(call, Frame, NodeId, S) ->
     deliver_call(macula_frame:verify(Frame, NodeId), Frame, NodeId, S);
+dispatch(pubsub, Frame, NodeId, S) ->
+    deliver_pubsub(macula_frame:verify(Frame, NodeId), Frame, NodeId, S);
 dispatch(other, _Frame, _NodeId, _S) ->
     ok.
 
@@ -202,6 +212,22 @@ send_reply_to(error, _Reply) ->
     ok;
 send_reply_to({ok, ConnPid}, Reply) ->
     macula_peering:send_frame(ConnPid, Reply).
+
+%% PubSub dispatch — verify signature, route SUBSCRIBE / UNSUBSCRIBE
+%% / EVENT into the per-identity registry (which keys by realm tag
+%% and forwards to the matching `hecate_pubsub_server'). The registry
+%% creates a new server on first use, so SUBSCRIBE on an unseen realm
+%% works without explicit pre-registration.
+deliver_pubsub(_Verified, _Frame, _NodeId,
+               #state{pubsub_registry = undefined}) ->
+    ok;
+deliver_pubsub({error, _}, _Frame, _NodeId, _S) ->
+    ok;
+deliver_pubsub({ok, Verified}, _Frame, NodeId,
+               #state{pubsub_registry = Reg}) ->
+    Realm = maps:get(realm, Verified),
+    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
+    ok.
 
 %%==================================================================
 %% disconnected
