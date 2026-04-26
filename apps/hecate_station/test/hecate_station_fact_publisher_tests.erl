@@ -84,14 +84,27 @@ daemon_record_lands_on_daemon_topic(Ctx) ->
                         daemon_record(),
                         <<"_mesh.daemon.announced_v1">>).
 
-unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg}) ->
-    %% Fake record of an unknown type. The publisher must ignore it
-    %% without crashing or materialising a server.
+unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg,
+                                 identity := PubIdentity}) ->
+    %% Subscribe a fake subscriber to BOTH known mesh topics, then
+    %% send an unknown-type record and assert no event arrives. The
+    %% mesh-realm pubsub_server is eagerly materialised by init/1,
+    %% so we cannot assert on registry emptiness — the contract is
+    %% "unknown types fire no events", verified by the subscriber's
+    %% mailbox being silent.
+    {ok, Server} = hecate_pubsub_registry:register(Reg, <<0:256>>, PubIdentity),
+    SubKp        = macula_identity:generate(),
+    SubId        = macula_identity:public(SubKp),
+    ok = hecate_pubsub_server:subscribe(Server, <<"_mesh.station.announced_v1">>, SubId),
+    ok = hecate_pubsub_server:subscribe(Server, <<"_mesh.daemon.announced_v1">>,  SubId),
     FakeRecord = #{type => 16#33, payload => #{},
                    signature => <<0:512>>, key => <<0:256>>},
     hecate_station_fact_publisher:on_record_stored(Pub, FakeRecord),
-    timer:sleep(100),
-    ?assertEqual([], hecate_pubsub_registry:list_realms(Reg)).
+    receive
+        {'$gen_cast', {send_frame, _}} ->
+            erlang:error(unknown_type_fired_event)
+    after 200 -> ok
+    end.
 
 %%====================================================================
 %% Common: pre-subscribe a fake subscriber, then assert the publish

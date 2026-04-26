@@ -91,6 +91,17 @@ on_record_stored(Pid, Record) ->
 init(#{pubsub_registry := Reg, peer_observer := Obs,
        identity := Kp} = Opts) ->
     set_logger_identity(Opts),
+    %% Eagerly materialise the mesh-realm pubsub_server. Inbound
+    %% SUBSCRIBE frames hit `hecate_pubsub_registry:dispatch_frame'
+    %% which returns `{error, not_found}' if no server exists for
+    %% the realm tag — and the realm subscribes BEFORE the first
+    %% put_record fires. Without this eager call the first batch of
+    %% SUBSCRIBEs lands on a non-existent server and is silently
+    %% dropped; by the time the publisher creates the server lazily,
+    %% the realm has already given up retrying.
+    {ok, _Server} = hecate_pubsub_registry:register(Reg, ?MESH_REALM, Kp),
+    logger:info(
+      "[fact_publisher] init: pubsub_server eagerly registered for mesh realm"),
     {ok, #state{pubsub_registry = Reg,
                 peer_observer   = Obs,
                 identity        = Kp}}.
