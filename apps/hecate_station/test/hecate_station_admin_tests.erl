@@ -86,7 +86,7 @@ unknown_path_returns_404_test_() ->
 setup_app() ->
     process_flag(trap_exit, true),
     {ok, _} = application:ensure_all_started(crypto),
-    {ok, _} = application:ensure_all_started(hecate_peering),
+    {ok, _} = application:ensure_all_started(macula),
     {ok, _} = application:ensure_all_started(inets),
     Dir   = make_tmpdir(),
     Peers = hecate_station_stub_tier:stub_peers(1),

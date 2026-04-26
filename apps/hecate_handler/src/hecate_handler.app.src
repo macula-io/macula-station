@@ -2,7 +2,7 @@
     {description, "Hecate Station — CALL dispatch registry (single-provider invariant + heartbeat)"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, macula_frame]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},

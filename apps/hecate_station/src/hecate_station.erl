@@ -271,7 +271,7 @@ connect_to(Target) ->
     dial(dial_opts(), Target).
 
 dial({ok, Opts}, Target) ->
-    hecate_peering:connect(Opts#{target => Target});
+    macula_peering:connect(Opts#{target => Target});
 dial({error, _} = E, _Target) ->
     E.
 

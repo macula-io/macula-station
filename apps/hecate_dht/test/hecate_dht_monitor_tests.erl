@@ -1,5 +1,5 @@
 %% EUnit tests for hecate_dht_monitor — bucket + replica diversity
-%% reports and hecate_diagnostics gauge emission.
+%% reports and macula_diagnostics gauge emission.
 -module(hecate_dht_monitor_tests).
 
 -include_lib("eunit/include/eunit.hrl").

@@ -269,7 +269,7 @@ send_ping(Round, Target, ConnPid,
     Ping = macula_frame:swim_ping(#{round => Round, incarnation => 0,
                                     piggyback => []}),
     Signed = macula_frame:sign(Ping, Id),
-    _ = hecate_peering:send_frame(ConnPid, Signed),
+    _ = macula_peering:send_frame(ConnPid, Signed),
     Ref = erlang:send_after(Ms, self(), {ping_timeout, Round, Target}),
     Probe = #{round => Round, target => Target, timer_ref => Ref},
     S#state{probes = P#{Round => Probe}}.
@@ -308,7 +308,7 @@ on_ping(From, #{round := Round}, #state{identity = Id} = S) ->
                 piggyback   => []
             }),
             Signed = macula_frame:sign(Ack, Id),
-            _ = hecate_peering:send_frame(ConnPid, Signed),
+            _ = macula_peering:send_frame(ConnPid, Signed),
             S1;
         _ ->
             S1

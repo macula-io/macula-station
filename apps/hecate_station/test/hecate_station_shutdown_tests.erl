@@ -142,7 +142,7 @@ publish_tombstone_lands_in_local_dht_test_() ->
 setup_app() ->
     process_flag(trap_exit, true),
     {ok, _} = application:ensure_all_started(crypto),
-    {ok, _} = application:ensure_all_started(hecate_peering),
+    {ok, _} = application:ensure_all_started(macula),
     %% Guard against a previous test's half-dead sup.
     _ = kill_if_alive(hecate_station_sup),
     _ = hecate_station:forget_dial_opts(),

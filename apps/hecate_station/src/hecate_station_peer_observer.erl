@@ -2,17 +2,17 @@
 %%
 %% Each station has exactly one observer (when booted via the
 %% supervisor). It is the `controlling_pid' for every
-%% `hecate_peering_conn' worker the listener accepts and for every
+%% `macula_peering_conn' worker the listener accepts and for every
 %% outbound connect initiated via `hecate_station:connect_to/1'. It
 %% turns peering events into the mutations the rest of the station
 %% expects:
 %%
 %% <ul>
-%%   <li>`{hecate_peering, connected, ConnPid, PeerNodeId}' →
+%%   <li>`{macula_peering, connected, ConnPid, PeerNodeId}' →
 %%       `hecate_dht:observe/2' with an entry spec carrying
 %%       `tier = t0' and `hecate_swim:add_peer/3' so the failure
 %%       detector starts probing the new member.</li>
-%%   <li>`{hecate_peering, frame, ConnPid, Frame}' — the observer
+%%   <li>`{macula_peering, frame, ConnPid, Frame}' — the observer
 %%       verifies the signature and dispatches SWIM frames
 %%       (ping / ack / suspect / confirm) to
 %%       `hecate_swim:handle_frame/3'. Application-layer frames
@@ -24,7 +24,7 @@
 %%       station like any other peer. Unknown frame types are
 %%       dropped silently and flow end-to-end between the peering
 %%       workers of the realm service and its clients.</li>
-%%   <li>`{hecate_peering, disconnected, ConnPid, _Reason}' →
+%%   <li>`{macula_peering, disconnected, ConnPid, _Reason}' →
 %%       `hecate_swim:remove_peer/2'.</li>
 %% </ul>
 %%
@@ -109,12 +109,12 @@ resolve(error)     -> error.
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info({hecate_peering, connected, ConnPid, PeerNodeId}, S) ->
+handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
     {noreply, on_connected(ConnPid, PeerNodeId, S)};
-handle_info({hecate_peering, frame, ConnPid, Frame}, S) ->
+handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     on_frame(ConnPid, Frame, S),
     {noreply, S};
-handle_info({hecate_peering, disconnected, ConnPid, _Reason}, S) ->
+handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
@@ -201,7 +201,7 @@ send_reply_to(error, _Reply) ->
     %% to do.
     ok;
 send_reply_to({ok, ConnPid}, Reply) ->
-    hecate_peering:send_frame(ConnPid, Reply).
+    macula_peering:send_frame(ConnPid, Reply).
 
 %%==================================================================
 %% disconnected

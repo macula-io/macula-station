@@ -4,7 +4,7 @@
 %% and a freshly-generated identity on disk. Tests that only need the
 %% process tree (8.2) skip QUIC; tests that exercise the listener +
 %% peer observer (8.3) spin up a real TLS/QUIC listener on a free
-%% loopback port and dial it from an independent `hecate_peering'
+%% loopback port and dial it from an independent `macula_peering'
 %% client to assert the observer-driven DHT observe + SWIM add_peer
 %% paths.
 %%
@@ -125,7 +125,7 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                  %% External peer with its own identity dials our listener.
                  ExtKp = macula_identity:generate(),
                  ExtId = macula_identity:public(ExtKp),
-                 {ok, _ClientPid} = hecate_peering:connect(#{
+                 {ok, _ClientPid} = macula_peering:connect(#{
                      role            => client,
                      identity        => ExtKp,
                      realms          => [],
@@ -216,7 +216,7 @@ reset_env() ->
     %% test process (no application_master in this context). Shutdown
     %% signals must not kill the eunit runner.
     process_flag(trap_exit, true),
-    {ok, _} = application:ensure_all_started(hecate_peering),
+    {ok, _} = application:ensure_all_started(macula),
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
                capabilities, cache, rebootstrap, admin],
     Boot    = [tiers, cascade_opts],

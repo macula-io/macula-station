@@ -13,7 +13,7 @@
 %% `send_frame/2' callback in `opts()' that the server invokes to
 %% push a signed frame at a target NodeId. Incoming frames enter via
 %% `handle_frame/3' (cast). Production wires `send_frame' to
-%% `hecate_peering'; the Session 3.12 CT harness wires it to direct
+%% `macula_peering'; the Session 3.12 CT harness wires it to direct
 %% in-VM `hecate_dht_server' pid dispatch.
 %%
 %% == Observation semantics ==

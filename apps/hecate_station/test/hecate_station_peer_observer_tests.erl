@@ -48,7 +48,7 @@ duplicate_connected_touches_test_() ->
         fun() ->
             NodeId  = random_node_id(),
             ConnPid = spawn_dummy(),
-            Obs ! {hecate_peering, connected, ConnPid, NodeId},
+            Obs ! {macula_peering, connected, ConnPid, NodeId},
             wait_for(fun() -> hecate_dht:size(Dht) =:= 1 end, 500),
             %% A direct call confirms the DHT's own idempotence and
             %% matches what the observer's next event would do.
@@ -68,7 +68,7 @@ disconnected_removes_from_swim_test_() ->
         fun() ->
             {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
             wait_for(fun() -> has_member(Swim, NodeId) end, 500),
-            Obs ! {hecate_peering, disconnected, ConnPid, operator_stop},
+            Obs ! {macula_peering, disconnected, ConnPid, operator_stop},
             wait_for(fun() -> not has_member(Swim, NodeId) end, 500),
             ?assertEqual([], hecate_station_peer_observer:peers(Obs))
         end
@@ -88,7 +88,7 @@ signed_swim_ping_reaches_swim_test_() ->
                                             incarnation => 0,
                                             piggyback => []}),
             Signed = macula_frame:sign(Ping, Kp),
-            Obs ! {hecate_peering, frame, ConnPid, Signed},
+            Obs ! {macula_peering, frame, ConnPid, Signed},
             %% There is no synchronous observer on SWIM receipt; let
             %% the cast land. On a bad signature the assertion below
             %% would fail because SWIM would never have replied.
@@ -108,7 +108,7 @@ unsigned_frame_is_dropped_test_() ->
             Unsigned = macula_frame:swim_ping(#{round => 99,
                                                 incarnation => 0,
                                                 piggyback => []}),
-            Obs ! {hecate_peering, frame, ConnPid, Unsigned},
+            Obs ! {macula_peering, frame, ConnPid, Unsigned},
             timer:sleep(50),
             ?assert(is_process_alive(Obs))
         end
@@ -122,7 +122,7 @@ frame_from_unknown_conn_is_dropped_test_() ->
             Ping = macula_frame:swim_ping(#{round => 1, incarnation => 0,
                                             piggyback => []}),
             Signed = macula_frame:sign(Ping, Kp),
-            Obs ! {hecate_peering, frame, Fake, Signed},
+            Obs ! {macula_peering, frame, Fake, Signed},
             timer:sleep(50),
             ?assert(is_process_alive(Obs))
         end
@@ -158,7 +158,7 @@ one_connected_peer(#{obs := Obs, dht := Dht, swim := Swim,
                      peer_kp := PeerKp}) ->
     NodeId  = macula_identity:public(PeerKp),
     ConnPid = spawn_dummy(),
-    Obs ! {hecate_peering, connected, ConnPid, NodeId},
+    Obs ! {macula_peering, connected, ConnPid, NodeId},
     wait_for(fun() -> hecate_dht:size(Dht) =:= 1 end, 500),
     {Obs, Dht, Swim, NodeId, ConnPid}.
 

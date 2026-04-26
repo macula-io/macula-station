@@ -16,7 +16,7 @@
 %%       plus the diversity counts. This is the §13 "replica
 %%       diversity score" metric.</li>
 %%   <li>Emits a single `_hecate.dht.metrics' event via
-%%       `hecate_diagnostics' carrying the full report, plus
+%%       `macula_diagnostics' carrying the full report, plus
 %%       individual gauges for the headline numbers so dashboards
 %%       can track them directly.</li>
 %% </ol>
@@ -116,7 +116,7 @@ report(Pid) -> gen_server:call(Pid, report).
 
 %% @doc Snapshot the gauge values held in the monitor's process
 %% dictionary.
--spec gauges(pid()) -> [hecate_diagnostics:sample()].
+-spec gauges(pid()) -> [macula_diagnostics:sample()].
 gauges(Pid) -> gen_server:call(Pid, gauges).
 
 -spec stats(pid()) -> stats().
@@ -146,7 +146,7 @@ handle_call(tick, _From, State) ->
 handle_call(report, _From, State) ->
     {reply, build_report(State), State};
 handle_call(gauges, _From, State) ->
-    {reply, hecate_diagnostics:snapshot(), State};
+    {reply, macula_diagnostics:snapshot(), State};
 handle_call(stats, _From, State) ->
     {reply, build_stats(State), State};
 handle_call(_Msg, _From, State) ->
@@ -258,7 +258,7 @@ replica_summary(Record, Dht, K) ->
 
 -spec publish(report()) -> ok.
 publish(Report) ->
-    hecate_diagnostics:event(?EVENT_TOPIC, Report),
+    macula_diagnostics:event(?EVENT_TOPIC, Report),
     set_gauges(Report).
 
 -spec set_gauges(report()) -> ok.
@@ -285,4 +285,4 @@ set_gauges(Report) ->
     ok.
 
 -spec gauge(binary(), number()) -> ok.
-gauge(Name, V) -> hecate_diagnostics:metric(Name, gauge, V).
+gauge(Name, V) -> macula_diagnostics:metric(Name, gauge, V).

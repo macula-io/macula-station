@@ -157,7 +157,7 @@ handle_call(_Msg, _From, S) ->
 
 handle_connect(Target, #state{config = Cfg, peers = Peers} = S) ->
     Opts = peer_opts(Cfg, Target, client),
-    on_outbound_started(hecate_peering:connect(Opts), Peers, S).
+    on_outbound_started(macula_peering:connect(Opts), Peers, S).
 
 on_outbound_started({ok, Pid}, Peers, S) ->
     Entry = #{role => client, connected_at => erlang:system_time(millisecond)},
@@ -177,11 +177,11 @@ handle_cast(_Msg, S) -> {noreply, S}.
 
 handle_info({quic, new_conn, Conn, _Info}, S) ->
     handle_inbound(Conn, S);
-handle_info({hecate_peering, connected, Pid, PeerNodeId}, S) ->
+handle_info({macula_peering, connected, Pid, PeerNodeId}, S) ->
     {noreply, on_peer_connected(Pid, PeerNodeId, S)};
-handle_info({hecate_peering, frame, ConnPid, Frame}, S) ->
+handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     {noreply, dispatch_peer_frame(ConnPid, Frame, S)};
-handle_info({hecate_peering, disconnected, Pid, _Reason}, S) ->
+handle_info({macula_peering, disconnected, Pid, _Reason}, S) ->
     {noreply, on_peer_disconnected(Pid, S)};
 handle_info({hecate_swim, member_state, _NodeId, _State}, S) ->
     %% Phase 2: bubble SWIM events as diagnostics. Phase 3+ wires to DHT.
@@ -193,7 +193,7 @@ handle_info(_Other, S) ->
 
 handle_inbound(Conn, #state{config = Cfg, listener = Listener, peers = Peers} = S) ->
     Opts = peer_opts(Cfg, undefined, server),
-    Result = hecate_peering:accept(Conn, Opts),
+    Result = macula_peering:accept(Conn, Opts),
     ok = hecate_transport:accept(Listener),
     on_inbound_started(Result, Peers, S).
 
@@ -246,7 +246,7 @@ dispatch_swim(From, Frame, Swim) ->
 %% Content frames dispatch through hecate_content_transfer. The
 %% transfer module returns either `ok' (fire-and-forget) or
 %% `{ok, ReplyFrame}' which the listener sends back over the
-%% same peering connection via `hecate_peering:send_frame/2'
+%% same peering connection via `macula_peering:send_frame/2'
 %% (which signs the frame with the local identity if it isn't
 %% already signed).
 dispatch_content(ConnPid, From, Frame) ->
@@ -260,7 +260,7 @@ dispatch_content(ConnPid, From, Frame) ->
 handle_content_reply(_ConnPid, ok) ->
     ok;
 handle_content_reply(ConnPid, {ok, ReplyFrame}) ->
-    hecate_peering:send_frame(ConnPid, ReplyFrame);
+    macula_peering:send_frame(ConnPid, ReplyFrame);
 handle_content_reply(_ConnPid, {error, _Reason}) ->
     ok.
 
@@ -310,7 +310,7 @@ drain_and_tombstone(Reason, #state{config = #{identity := Kp}, peers = Peers,
                                    tombstones = Tombs, listener = L,
                                    swim = Swim} = S) ->
     Tombstone = build_tombstone(Kp, Reason),
-    [hecate_peering:close(P, Reason) || P <- maps:keys(Peers)],
+    [macula_peering:close(P, Reason) || P <- maps:keys(Peers)],
     catch hecate_swim:stop(Swim),
     catch hecate_transport:close_listener(L),
     S#state{tombstones = [Tombstone | Tombs], peers = #{}}.

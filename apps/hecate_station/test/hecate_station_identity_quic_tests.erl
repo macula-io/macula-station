@@ -32,10 +32,10 @@ setup_env() ->
             "hecate-multi-identity-quic-"
             ++ integer_to_list(erlang:unique_integer([positive]))),
     ok = filelib:ensure_dir(filename:join(Dir, "x")),
-    %% hecate_peering owns the per-connection supervisor pool that
-    %% `hecate_peering:connect/1' funnels children through. Start it
+    %% macula_peering owns the per-connection supervisor pool that
+    %% `macula_peering:connect/1' funnels children through. Start it
     %% (and any of its deps) so the dial path resolves.
-    {ok, Started} = application:ensure_all_started(hecate_peering),
+    {ok, Started} = application:ensure_all_started(macula),
     {Dir, Started}.
 
 cleanup_env({Dir, Started}) ->
@@ -77,7 +77,7 @@ two_identities_cross_dial(Dir) ->
         %% without fixed-name collisions.
         IdA = macula_identity:public(KpA),
         IdB = macula_identity:public(KpB),
-        {ok, _Conn} = hecate_peering:connect(#{
+        {ok, _Conn} = macula_peering:connect(#{
             role            => client,
             identity        => KpA,
             realms          => [],

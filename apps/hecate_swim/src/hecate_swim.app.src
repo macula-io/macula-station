@@ -2,7 +2,7 @@
     {description, "Hecate Station — SWIM-Lifeguard member"},
     {vsn, "0.1.0"},
     {registered, []},
-    {applications, [kernel, stdlib, macula_frame, hecate_peering, macula, hecate_diagnostics]},
+    {applications, [kernel, stdlib, macula]},
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
