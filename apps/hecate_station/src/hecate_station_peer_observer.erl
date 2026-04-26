@@ -115,8 +115,12 @@ handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
+    logger:info("[peer_observer] connected pid=~p peer=~p",
+                [ConnPid, PeerNodeId]),
     {noreply, on_connected(ConnPid, PeerNodeId, S)};
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
+    logger:info("[peer_observer] frame pid=~p type=~p",
+                [ConnPid, macula_frame:frame_type(Frame)]),
     on_frame(ConnPid, Frame, S),
     {noreply, S};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
