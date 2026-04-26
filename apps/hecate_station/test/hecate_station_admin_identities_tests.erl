@@ -206,7 +206,10 @@ health_endpoint_returns_per_identity_snapshot(#{port := Port, token := Token}) -
 
         PubSub = maps:get(<<"pubsub_registry">>, Body),
         ?assertEqual(<<"alive">>, maps:get(<<"state">>, PubSub)),
-        ?assertEqual(0, maps:get(<<"realms">>, PubSub)),
+        %% fact_publisher eagerly registers the all-zeros mesh realm
+        %% in init/1 so inbound SUBSCRIBE frames from realm topology
+        %% subscribers don't hit a missing server. Expect ≥ 1 realm.
+        ?assert(maps:get(<<"realms">>, PubSub) >= 1),
 
         Observer = maps:get(<<"peer_observer">>, Body),
         ?assertEqual(<<"alive">>, maps:get(<<"state">>, Observer))
