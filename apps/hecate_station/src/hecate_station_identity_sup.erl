@@ -86,7 +86,19 @@
     %% MUST avoid touching the bootstrap path (e.g. when
     %% `hecate_bootstrap' app env is preloaded by another test
     %% case) can opt out cleanly.
-    skip_cascade       => boolean()
+    skip_cascade       => boolean(),
+    %% Geo + display metadata stamped onto the published `node_record'
+    %% by the per-identity announcer. `add_announcer_optionals/2'
+    %% reads them when present and silently skips otherwise. Populated
+    %% by `hecate_station_identity_config:spec_to_opts/3' from the
+    %% MACULA_RELAY_IDENTITIES env-var entries.
+    hostname           => binary(),
+    city               => binary(),
+    country            => binary(),
+    lat                => float(),
+    lng                => float(),
+    display_name       => binary(),
+    caps_hint          => binary()
 }.
 
 -spec start_link(identity_opts()) -> {ok, pid()} | {error, term()}.
