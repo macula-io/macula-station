@@ -200,6 +200,16 @@ record_kind(Record) ->
 payload_kind(#{{text, <<"kind">>} := {text, K}}) when is_binary(K) -> K;
 payload_kind(#{<<"kind">>          := K})        when is_binary(K) -> K;
 payload_kind(#{kind                := K})        when is_binary(K) -> K;
+%% Wire-decoded payload: macula_frame:from_wire_envelope/1 atomizes
+%% recognised text values (e.g. <<"daemon">> → daemon) when the binary
+%% matches an existing atom in the BEAM. Recognise the atomized form
+%% and convert back to the binary the rest of the pipeline expects.
+payload_kind(#{{text, <<"kind">>} := K})         when is_atom(K), K =/= undefined ->
+    atom_to_binary(K, utf8);
+payload_kind(#{<<"kind">>          := K})        when is_atom(K), K =/= undefined ->
+    atom_to_binary(K, utf8);
+payload_kind(#{kind                := K})        when is_atom(K), K =/= undefined ->
+    atom_to_binary(K, utf8);
 payload_kind(_)                                                    -> <<"station">>.
 
 node_announce_topic(<<"daemon">>) -> <<"_mesh.daemon.announced_v1">>;

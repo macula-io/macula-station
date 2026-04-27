@@ -66,6 +66,10 @@ fact_publisher_test_() ->
          end,
          fun(Ctx) ->
              {timeout, 30,
+              fun() -> wire_decoded_daemon_record_lands_on_daemon_topic(Ctx) end}
+         end,
+         fun(Ctx) ->
+             {timeout, 30,
               fun() -> unknown_record_type_is_ignored(Ctx) end}
          end
      ]}.
@@ -82,6 +86,18 @@ station_record_lands_on_station_topic(Ctx) ->
 daemon_record_lands_on_daemon_topic(Ctx) ->
     assert_publish_lands(Ctx,
                         daemon_record(),
+                        <<"_mesh.daemon.announced_v1">>).
+
+%% Regression: macula_frame:from_wire_envelope/1 atomizes recognised
+%% binary keys/values via binary_to_existing_atom/1. After wire round-trip
+%% the daemon record's payload has `#{kind => daemon}' (atom key, atom
+%% value) instead of `#{{text, <<"kind">>} => {text, <<"daemon">>}}'.
+%% Pre-fix `payload_kind/1' guards required is_binary(K), so the atomized
+%% form fell through to the `<<"station">>' default, misclassifying every
+%% daemon-presence record as a station event.
+wire_decoded_daemon_record_lands_on_daemon_topic(Ctx) ->
+    assert_publish_lands(Ctx,
+                        atomized_daemon_record(),
                         <<"_mesh.daemon.announced_v1">>).
 
 unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg,
@@ -149,4 +165,26 @@ daemon_record() ->
         NodeId, [], 0,
         #{ttl_ms => 600_000, kind => <<"daemon">>}),
       OwnerKp).
+
+%% Build a daemon record with the same shape `macula_frame:from_wire_envelope/1'
+%% produces for an inbound `_dht.put_record' call: text-tagged keys/values
+%% whose binaries match existing atoms get atomized. For node_record
+%% payloads, `kind' itself is a known atom, and the value `<<"daemon">>'
+%% matches the `daemon' atom — so both end up atomized.
+atomized_daemon_record() ->
+    OwnerKp = macula_identity:generate(),
+    NodeId  = macula_identity:public(OwnerKp),
+    Signed  = macula_record:sign(
+                macula_record:node_record(
+                  NodeId, [], 0,
+                  #{ttl_ms => 600_000, kind => <<"daemon">>}),
+                OwnerKp),
+    OldPayload = maps:get(payload, Signed),
+    NewPayload = OldPayload#{
+        %% Drop the {text, <<"kind">>} key/value, replace with atom forms
+        %% as if `from_wire_envelope/1' had recognised them.
+        kind => daemon
+    },
+    NewPayload2 = maps:remove({text, <<"kind">>}, NewPayload),
+    Signed#{payload => NewPayload2}.
 
