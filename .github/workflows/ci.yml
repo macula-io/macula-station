@@ -19,7 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         otp: ['27.0']
-        rebar3: ['latest']
 
     steps:
       - uses: actions/checkout@v4
@@ -27,11 +26,20 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Erlang/OTP + rebar3
+      - name: Install Erlang/OTP
         uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
-          rebar3-version: ${{ matrix.rebar3 }}
+
+      # rebar3 installed manually — setup-beam's rebar3-version lookup
+      # keeps failing on the GitHub releases pagination cap. Pulling the
+      # canonical S3 binary works regardless of action quirks.
+      - name: Install rebar3
+        run: |
+          curl -L -o rebar3 https://s3.amazonaws.com/rebar3/rebar3
+          chmod +x rebar3
+          sudo mv rebar3 /usr/local/bin/rebar3
+          rebar3 version
 
       - name: Cache _build
         uses: actions/cache@v4
