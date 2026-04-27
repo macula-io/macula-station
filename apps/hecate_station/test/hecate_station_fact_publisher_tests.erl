@@ -88,16 +88,23 @@ daemon_record_lands_on_daemon_topic(Ctx) ->
                         daemon_record(),
                         <<"_mesh.daemon.announced_v1">>).
 
-%% Regression: macula_frame:from_wire_envelope/1 atomizes recognised
-%% binary keys/values via binary_to_existing_atom/1. After wire round-trip
-%% the daemon record's payload has `#{kind => daemon}' (atom key, atom
-%% value) instead of `#{{text, <<"kind">>} => {text, <<"daemon">>}}'.
-%% Pre-fix `payload_kind/1' guards required is_binary(K), so the atomized
-%% form fell through to the `<<"station">>' default, misclassifying every
-%% daemon-presence record as a station event.
+%% Regression: a daemon doing `_dht.put_record' rides the record map
+%% inside a CALL frame's args. `macula_frame:from_wire_envelope/1' walks
+%% the frame recursively and atomizes any text key/value matching an
+%% existing BEAM atom. For a node_record payload the keys (`kind',
+%% `hostname', ...) all atomize, but values like `<<"daemon">>'
+%% generally do NOT — `daemon' isn't a baked-in module/record atom on a
+%% fresh station BEAM, so the value stays as `{text, <<"daemon">>}'.
+%%
+%% Pre-fix `payload_kind/1' had an atom-value clause but no
+%% atom-key/tagged-text-value clause, so this exact shape fell through
+%% to the `<<"station">>' default and every daemon record misclassified
+%% as a station announcement. The matrix is now flattened: any
+%% `kind'-keyed entry hits `unwrap_kind/1' which handles binary,
+%% tagged-text, and atom values uniformly.
 wire_decoded_daemon_record_lands_on_daemon_topic(Ctx) ->
     assert_publish_lands(Ctx,
-                        atomized_daemon_record(),
+                        wire_atomized_daemon_record(),
                         <<"_mesh.daemon.announced_v1">>).
 
 unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg,
@@ -166,12 +173,22 @@ daemon_record() ->
         #{ttl_ms => 600_000, kind => <<"daemon">>}),
       OwnerKp).
 
-%% Build a daemon record with the same shape `macula_frame:from_wire_envelope/1'
-%% produces for an inbound `_dht.put_record' call: text-tagged keys/values
-%% whose binaries match existing atoms get atomized. For node_record
-%% payloads, `kind' itself is a known atom, and the value `<<"daemon">>'
-%% matches the `daemon' atom — so both end up atomized.
-atomized_daemon_record() ->
+%% Build a daemon record matching the actual shape observed on the wire
+%% in production (sha256:4af1d54 on relays-linode-paris, 2026-04-28):
+%%
+%%   #{hostname => {text,<<"...">>},
+%%     capabilities => 0,
+%%     node_id => <<...>>,
+%%     station_id => <<...>>,
+%%     realms => [],
+%%     kind => {text,<<"daemon">>}}
+%%
+%% i.e. atom keys throughout, but text values like `<<"daemon">>' kept
+%% as `{text, <<"daemon">>}' because the atom doesn't exist on the
+%% station BEAM. Mirror that by atomising every recognisable
+%% `{text, K}' key in the canonically-built payload while leaving the
+%% value form untouched.
+wire_atomized_daemon_record() ->
     OwnerKp = macula_identity:generate(),
     NodeId  = macula_identity:public(OwnerKp),
     Signed  = macula_record:sign(
@@ -180,11 +197,13 @@ atomized_daemon_record() ->
                   #{ttl_ms => 600_000, kind => <<"daemon">>}),
                 OwnerKp),
     OldPayload = maps:get(payload, Signed),
-    NewPayload = OldPayload#{
-        %% Drop the {text, <<"kind">>} key/value, replace with atom forms
-        %% as if `from_wire_envelope/1' had recognised them.
-        kind => daemon
-    },
-    NewPayload2 = maps:remove({text, <<"kind">>}, NewPayload),
-    Signed#{payload => NewPayload2}.
+    Atomised   = maps:from_list(
+                     [{atomise_key(K), V} || {K, V} <- maps:to_list(OldPayload)]),
+    Signed#{payload => Atomised}.
+
+atomise_key({text, B}) when is_binary(B) ->
+    try binary_to_existing_atom(B, utf8)
+    catch error:badarg -> {text, B}
+    end;
+atomise_key(K) -> K.
 

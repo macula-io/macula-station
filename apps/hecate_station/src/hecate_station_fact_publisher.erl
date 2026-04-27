@@ -140,14 +140,9 @@ handle_call(_Msg, _From, S) ->
 
 handle_cast({record_stored, Record}, S) ->
     Type = macula_record:type(Record),
-    Payload = macula_record:payload(Record),
-    %% TEMP DEBUG: dump payload shape to figure out why payload_kind/1
-    %% returns "station" for every record despite atom-value clauses
-    %% being loaded. Remove once the topology saga is closed.
-    logger:info("[fact_publisher] DEBUG payload=~tp", [Payload]),
     logger:info(
       "[fact_publisher] record_stored type=~p kind=~s",
-      [Type, payload_kind(Payload)]),
+      [Type, payload_kind(macula_record:payload(Record))]),
     classify(Type, Record, S),
     broadcast_to_siblings(Record),
     {noreply, S};
@@ -199,23 +194,36 @@ classify_tombstone(_, _, _) ->
 record_kind(Record) ->
     payload_kind(macula_record:payload(Record)).
 
-%% Tagged-text shape per the CBOR canonical form `node_record'
-%% emits — `{text, K} => {text, V}'. The atom-key clause covers
-%% Elixir-decoded payloads where keys turn into atoms.
-payload_kind(#{{text, <<"kind">>} := {text, K}}) when is_binary(K) -> K;
-payload_kind(#{<<"kind">>          := K})        when is_binary(K) -> K;
-payload_kind(#{kind                := K})        when is_binary(K) -> K;
-%% Wire-decoded payload: macula_frame:from_wire_envelope/1 atomizes
-%% recognised text values (e.g. <<"daemon">> → daemon) when the binary
-%% matches an existing atom in the BEAM. Recognise the atomized form
-%% and convert back to the binary the rest of the pipeline expects.
-payload_kind(#{{text, <<"kind">>} := K})         when is_atom(K), K =/= undefined ->
-    atom_to_binary(K, utf8);
-payload_kind(#{<<"kind">>          := K})        when is_atom(K), K =/= undefined ->
-    atom_to_binary(K, utf8);
-payload_kind(#{kind                := K})        when is_atom(K), K =/= undefined ->
-    atom_to_binary(K, utf8);
-payload_kind(_)                                                    -> <<"station">>.
+%% Extract the actor kind from a node_record across all payload shapes
+%% the codec produces:
+%%
+%%   - Locally-built records (station self-refresh) carry the canonical
+%%     CBOR shape from `macula_record:node_payload/5':
+%%     `{text, <<"kind">>} => {text, <<"station">>}'.
+%%   - Records arriving via the `_dht.put_record' RPC ride inside the
+%%     CALL frame's args map. `macula_frame:from_wire_envelope/1' walks
+%%     the frame recursively, atomizing keys and values that match an
+%%     existing atom on the BEAM. Keys (`kind', `hostname', ...) turn
+%%     into atoms; values like `<<"daemon">>' generally stay as
+%%     `{text, <<"daemon">>}' (the atom doesn't exist in the table).
+%%     But on a BEAM where some other module forces the atom into
+%%     existence the value comes out as the raw atom instead — so we
+%%     accept both shapes.
+%%   - Untagged binary keys/values cover Elixir callers and any future
+%%     decoder that bypasses the `{text, B}' tagging.
+%%
+%% Three key shapes × three value shapes = 9 combinations; we delegate
+%% the value-side dispatch to `unwrap_kind/1' to keep the clause matrix
+%% flat.
+payload_kind(#{{text, <<"kind">>} := V}) -> unwrap_kind(V);
+payload_kind(#{<<"kind">>          := V}) -> unwrap_kind(V);
+payload_kind(#{kind                := V}) -> unwrap_kind(V);
+payload_kind(_)                            -> <<"station">>.
+
+unwrap_kind({text, K}) when is_binary(K)                 -> K;
+unwrap_kind(K)         when is_binary(K)                 -> K;
+unwrap_kind(K)         when is_atom(K), K =/= undefined  -> atom_to_binary(K, utf8);
+unwrap_kind(_)                                            -> <<"station">>.
 
 node_announce_topic(<<"daemon">>) -> <<"_mesh.daemon.announced_v1">>;
 node_announce_topic(_)            -> <<"_mesh.station.announced_v1">>.
