@@ -248,7 +248,11 @@ seed_dht_custodians(Sup, Opts, DhtPid) ->
     Specs = [replicate_spec(DhtPid),
              republish_spec(DhtPid, Opts),
              expire_spec(DhtPid)],
-    seed_each(Sup, Specs, Opts, DhtPid, fun seed_announcer/3,
+    %% Announcer is now started AFTER fact_publisher (which installs
+    %% the DHT `on_record_stored' callback). Custodians proceed
+    %% straight to cascade → SWIM → observer → fact_publisher →
+    %% announcer → listener.
+    seed_each(Sup, Specs, Opts, DhtPid, fun seed_cascade/3,
               dht_custodian_start_failed).
 
 seed_each(_Sup, [], Opts, DhtPid, Next, _Tag) ->
@@ -266,14 +270,19 @@ on_each(Sup, Rest, Opts, DhtPid, Next, Tag, {ok, _Pid}) ->
 %% (Macula V2 type 0x01) into the local DHT on init + refreshes
 %% before TTL. Tombstones on graceful shutdown so peers learn we
 %% are gone without waiting for TTL.
-seed_announcer(Sup, Opts, DhtPid) ->
-    on_announcer(Sup, Opts, DhtPid,
+%%
+%% Started AFTER fact_publisher so the boot put_record fires
+%% through the now-installed `on_record_stored' callback —
+%% otherwise the boot announce is silent on the wire and the realm
+%% only sees the next refresh-tick announcement (~7.5 min later).
+seed_announcer(Sup, Opts, DhtPid, ObsPid) ->
+    on_announcer(Sup, Opts, ObsPid,
                  supervisor:start_child(Sup, announcer_spec(DhtPid, Opts))).
 
-on_announcer(_Sup, _Opts, _DhtPid, {error, R}) ->
+on_announcer(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {announcer_start_failed, R}};
-on_announcer(Sup, Opts, DhtPid, {ok, _Pid}) ->
-    seed_cascade(Sup, Opts, DhtPid).
+on_announcer(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    seed_listener(Sup, Opts, ObsPid).
 
 %% Bootstrap cascade — runs between DHT start and SWIM start so the
 %% routing table is seeded before SWIM begins probing peers. The
@@ -333,7 +342,10 @@ on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
       "[identity_sup] fact_publisher started pid=~p — installing DHT callback",
       [FpPid]),
     install_dht_callback(DhtPid, FpPid),
-    seed_listener(Sup, Opts, ObsPid).
+    %% Announcer comes AFTER callback install so the boot put_record
+    %% fans out as a `_mesh.station.announced_v1' event from the
+    %% very first tick.
+    seed_announcer(Sup, Opts, DhtPid, ObsPid).
 
 %% Bind the DHT's `on_record_stored' callback to the publisher. The
 %% DHT server stores the function and invokes it after every
