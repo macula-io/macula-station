@@ -175,6 +175,7 @@ classify(swim_confirm) -> swim;
 classify(call)         -> call;
 classify(subscribe)    -> pubsub;
 classify(unsubscribe)  -> pubsub;
+classify(publish)      -> pubsub;
 classify(event)        -> pubsub;
 classify(_)            -> other.
 
@@ -229,15 +230,45 @@ deliver_pubsub(_Verified, _Frame, _NodeId,
 deliver_pubsub({error, Reason}, _Frame, _NodeId, _S) ->
     logger:warning("[peer_observer] pubsub frame verify failed: ~p", [Reason]),
     ok;
-deliver_pubsub({ok, Verified}, _Frame, NodeId,
-               #state{pubsub_registry = Reg}) ->
+deliver_pubsub({ok, Verified}, _Frame, NodeId, S) ->
     Realm = maps:get(realm, Verified),
     Topic = maps:get(topic, Verified, undefined),
     Type  = macula_frame:frame_type(Verified),
     logger:info(
       "[peer_observer] pubsub ~s realm=~p topic=~s",
       [Type, Realm, Topic]),
+    deliver_pubsub_typed(Type, Realm, NodeId, Verified, S).
+
+deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
+                     #state{pubsub_registry = Reg, conns = Conns}) ->
+    %% Inbound PUBLISH from a remote daemon. Build the EVENT frame
+    %% in the realm's pubsub_server, fan out to each matched local
+    %% subscriber's peering connection. Phase 1: single-station
+    %% fan-out only; cross-station gossip is a Plan C.2 deliverable.
+    on_relay_publish(
+      hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
+      Conns);
+deliver_pubsub_typed(_Type, Realm, NodeId, Verified,
+                     #state{pubsub_registry = Reg}) ->
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
+    ok.
+
+on_relay_publish({ok, EventFrame, Matched}, Conns) ->
+    fan_out_event(EventFrame, Matched, Conns);
+on_relay_publish({error, _Reason}, _Conns) ->
+    ok.
+
+fan_out_event(_EventFrame, [], _Conns) ->
+    ok;
+fan_out_event(EventFrame, [Sub | Rest], Conns) ->
+    send_event_to_sub(maps:find(Sub, Conns), EventFrame),
+    fan_out_event(EventFrame, Rest, Conns).
+
+send_event_to_sub({ok, ConnPid}, EventFrame) ->
+    macula_peering:send_frame(ConnPid, EventFrame);
+send_event_to_sub(error, _EventFrame) ->
+    %% Subscriber's connection already gone — drop the EVENT.
+    %% The conns map cleanup happens in `on_disconnected'.
     ok.
 
 %%==================================================================

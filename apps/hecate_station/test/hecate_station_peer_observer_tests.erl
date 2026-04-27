@@ -129,6 +129,104 @@ frame_from_unknown_conn_is_dropped_test_() ->
     end}.
 
 %%==================================================================
+%% Inbound PUBLISH relays EVENT to subscriber's connection
+%% (Phase 1 of PLAN_V2_PARITY — single-station fan-out).
+%%==================================================================
+
+publish_relays_event_to_subscriber_test_() ->
+    {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs} = Ctx,
+            SubKp  = macula_identity:generate(),
+            SubId  = macula_identity:public(SubKp),
+            PubKp  = macula_identity:generate(),
+            PubId  = macula_identity:public(PubKp),
+            Realm  = crypto:strong_rand_bytes(32),
+            Topic  = <<"weather.measured_v1">>,
+            %% Subscriber's connection = test pid so we capture the
+            %% relayed EVENT via the send_frame cast.
+            SubConn = self(),
+            Obs ! {macula_peering, connected, SubConn, SubId},
+            %% Publisher's connection = dummy pid.
+            PubConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, PubConn, PubId},
+            wait_for(fun() -> length(hecate_station_peer_observer:peers(Obs))
+                              =:= 2 end, 500),
+            %% Subscriber registers a sub for (Realm, Topic) — auto-
+            %% materialises the realm in the registry via
+            %% default_identity.
+            SubFrame = macula_frame:sign(macula_frame:subscribe(#{
+                topic      => Topic,
+                realm      => Realm,
+                subscriber => SubId
+            }), SubKp),
+            Obs ! {macula_peering, frame, SubConn, SubFrame},
+            timer:sleep(50),
+            %% Publisher sends PUBLISH. Observer routes to registry's
+            %% relay_publish, server builds EVENT, observer fans EVENT
+            %% to SubConn via macula_peering:send_frame (gen_server cast).
+            PubFrame = macula_frame:sign(macula_frame:publish(#{
+                topic           => Topic,
+                realm           => Realm,
+                publisher       => PubId,
+                seq             => 1,
+                payload         => #{temp => 20},
+                published_at_ms => erlang:system_time(millisecond)
+            }), PubKp),
+            Obs ! {macula_peering, frame, PubConn, PubFrame},
+            receive
+                {'$gen_cast', {send_frame, EventFrame}} ->
+                    ?assertEqual(event,
+                                 macula_frame:frame_type(EventFrame)),
+                    ?assertEqual(Topic, maps:get(topic, EventFrame)),
+                    ?assertEqual(Realm, maps:get(realm, EventFrame)),
+                    %% EVENT preserves the daemon's publisher pubkey
+                    %% + seq for end-to-end pool dedup keying.
+                    ?assertEqual(PubId, maps:get(publisher, EventFrame)),
+                    ?assertEqual(1, maps:get(seq, EventFrame)),
+                    ?assertEqual(#{temp => 20},
+                                 maps:get(payload, EventFrame))
+            after 2_000 ->
+                erlang:error(no_event_relayed)
+            end
+        end
+    end}.
+
+publish_to_unknown_realm_is_dropped_test_() ->
+    {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs} = Ctx,
+            PubKp  = macula_identity:generate(),
+            PubId  = macula_identity:public(PubKp),
+            Realm  = crypto:strong_rand_bytes(32),
+            PubConn = self(),
+            Obs ! {macula_peering, connected, PubConn, PubId},
+            wait_for(fun() -> length(hecate_station_peer_observer:peers(Obs))
+                              =:= 1 end, 500),
+            %% No subscriber for Realm → no server registered → publish
+            %% drops silently. The observer must not crash and no
+            %% send_frame cast must arrive.
+            PubFrame = macula_frame:sign(macula_frame:publish(#{
+                topic           => <<"x.v1">>,
+                realm           => Realm,
+                publisher       => PubId,
+                seq             => 1,
+                payload         => hello,
+                published_at_ms => erlang:system_time(millisecond)
+            }), PubKp),
+            Obs ! {macula_peering, frame, PubConn, PubFrame},
+            receive
+                {'$gen_cast', {send_frame, _}} ->
+                    erlang:error(unexpected_event_from_unknown_realm)
+            after 200 -> ok
+            end,
+            ?assert(is_process_alive(Obs))
+        end
+    end}.
+
+%%==================================================================
 %% Fixture
 %%==================================================================
 
@@ -150,6 +248,35 @@ setup() ->
 
 teardown(#{obs := Obs, swim := Swim, dht := Dht}) ->
     _ = catch hecate_station_peer_observer:stop(Obs),
+    _ = catch hecate_swim:stop(Swim),
+    _ = catch hecate_dht:stop(Dht),
+    ok.
+
+setup_with_pubsub() ->
+    application:ensure_all_started(crypto),
+    SelfKp  = macula_identity:generate(),
+    PeerKp  = macula_identity:generate(),
+    SelfId  = macula_identity:public(SelfKp),
+    {ok, Dht}  = hecate_dht:start_link(#{self_id => SelfId}),
+    {ok, Swim} = hecate_swim:start_link(#{
+        self_node_id    => SelfId,
+        identity        => SelfKp,
+        controlling_pid => self()
+    }),
+    {ok, Reg}  = hecate_pubsub_registry:start_link(#{identity => SelfKp}),
+    unlink(Reg),
+    {ok, Obs}  = hecate_station_peer_observer:start_link(#{
+        dht             => Dht,
+        swim            => Swim,
+        pubsub_registry => Reg,
+        self_id         => SelfId
+    }),
+    #{dht => Dht, swim => Swim, reg => Reg, obs => Obs,
+      self_kp => SelfKp, peer_kp => PeerKp}.
+
+teardown_with_pubsub(#{obs := Obs, swim := Swim, dht := Dht, reg := Reg}) ->
+    _ = catch hecate_station_peer_observer:stop(Obs),
+    _ = catch hecate_pubsub_registry:stop(Reg),
     _ = catch hecate_swim:stop(Swim),
     _ = catch hecate_dht:stop(Dht),
     ok.

@@ -49,7 +49,9 @@ registry_test_() ->
          fun(Reg) -> ?_test(dispatch_after_child_death_returns_not_found(Reg)) end,
          fun(Reg) -> ?_test(distinct_realms_isolated(Reg)) end,
          fun(Reg) -> ?_test(list_realms_reports_active_realms(Reg)) end,
-         fun(Reg) -> ?_test(shutdown_propagates_to_children(Reg)) end
+         fun(Reg) -> ?_test(shutdown_propagates_to_children(Reg)) end,
+         fun(Reg) -> ?_test(relay_publish_unknown_realm_is_not_found(Reg)) end,
+         fun(Reg) -> ?_test(relay_publish_returns_event_and_subscribers(Reg)) end
      ]}.
 
 %%---------------------------------------------------------------------
@@ -278,6 +280,67 @@ shutdown_propagates_to_children(Reg) ->
 
     ?assertNot(is_process_alive(P1)),
     ?assertNot(is_process_alive(P2)).
+
+%%---------------------------------------------------------------------
+%% Inbound PUBLISH relay (Phase 1 of PLAN_V2_PARITY)
+%%---------------------------------------------------------------------
+
+relay_publish_unknown_realm_is_not_found(Reg) ->
+    R   = realm(),
+    Kp  = keypair(),
+    Pub = macula_identity:public(Kp),
+    Frame = macula_frame:sign(macula_frame:publish(#{
+        topic           => <<"x">>,
+        realm           => R,
+        publisher       => Pub,
+        seq             => 0,
+        payload         => <<"hi">>,
+        published_at_ms => erlang:system_time(millisecond)
+    }), Kp),
+    %% No server registered for R; relay_publish does NOT auto-create
+    %% (no readers means nothing to fan out to).
+    ?assertEqual({error, not_found},
+                 hecate_pubsub_registry:relay_publish(Reg, R, Frame)).
+
+relay_publish_returns_event_and_subscribers(Reg) ->
+    R       = realm(),
+    Station = keypair(),
+    %% Daemon publishing the event.
+    DaemonKp = keypair(),
+    DaemonId = macula_identity:public(DaemonKp),
+    %% A local subscriber.
+    SubId    = id(7),
+    %% Materialise the realm with the station's identity.
+    {ok, Server} = hecate_pubsub_registry:register(Reg, R, Station),
+    %% Subscribe locally for <<"weather.measured_v1">>.
+    ok = hecate_pubsub_server:subscribe(Server,
+                                         <<"weather.measured_v1">>, SubId),
+    %% Daemon publishes a PUBLISH frame.
+    PublishFrame = macula_frame:sign(macula_frame:publish(#{
+        topic           => <<"weather.measured_v1">>,
+        realm           => R,
+        publisher       => DaemonId,
+        seq             => 42,
+        payload         => #{temp => 20},
+        published_at_ms => erlang:system_time(millisecond)
+    }), DaemonKp),
+    {ok, EventFrame, Matched} =
+        hecate_pubsub_registry:relay_publish(Reg, R, PublishFrame),
+    %% EVENT preserves the daemon's publisher pubkey + seq so pool
+    %% dedup keys (realm, publisher, seq) line up across stations.
+    ?assertEqual(event,                macula_frame:frame_type(EventFrame)),
+    ?assertEqual(<<"weather.measured_v1">>, maps:get(topic, EventFrame)),
+    ?assertEqual(R,                    maps:get(realm, EventFrame)),
+    ?assertEqual(DaemonId,             maps:get(publisher, EventFrame)),
+    ?assertEqual(42,                   maps:get(seq, EventFrame)),
+    ?assertEqual(#{temp => 20},        maps:get(payload, EventFrame)),
+    ?assertEqual(direct,               maps:get(delivered_via, EventFrame)),
+    %% Wire signature is the station's, not the daemon's.
+    ?assertEqual({ok, EventFrame},
+                 macula_frame:verify(EventFrame,
+                                     macula_identity:public(Station))),
+    %% Local sub matched.
+    ?assertEqual([SubId], Matched).
 
 %%---------------------------------------------------------------------
 %% Polling helper

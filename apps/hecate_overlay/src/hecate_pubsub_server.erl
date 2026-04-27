@@ -38,6 +38,7 @@
     subscribers/2, topics/1, topic_count/1, subscriber_count/1,
     realm/1,
     publish/3, deliver_event/2, process_frame/3,
+    relay_publish/2,
     stop/1
 ]).
 
@@ -118,6 +119,23 @@ deliver_event(Pid, Frame) ->
 process_frame(Pid, From, Frame) ->
     gen_server:call(Pid, {process_frame, From, Frame}).
 
+%% @doc Relay an inbound PUBLISH frame from a remote daemon. The
+%% server builds an EVENT frame signed by THIS server's identity
+%% (intermediate hop re-signing — Phase 1 simplification; Phase 2
+%% tightens to publisher-end-to-end auth via UCAN), preserves the
+%% original publisher pubkey + seq inside the EVENT, and returns
+%% the matched local subscribers. The caller (typically the
+%% peer observer) is responsible for sending `EventFrame' on each
+%% subscriber's peering connection.
+%%
+%% Returns `{error, realm_mismatch}' when the publish frame's realm
+%% does not match this server's realm. The registry routes by realm
+%% so this should never fire in practice — defensive check.
+-spec relay_publish(pid(), macula_frame:frame()) ->
+        {macula_frame:frame(), [<<_:256>>]} | {error, realm_mismatch}.
+relay_publish(Pid, Frame) ->
+    gen_server:call(Pid, {relay_publish, Frame}).
+
 -spec stop(pid()) -> ok.
 stop(Pid) ->
     gen_server:stop(Pid).
@@ -168,8 +186,34 @@ handle_call({deliver_event, Frame}, _From, S) ->
 handle_call({process_frame, From, Frame}, _From, S) ->
     {PS2, Subs} = hecate_pubsub:process(S#state.pubsub, From, Frame),
     {reply, Subs, S#state{pubsub = PS2}};
+handle_call({relay_publish, Frame}, _From, S) ->
+    {reply, do_relay_publish(Frame, S), S};
 handle_call(_Request, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+%%====================================================================
+%% Internals — publish relay
+%%====================================================================
+
+do_relay_publish(#{frame_type := publish, realm := R} = Frame,
+                 #state{realm = R} = S) ->
+    EventFrame = build_relay_event(Frame, S),
+    Matched    = hecate_pubsub:deliver_event(S#state.pubsub, EventFrame),
+    {EventFrame, Matched};
+do_relay_publish(_Frame, _S) ->
+    {error, realm_mismatch}.
+
+build_relay_event(#{topic := T, realm := R, publisher := Pub,
+                    seq := Seq, payload := Pl},
+                  #state{identity = Id}) ->
+    macula_frame:sign(macula_frame:event(#{
+        topic         => T,
+        realm         => R,
+        publisher     => Pub,
+        seq           => Seq,
+        payload       => Pl,
+        delivered_via => direct
+    }), Id).
 
 handle_cast(_Msg, S) ->
     {noreply, S}.

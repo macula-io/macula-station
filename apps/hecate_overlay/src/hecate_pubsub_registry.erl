@@ -39,6 +39,7 @@
     register/3,
     lookup/2,
     dispatch_frame/4,
+    relay_publish/3,
     list_realms/1,
     stop/1
 ]).
@@ -97,13 +98,36 @@ lookup(RegistryPid, <<_:256>> = Realm) ->
 %% @doc Route a SUBSCRIBE / UNSUBSCRIBE / EVENT frame for `Realm' to
 %% the matching pubsub_server. Returns the matched local subscribers
 %% (empty list for SUBSCRIBE / UNSUBSCRIBE) or `{error, not_found}'
-%% if no server is registered for `Realm'. The realm tag is supplied
-%% explicitly — the caller is responsible for extracting it from the
-%% frame and confirming the dispatch target.
+%% if no server is registered for `Realm' AND no `default_identity'
+%% was configured at start-up.
+%%
+%% **Auto-registration**: when `default_identity' is set on the
+%% registry (the production path under
+%% `hecate_station_identity_sup'), an unknown realm is materialised
+%% on demand using that identity and the frame is dispatched against
+%% the freshly-spawned server. Tests that omit `default_identity'
+%% retain the strict `{error, not_found}' semantics.
 -spec dispatch_frame(pid(), realm(), <<_:256>>, macula_frame:frame()) ->
         {ok, [<<_:256>>]} | {error, not_found}.
 dispatch_frame(RegistryPid, <<_:256>> = Realm, From, Frame) ->
     gen_server:call(RegistryPid, {dispatch_frame, Realm, From, Frame}).
+
+%% @doc Relay an inbound PUBLISH frame for `Realm' to the matching
+%% pubsub_server. The server builds an EVENT frame and returns it
+%% together with the local subscribers that should receive it. The
+%% caller is responsible for sending `EventFrame' on each
+%% subscriber's peering connection.
+%%
+%% Returns `{ok, EventFrame, [Subs]}' on success,
+%% `{error, not_found}' when no server is registered for the realm
+%% (publish to a realm with no local subscribers is a no-op — Phase 1
+%% does not auto-register on publish since there is nothing to deliver
+%% to anyway).
+-spec relay_publish(pid(), realm(), macula_frame:frame()) ->
+        {ok, macula_frame:frame(), [<<_:256>>]}
+      | {error, not_found | realm_mismatch}.
+relay_publish(RegistryPid, <<_:256>> = Realm, Frame) ->
+    gen_server:call(RegistryPid, {relay_publish, Realm, Frame}).
 
 %% @doc Snapshot the realm tags currently materialised under
 %% `RegistryPid'. Used by status pages + tests.
@@ -142,6 +166,8 @@ handle_call({lookup, Realm}, _From, S) ->
     {reply, lookup_reply(maps:find(Realm, S#state.by_realm)), S};
 handle_call({dispatch_frame, Realm, From, Frame}, _From, S) ->
     do_dispatch(Realm, From, Frame, maps:find(Realm, S#state.by_realm), S);
+handle_call({relay_publish, Realm, Frame}, _From, S) ->
+    do_relay_publish(Realm, Frame, maps:find(Realm, S#state.by_realm), S);
 handle_call(list_realms, _From, S) ->
     {reply, maps:keys(S#state.by_realm), S};
 handle_call(_Other, _From, S) ->
@@ -193,10 +219,23 @@ on_server_started(_Realm, {error, _} = E, S) ->
 lookup_reply({ok, Pid}) -> {ok, Pid};
 lookup_reply(error)     -> {error, not_found}.
 
-do_dispatch(_Realm, _From, _Frame, error, S) ->
+do_dispatch(_Realm, _From, _Frame, error,
+            #state{default_identity = undefined} = S) ->
     {reply, {error, not_found}, S};
+do_dispatch(Realm, From, Frame, error,
+            #state{default_identity = Id} = S) ->
+    %% Auto-register on first arrival so SUBSCRIBE / EVENT frames
+    %% don't need a separate `register' round-trip from the caller.
+    %% Only fires when a default_identity was configured at start-up
+    %% — tests pass `#{}' to retain the strict not_found semantics.
+    on_auto_registered(ensure_server(Realm, Id, S), Realm, From, Frame);
 do_dispatch(Realm, From, Frame, {ok, Pid}, S) ->
     forward_frame(Realm, Pid, From, Frame, S).
+
+on_auto_registered({ok, Pid, S}, Realm, From, Frame) ->
+    forward_frame(Realm, Pid, From, Frame, S);
+on_auto_registered({error, Reason, S}, _Realm, _From, _Frame) ->
+    {reply, {error, Reason}, S}.
 
 forward_frame(Realm, Pid, From, Frame, S) ->
     try hecate_pubsub_server:process_frame(Pid, From, Frame) of
@@ -204,6 +243,45 @@ forward_frame(Realm, Pid, From, Frame, S) ->
     catch
         exit:{noproc, _} ->
             {reply, {error, not_found}, drop_realm(Realm, S)}
+    end.
+
+%%====================================================================
+%% Internals — relay_publish
+%%====================================================================
+
+do_relay_publish(_Realm, _Frame, error, S) ->
+    %% Publish to a realm with no local subscribers is a no-op —
+    %% there is nothing to deliver. Don't auto-register; that would
+    %% materialise stateful resources for a write that has no
+    %% readers.
+    {reply, {error, not_found}, S};
+do_relay_publish(Realm, Frame, {ok, Pid}, S) ->
+    forward_relay_publish(Realm, Pid, Frame, S).
+
+forward_relay_publish(Realm, Pid, Frame, S) ->
+    try hecate_pubsub_server:relay_publish(Pid, Frame) of
+        {EventFrame, Matched} when is_list(Matched) ->
+            {reply, {ok, EventFrame, Matched}, S};
+        {error, Reason} ->
+            {reply, {error, Reason}, S}
+    catch
+        exit:{noproc, _} ->
+            {reply, {error, not_found}, drop_realm(Realm, S)}
+    end.
+
+%%====================================================================
+%% Internals — ensure_server (shared by register + auto-register)
+%%====================================================================
+
+ensure_server(Realm, Id, S) ->
+    case hecate_pubsub_server:start_link(
+            #{realm => Realm, identity => Id}) of
+        {ok, Pid} ->
+            {ok, Pid, S#state{
+                by_realm = (S#state.by_realm)#{Realm => Pid},
+                by_pid   = (S#state.by_pid)#{Pid => Realm}}};
+        {error, R} ->
+            {error, R, S}
     end.
 
 drop_pid(Pid, S) ->
