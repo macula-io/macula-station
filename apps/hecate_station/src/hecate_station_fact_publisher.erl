@@ -65,6 +65,16 @@
 %% service grows them.
 -define(MESH_REALM, <<0:256>>).
 
+%% Per-Erlang-node pg group for intra-box record fan-out. When one
+%% identity's announcer puts a record, every other identity on the
+%% same box gets a `cross_publish' cast and emits the EVENT on its
+%% own pubsub_server. Lets a realm subscribed to ANY single same-box
+%% identity see records from ALL same-box identities — the
+%% same-box-gossip cheap path while the cross-box Plumtree overlay
+%% is still pending.
+-define(PG_SCOPE, hecate_station_facts).
+-define(PG_GROUP, mesh_realm).
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -100,11 +110,25 @@ init(#{pubsub_registry := Reg, peer_observer := Obs,
     %% dropped; by the time the publisher creates the server lazily,
     %% the realm has already given up retrying.
     {ok, _Server} = hecate_pubsub_registry:register(Reg, ?MESH_REALM, Kp),
+    %% Join the per-node fact-broadcast group. Same-box siblings
+    %% see each other's record_stored events without needing a
+    %% per-identity station-client connection back to themselves.
+    ensure_pg_scope(),
+    ok = pg:join(?PG_SCOPE, ?PG_GROUP, self()),
     logger:info(
       "[fact_publisher] init: pubsub_server eagerly registered for mesh realm"),
     {ok, #state{pubsub_registry = Reg,
                 peer_observer   = Obs,
                 identity        = Kp}}.
+
+%% pg:start_link/1 owns the scope; only the first publisher to boot
+%% on this node creates it. {already_started, _} is the normal path
+%% for the other 99 identities.
+ensure_pg_scope() ->
+    case pg:start_link(?PG_SCOPE) of
+        {ok, _Pid}                       -> ok;
+        {error, {already_started, _Pid}} -> ok
+    end.
 
 set_logger_identity(#{identity_key := Key}) ->
     logger:set_process_metadata(#{identity_id => Key});
@@ -120,6 +144,14 @@ handle_cast({record_stored, Record}, S) ->
       "[fact_publisher] record_stored type=~p kind=~s",
       [Type, payload_kind(macula_record:payload(Record))]),
     classify(Type, Record, S),
+    broadcast_to_siblings(Record),
+    {noreply, S};
+%% Sibling identity on this same Erlang node broadcast a record
+%% via pg. Publish on our local pubsub_server so any subscriber
+%% attached to THIS identity sees it — but DON'T re-broadcast
+%% (avoids loops + amplification storms).
+handle_cast({cross_publish, Record}, S) ->
+    classify(macula_record:type(Record), Record, S),
     {noreply, S};
 handle_cast(_, S) ->
     {noreply, S}.
@@ -221,4 +253,20 @@ deliver_via_conn(error, Frame) ->
     logger:info(
       "[fact_publisher] subscriber conn missing topic=~s",
       [maps:get(topic, Frame, undefined)]),
+    ok.
+
+%%====================================================================
+%% Intra-box broadcast (Phase 1 gossip — pg-based, single-node only)
+%%====================================================================
+
+%% Send `cross_publish' to every sibling fact_publisher on this node
+%% so they each emit the EVENT on their own pubsub_server. A realm
+%% subscribed to ANY single identity on this box then sees records
+%% from ALL identities on this box. Cross-box gossip is Phase 2
+%% (Plumtree across boxes).
+broadcast_to_siblings(Record) ->
+    Self = self(),
+    Members = pg:get_members(?PG_SCOPE, ?PG_GROUP),
+    [gen_server:cast(Pid, {cross_publish, Record})
+     || Pid <- Members, Pid =/= Self],
     ok.
