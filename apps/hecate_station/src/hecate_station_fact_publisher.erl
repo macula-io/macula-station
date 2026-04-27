@@ -140,9 +140,14 @@ handle_call(_Msg, _From, S) ->
 
 handle_cast({record_stored, Record}, S) ->
     Type = macula_record:type(Record),
+    Payload = macula_record:payload(Record),
+    %% TEMP DEBUG: dump payload shape to figure out why payload_kind/1
+    %% returns "station" for every record despite atom-value clauses
+    %% being loaded. Remove once the topology saga is closed.
+    logger:info("[fact_publisher] DEBUG payload=~tp", [Payload]),
     logger:info(
       "[fact_publisher] record_stored type=~p kind=~s",
-      [Type, payload_kind(macula_record:payload(Record))]),
+      [Type, payload_kind(Payload)]),
     classify(Type, Record, S),
     broadcast_to_siblings(Record),
     {noreply, S};
