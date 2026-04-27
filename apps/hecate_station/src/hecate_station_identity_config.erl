@@ -194,6 +194,11 @@ spec_to_opts(Spec, BoxSecret, Shared) ->
     Endpoint = endpoint_for(Hostname, Port),
     Capabilities = maps:get(capabilities, Shared,
                     application:get_env(hecate_station, capabilities, 0)),
+    %% Pass hostname/city/country/lat/lng through to identity_opts so
+    %% the per-identity announcer can stamp them onto the published
+    %% `node_record'. Without this the realm topology dashboard sees
+    %% only the endpoint URL — the geo metadata silently drops here
+    %% on its way from the parsed Spec to the announcer.
     #{
         identity_key => Hostname,
         identity     => Kp,
@@ -204,7 +209,12 @@ spec_to_opts(Spec, BoxSecret, Shared) ->
         capabilities => Capabilities,
         realms       => [],
         station_id   => StationId,
-        endpoint     => Endpoint
+        endpoint     => Endpoint,
+        hostname     => Hostname,
+        city         => maps:get(city,    Spec),
+        country      => maps:get(country, Spec),
+        lat          => maps:get(lat,     Spec),
+        lng          => maps:get(lng,     Spec)
     }.
 
 bind_for(#{bind := undefined}, Shared) ->
