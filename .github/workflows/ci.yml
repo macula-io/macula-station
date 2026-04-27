@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         otp: ['27.0']
-        rebar3: ['3.23.0']
+        rebar3: ['3.27.0']
 
     steps:
       - uses: actions/checkout@v4
