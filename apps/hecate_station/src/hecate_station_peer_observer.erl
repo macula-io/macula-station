@@ -119,8 +119,8 @@ handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
                 [ConnPid, PeerNodeId]),
     {noreply, on_connected(ConnPid, PeerNodeId, S)};
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
-    logger:info("[peer_observer] frame pid=~p type=~p",
-                [ConnPid, macula_frame:frame_type(Frame)]),
+    logger:debug("[peer_observer] frame pid=~p type=~p",
+                 [ConnPid, macula_frame:frame_type(Frame)]),
     on_frame(ConnPid, Frame, S),
     {noreply, S};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
@@ -234,7 +234,7 @@ deliver_pubsub({ok, Verified}, _Frame, NodeId, S) ->
     Realm = maps:get(realm, Verified),
     Topic = maps:get(topic, Verified, undefined),
     Type  = macula_frame:frame_type(Verified),
-    logger:info(
+    logger:debug(
       "[peer_observer] pubsub ~s realm=~p topic=~s",
       [Type, Realm, Topic]),
     deliver_pubsub_typed(Type, Realm, NodeId, Verified, S).
