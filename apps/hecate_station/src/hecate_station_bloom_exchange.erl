@@ -44,6 +44,11 @@
     overlay_seeder  :: pid() | undefined,
     local_bloom     :: binary(),
     peer_blooms     :: #{binary() => binary()},
+    %% Active subscriptions on each peer's station_link for inbound
+    %% `_mesh.bloom' events. Keyed by peer hostname so we don't
+    %% double-subscribe when seeder reports the same connection
+    %% twice across resync ticks.
+    subs            :: #{binary() => {pid(), reference()}},
     timer_ref       :: reference() | undefined
 }).
 
@@ -106,7 +111,8 @@ init(#{pubsub_registry := Reg, identity := Kp} = Opts) ->
         identity        = Kp,
         overlay_seeder  = maps:get(overlay_seeder, Opts, undefined),
         local_bloom     = empty_bloom_bin(),
-        peer_blooms     = #{}
+        peer_blooms     = #{},
+        subs            = #{}
     },
     {ok, schedule_rebuild(State)}.
 
@@ -139,9 +145,30 @@ handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info({rebuild, Ref}, #state{timer_ref = Ref} = S) ->
-    {noreply, schedule_rebuild(do_rebuild(S))};
+    S1 = sync_inbound_subs(do_rebuild(S)),
+    {noreply, schedule_rebuild(S1)};
+%% Inbound EVENT frame from a peer's station_link — `_mesh.bloom'
+%% delivery. The station_link sends events to its subscriber's
+%% mailbox; we look up SubRef in our `subs' map to find which peer
+%% sent it and key the cache by hostname.
+handle_info({macula_station_link_event, SubRef,
+             #{topic := <<"_mesh.bloom">>, payload := Payload} = _Frame},
+            #state{subs = Subs, peer_blooms = PB} = S)
+  when is_binary(Payload), byte_size(Payload) =:= 1024 ->
+    case hostname_for_sub(SubRef, Subs) of
+        {ok, Host} ->
+            {noreply, S#state{peer_blooms = PB#{Host => Payload}}};
+        error ->
+            {noreply, S}
+    end;
 handle_info(_Info, S) ->
     {noreply, S}.
+
+hostname_for_sub(SubRef, Subs) ->
+    case [Host || {Host, {_LinkPid, R}} <- maps:to_list(Subs), R =:= SubRef] of
+        [Host | _] -> {ok, Host};
+        []         -> error
+    end.
 
 terminate(_Reason, _S) -> ok.
 
@@ -197,6 +224,62 @@ safe_seeder_conns(SeedPid) ->
 
 empty_bloom_bin() ->
     hecate_station_bloom:to_binary(hecate_station_bloom:new()).
+
+%%====================================================================
+%% Inbound subscription management
+%%====================================================================
+
+%% Each rebuild tick: ensure we have an active `_mesh.bloom'
+%% subscription on every peer's station_link. Drops subs for peers
+%% the seeder no longer reports as connected. Idempotent — re-subscribing
+%% on an already-subscribed link is rare (the seeder reports stable
+%% connection lists between disconnect events) and tolerable.
+sync_inbound_subs(#state{overlay_seeder = undefined} = S) -> S;
+sync_inbound_subs(#state{overlay_seeder = SeedPid, subs = Subs} = S) ->
+    Conns   = safe_seeder_conns(SeedPid),
+    Active  = [{hostname_of(Url), LinkPid} || {Url, LinkPid} <- Conns],
+    %% Drop subs for peers that disappeared.
+    Subs1   = drop_stale_subs(Subs, Active),
+    %% Subscribe on new peers.
+    Subs2   = subscribe_new_peers(Subs1, Active),
+    S#state{subs = Subs2}.
+
+drop_stale_subs(Subs, Active) ->
+    ActiveHosts = sets:from_list([H || {H, _} <- Active]),
+    maps:filter(
+      fun(Host, {LinkPid, SubRef}) ->
+              case sets:is_element(Host, ActiveHosts) of
+                  true -> true;
+                  false ->
+                      catch macula_station_link:unsubscribe(LinkPid, SubRef),
+                      false
+              end
+      end, Subs).
+
+subscribe_new_peers(Subs, Active) ->
+    lists:foldl(
+      fun({Host, LinkPid}, Acc) ->
+              case maps:is_key(Host, Acc) of
+                  true  -> Acc;
+                  false -> subscribe_one(Acc, Host, LinkPid)
+              end
+      end, Subs, Active).
+
+subscribe_one(Acc, Host, LinkPid) ->
+    try macula_station_link:subscribe(LinkPid, ?MESH_REALM,
+                                       <<"_mesh.bloom">>, self()) of
+        {ok, SubRef} -> Acc#{Host => {LinkPid, SubRef}}
+    catch _:_ -> Acc
+    end.
+
+hostname_of(<<"quic://", Rest/binary>>) -> strip_port(Rest);
+hostname_of(<<"https://", Rest/binary>>) -> strip_port(Rest);
+hostname_of(B) when is_binary(B)         -> strip_port(B).
+
+strip_port(B) ->
+    case binary:split(B, <<":">>) of
+        [H | _] -> H
+    end.
 
 schedule_rebuild(S) ->
     Ref = make_ref(),
