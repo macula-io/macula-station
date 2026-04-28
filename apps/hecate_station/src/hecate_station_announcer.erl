@@ -191,21 +191,55 @@ with_current_peers(ObsPid, Dht, RecOpts) ->
     %% peer_observer:peers/1 returns `[{pid(), pubkey()}]' for EVERY
     %% QUIC peer this identity has — daemons doing put_record, the
     %% realm subscribing via station_link, sibling stations on this
-    %% box, etc. The realm's topology view only wants STATION peers
-    %% (so it can draw relay-to-relay edges, not relay-to-daemon),
-    %% so we look up each peer's record in the local DHT and keep
-    %% only those whose payload is `kind=station'.
+    %% box, etc.
+    %%
+    %% The realm topology renderer matches edges by HOSTNAME (its
+    %% visibleSet is keyed on `relay.hostname'), so we look up each
+    %% peer's record in the local DHT in one pass and emit:
+    %%   * only peers whose record says `kind=station'
+    %%   * a comma-separated peer-hostname string in `caps_hint'
+    %%
+    %% Why caps_hint and not the SDK's `peers' opt: macula 3.12's
+    %% `with_peers' enforces 32-byte pubkey entries, so variable-
+    %% length hostnames would get filtered out. Riding caps_hint
+    %% (existing text field) avoids another SDK bump.
+    %% The pubkey-keyed `peers' field is still emitted for backwards
+    %% compat with anyone who joins by pubkey.
     Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
-    StationPeers = [PK || PK <- Pubkeys, peer_is_station(Dht, PK)],
-    RecOpts#{peers => StationPeers}.
-
-peer_is_station(Dht, Pubkey) ->
-    case hecate_dht:find_local_record(Dht, Pubkey) of
-        [Record | _] when is_map(Record) ->
-            payload_kind_is_station(macula_record:payload(Record));
-        _ ->
-            false
+    PeerHostnames =
+        [Host
+         || PK <- Pubkeys,
+            {ok, Host} <- [station_peer_hostname(Dht, PK)]],
+    StationPubkeys =
+        [PK
+         || PK <- Pubkeys,
+            {ok, _} <- [station_peer_hostname(Dht, PK)]],
+    HostsCsv = iolist_to_binary(lists:join($,, lists:usort(PeerHostnames))),
+    RecOpts1 = RecOpts#{peers => StationPubkeys},
+    case HostsCsv of
+        <<>> -> RecOpts1;
+        _    -> RecOpts1#{caps_hint => <<"peers=", HostsCsv/binary>>}
     end.
+
+%% Returns `{ok, Hostname}' iff the peer's local DHT record exists,
+%% has `kind=station', and carries a non-empty hostname. Anything
+%% else falls through to `error', filtering the peer out.
+station_peer_hostname(Dht, Pubkey) ->
+    classify_peer_record(hecate_dht:find_local_record(Dht, Pubkey)).
+
+classify_peer_record([Record | _]) when is_map(Record) ->
+    Payload = macula_record:payload(Record),
+    on_peer_kind(payload_kind_is_station(Payload), Payload);
+classify_peer_record(_) ->
+    error.
+
+on_peer_kind(true, Payload) ->
+    case payload_hostname(Payload) of
+        Bin when is_binary(Bin), byte_size(Bin) > 0 -> {ok, Bin};
+        _ -> error
+    end;
+on_peer_kind(false, _Payload) ->
+    error.
 
 %% Mirrors `hecate_station_fact_publisher:payload_kind/1' across the
 %% canonical CBOR shape (`{text, K} => {text, V}') and the wire-decoded
@@ -218,6 +252,14 @@ payload_kind_is_station(#{kind                := {text, <<"station">>}}) -> true
 payload_kind_is_station(#{kind                := <<"station">>})         -> true;
 payload_kind_is_station(#{kind                := station})               -> true;
 payload_kind_is_station(_)                                               -> false.
+
+payload_hostname(#{{text, <<"hostname">>} := {text, H}}) when is_binary(H) -> H;
+payload_hostname(#{{text, <<"hostname">>} := H})         when is_binary(H) -> H;
+payload_hostname(#{<<"hostname">>          := {text, H}}) when is_binary(H) -> H;
+payload_hostname(#{<<"hostname">>          := H})         when is_binary(H) -> H;
+payload_hostname(#{hostname                := {text, H}}) when is_binary(H) -> H;
+payload_hostname(#{hostname                := H})         when is_binary(H) -> H;
+payload_hostname(_)                                                          -> undefined.
 
 %% Defensive call against the observer — if it's down or busy, fall
 %% back to an empty peer list rather than crashing the whole announcer
