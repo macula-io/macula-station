@@ -179,20 +179,45 @@ publish_node_record(#state{dht = Dht, identity = Kp,
     %% into the record opts on every refresh. The set may have
     %% changed between ticks (peers up/down), so we re-read each
     %% time rather than caching at boot.
-    OptsWithPeers = with_current_peers(ObsPid, RecOpts),
+    OptsWithPeers = with_current_peers(ObsPid, Dht, RecOpts),
     Unsigned = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
     Signed   = macula_record:sign(Unsigned, Kp),
     ok = hecate_dht:put_record(Dht, Signed),
     ok.
 
-with_current_peers(undefined, RecOpts) ->
+with_current_peers(undefined, _Dht, RecOpts) ->
     RecOpts;
-with_current_peers(ObsPid, RecOpts) ->
-    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]'. Pull just
-    %% the pubkeys; macula_record:with_peers handles dedup + sort for
-    %% canonical CBOR.
+with_current_peers(ObsPid, Dht, RecOpts) ->
+    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]' for EVERY
+    %% QUIC peer this identity has — daemons doing put_record, the
+    %% realm subscribing via station_link, sibling stations on this
+    %% box, etc. The realm's topology view only wants STATION peers
+    %% (so it can draw relay-to-relay edges, not relay-to-daemon),
+    %% so we look up each peer's record in the local DHT and keep
+    %% only those whose payload is `kind=station'.
     Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
-    RecOpts#{peers => Pubkeys}.
+    StationPeers = [PK || PK <- Pubkeys, peer_is_station(Dht, PK)],
+    RecOpts#{peers => StationPeers}.
+
+peer_is_station(Dht, Pubkey) ->
+    case hecate_dht:find_local_record(Dht, Pubkey) of
+        [Record | _] when is_map(Record) ->
+            payload_kind_is_station(macula_record:payload(Record));
+        _ ->
+            false
+    end.
+
+%% Mirrors `hecate_station_fact_publisher:payload_kind/1' across the
+%% canonical CBOR shape (`{text, K} => {text, V}') and the wire-decoded
+%% atom-key shape (`from_wire_envelope/1' atomizes recognised keys).
+payload_kind_is_station(#{{text, <<"kind">>} := {text, <<"station">>}}) -> true;
+payload_kind_is_station(#{{text, <<"kind">>} := <<"station">>})         -> true;
+payload_kind_is_station(#{<<"kind">>          := {text, <<"station">>}}) -> true;
+payload_kind_is_station(#{<<"kind">>          := <<"station">>})         -> true;
+payload_kind_is_station(#{kind                := {text, <<"station">>}}) -> true;
+payload_kind_is_station(#{kind                := <<"station">>})         -> true;
+payload_kind_is_station(#{kind                := station})               -> true;
+payload_kind_is_station(_)                                               -> false.
 
 %% Defensive call against the observer — if it's down or busy, fall
 %% back to an empty peer list rather than crashing the whole announcer
