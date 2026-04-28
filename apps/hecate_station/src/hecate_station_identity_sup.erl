@@ -299,7 +299,36 @@ seed_overlay_seeder(Sup, Opts, ObsPid) ->
 on_overlay_seeder(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {overlay_seeder_start_failed, R}};
 on_overlay_seeder(Sup, Opts, ObsPid, {ok, SeedPid}) ->
-    seed_announcer(Sup, Opts#{overlay_seeder => SeedPid}, ObsPid).
+    Opts1 = Opts#{overlay_seeder => SeedPid},
+    seed_bloom_exchange(Sup, Opts1, ObsPid).
+
+%% Per-identity Bloom-filter exchange — gossips a 1KB filter of this
+%% identity's locally-subscribed topics to peer stations every 30s,
+%% caches inbound peer filters. Drives the peering forwarder's
+%% "skip uninterested peers" decision so cross-relay pubsub doesn't
+%% flood. Ports V1 macula_relay_bloom_exchange.
+seed_bloom_exchange(Sup, Opts, ObsPid) ->
+    on_bloom_exchange(Sup, Opts, ObsPid,
+                       supervisor:start_child(Sup, bloom_exchange_spec(Opts))).
+
+on_bloom_exchange(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {bloom_exchange_start_failed, R}};
+on_bloom_exchange(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    seed_announcer(Sup, Opts, ObsPid).
+
+bloom_exchange_spec(IdentityOpts) ->
+    Opts = #{
+        pubsub_registry => maps:get(pubsub_registry, IdentityOpts),
+        identity        => maps:get(identity, IdentityOpts),
+        overlay_seeder  => maps:get(overlay_seeder, IdentityOpts, undefined),
+        identity_key    => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_bloom_exchange,
+      start    => {hecate_station_bloom_exchange, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_bloom_exchange]}.
 
 seed_announcer(Sup, Opts, ObsPid) ->
     DhtPid = maps:get(dht_pid, Opts),

@@ -22,7 +22,7 @@
 -module(hecate_station_overlay_seeder).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, connected_hostnames/1]).
+-export([start_link/1, stop/1, connected_hostnames/1, connections/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -73,6 +73,16 @@ connected_hostnames(Pid) ->
     catch _:_ -> []
     end.
 
+%% @doc Return the full `[{Url, LinkPid}]' list of currently-alive
+%% outbound peering connections. Used by `hecate_station_bloom_exchange'
+%% to broadcast its local Bloom filter to every peer station, and by
+%% the peering forwarder to hand off published frames.
+-spec connections(pid()) -> [{binary(), pid()}].
+connections(Pid) ->
+    try gen_server:call(Pid, connections, 1_000)
+    catch _:_ -> []
+    end.
+
 %%====================================================================
 %% gen_server
 %%====================================================================
@@ -109,6 +119,8 @@ set_logger_identity(_) ->
 handle_call(connected_hostnames, _From, #state{conns = Conns} = S) ->
     Hosts = [hostname_of(Url) || {Url, _Pid} <- Conns],
     {reply, [H || H <- Hosts, H =/= undefined], S};
+handle_call(connections, _From, #state{conns = Conns} = S) ->
+    {reply, Conns, S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
