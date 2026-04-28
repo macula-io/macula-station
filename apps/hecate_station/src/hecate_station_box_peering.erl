@@ -54,7 +54,13 @@
     peers     :: [binary()],
     links     :: #{binary() => pid()},
     subs      :: #{{binary(), binary()} => reference()},
-    monitors  :: #{reference() => binary()}
+    monitors  :: #{reference() => binary()},
+    %% Cached identity-DHT pid list. Resolved once at boot and on
+    %% every reconcile tick so the per-event spawn fans out without
+    %% another `supervisor:which_children' chain through 20 sups —
+    %% under fleet load that lookup itself was enough to backlog the
+    %% mailbox.
+    dht_pids  :: [pid()]
 }).
 
 %%====================================================================
@@ -94,7 +100,8 @@ init([]) ->
                       peers    = Peers,
                       links    = #{},
                       subs     = #{},
-                      monitors = #{}},
+                      monitors = #{},
+                      dht_pids = []},
     self() ! reconnect_loop,
     {ok, State}.
 
@@ -110,14 +117,22 @@ handle_cast(_Msg, S) ->
 
 handle_info(reconnect_loop, S) ->
     erlang:send_after(?RECONNECT_INTERVAL_MS, self(), reconnect_loop),
-    {noreply, ensure_links(S)};
+    %% Refresh the cached DHT-pid list on the same cadence we maintain
+    %% peer links. Identity set is stable per boot; cheap to recompute.
+    {noreply, ensure_links(S#state{dht_pids = identity_dht_pids()})};
 
 %% Inbound EVENT from a peer box's pubsub_server. station_link
 %% delivers `{macula_event, SubRef, Topic, Payload, Meta}'. Payload
 %% is the CBOR-encoded `macula_record:record()'.
 handle_info({macula_event, _SubRef, Topic, Payload, _Meta}, S)
   when is_binary(Payload) ->
-    on_peer_event(Topic, Payload),
+    %% Don't block the receive loop on bridging work. CBOR decode + pg
+    %% lookup + DHT seed fan-out add up under load — Paris was sitting
+    %% on a 42k-event mailbox before this was offloaded. The cached
+    %% `dht_pids' is captured into the spawn so the worker doesn't
+    %% touch any gen_server registry to learn the targets.
+    DhtPids = S#state.dht_pids,
+    spawn(fun() -> on_peer_event(Topic, Payload, DhtPids) end),
     {noreply, S};
 handle_info({macula_event_gone, _SubRef, _Reason}, S) ->
     %% station_link is signaling the subscription went away. We'll
@@ -207,15 +222,18 @@ subscribe_one(LinkPid, Url, Topic, Subs) ->
 %% cross-publish into the local fact-publisher pg group so every
 %% local identity's pubsub_server fan-outs to its remote subscribers
 %% (incl. the realm's station_link subscription).
-on_peer_event(Topic, Payload) ->
+%%
+%% `DhtPids' is captured from box_peering state so the worker doesn't
+%% need to look up identities at hot-path time.
+on_peer_event(Topic, Payload, DhtPids) ->
     case macula_record:decode(Payload) of
         {ok, Record} ->
-            broadcast_to_local_facts(Topic, Record);
+            broadcast_to_local_facts(Topic, Record, DhtPids);
         {error, _Reason} ->
             ok
     end.
 
-broadcast_to_local_facts(_Topic, Record) ->
+broadcast_to_local_facts(_Topic, Record, DhtPids) ->
     Members = pg_members(?PG_SCOPE, ?PG_GROUP),
     [gen_server:cast(Pid, {cross_publish, Record}) || Pid <- Members],
     %% Seed local DHTs with NODE_RECORDS only (type 0x01) so per-identity
@@ -225,21 +243,21 @@ broadcast_to_local_facts(_Topic, Record) ->
     %% re-publishes on local pubsub, gets bridged back to the origin box,
     %% and bounces forever. Cross_publish (above) is enough to surface
     %% departures to local subscribers without entering the loop.
-    seed_local_dhts_if_node_record(macula_record:type(Record), Record).
+    seed_local_dhts_if_node_record(
+      macula_record:type(Record), Record, DhtPids).
 
-seed_local_dhts_if_node_record(16#01, Record) ->
+seed_local_dhts_if_node_record(16#01, Record, DhtPids) ->
     %% Fan out seeds in parallel — `hecate_dht:put_record/2' is a
     %% synchronous gen_server:call, and serially blocking on 20 of
     %% them per inbound event is enough to back up the bridge under
-    %% fleet load. Discovered on Paris with a 42k-message backlog
-    %% while Nuremberg/Helsinki kept up. The spawned pids exit on
-    %% completion; failures are absorbed (best-effort seeding).
-    Pids = identity_dht_pids(),
+    %% fleet load. The DHT pid list is cached on the box_peering
+    %% state and refreshed on the reconnect tick; the worker doesn't
+    %% touch any registry on the hot path.
     lists:foreach(
       fun(DhtPid) ->
               spawn(fun() -> catch hecate_dht:put_record(DhtPid, Record) end)
-      end, Pids);
-seed_local_dhts_if_node_record(_Type, _Record) ->
+      end, DhtPids);
+seed_local_dhts_if_node_record(_Type, _Record, _DhtPids) ->
     ok.
 
 %% Walk the identity registry, ask each identity_sup for its child
