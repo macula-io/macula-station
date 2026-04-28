@@ -140,15 +140,9 @@ handle_call(_Msg, _From, S) ->
 
 handle_cast({record_stored, Record}, S) ->
     Type = macula_record:type(Record),
-    P    = macula_record:payload(Record),
-    Kind = payload_kind(P),
-    %% TEMPORARY DEBUG: dump the raw `kind' key/value shape so we can
-    %% see why bridged stub records (which carry kind=daemon in their
-    %% wire payload) classify as `station' on the receiving box.
-    KeysInfo = first_keys(P),
     logger:info(
-      "[fact_publisher] record_stored type=~p kind=~s keys=~p",
-      [Type, Kind, KeysInfo]),
+      "[fact_publisher] record_stored type=~p kind=~s",
+      [Type, payload_kind(macula_record:payload(Record))]),
     classify(Type, Record, S),
     broadcast_to_siblings(Record),
     {noreply, S};
@@ -230,19 +224,6 @@ unwrap_kind({text, K}) when is_binary(K)                 -> K;
 unwrap_kind(K)         when is_binary(K)                 -> K;
 unwrap_kind(K)         when is_atom(K), K =/= undefined  -> atom_to_binary(K, utf8);
 unwrap_kind(_)                                            -> <<"station">>.
-
-%% TEMPORARY: snapshot the first 3 keys + the `kind' value shape so we
-%% can see exactly what payload arrives when classification falls
-%% through to the default. Stripped to a printable form so the logger
-%% format string doesn't choke on raw binaries.
-first_keys(P) when is_map(P) ->
-    KindV = maps:get({text, <<"kind">>}, P,
-              maps:get(<<"kind">>, P,
-                maps:get(kind, P, missing))),
-    Keys  = lists:sublist(maps:keys(P), 3),
-    #{kind_value => KindV, sample_keys => Keys};
-first_keys(_) ->
-    not_a_map.
 
 node_announce_topic(<<"daemon">>) -> <<"_mesh.daemon.announced_v1">>;
 node_announce_topic(_)            -> <<"_mesh.station.announced_v1">>.
