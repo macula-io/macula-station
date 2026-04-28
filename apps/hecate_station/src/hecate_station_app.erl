@@ -111,6 +111,7 @@ on_shared_opts(SupPid, Specs, BoxSecret, {ok, Shared}) ->
     register_each(SupPid, Specs, BoxSecret, Shared).
 
 register_each(SupPid, [], _BoxSecret, _Shared) ->
+    boot_multi_box_peering(SupPid),
     boot_multi_admin(SupPid);
 register_each(SupPid, [Spec | Rest], BoxSecret, Shared) ->
     Opts = hecate_station_identity_config:spec_to_opts(Spec, BoxSecret, Shared),
@@ -137,6 +138,29 @@ boot_multi_admin(SupPid) ->
         AdminCfg ->
             Spec = admin_sup_child(AdminCfg),
             on_admin_started(SupPid, supervisor:start_child(SupPid, Spec))
+    end.
+
+%% Box-level peering — singleton coordinator that connects this BOX to
+%% peer boxes (via station_link), subscribes to the four mesh presence
+%% topics, and bridges inbound events into the local pg gossip group
+%% so identities running on this box (and the realm subscribed to one
+%% of them) see identities running on OTHER boxes. Without this, V2 was
+%% box-scoped: each box was an isolated pg island.
+boot_multi_box_peering(SupPid) ->
+    Spec = #{id       => hecate_station_box_peering,
+             start    => {hecate_station_box_peering, start_link, []},
+             restart  => permanent,
+             shutdown => 5_000,
+             type     => worker,
+             modules  => [hecate_station_box_peering]},
+    case supervisor:start_child(SupPid, Spec) of
+        {ok, _Pid} -> ok;
+        {error, {already_started, _}} -> ok;
+        {error, Reason} ->
+            logger:warning(
+              "[hecate_station_app] box_peering start failed: ~p — "
+              "cross-box mesh disabled", [Reason]),
+            ok
     end.
 
 admin_cfg_from_env() ->
