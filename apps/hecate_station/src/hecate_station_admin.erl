@@ -229,6 +229,8 @@ to_bin(L) when is_list(L)   -> iolist_to_binary(L).
 route(#{method := Method, path := Path} = Req) ->
     dispatch(Method, path_segments(Path), Req).
 
+dispatch(<<"GET">>,  [<<"health">>],                  _Req) -> health();
+dispatch(<<"GET">>,  [<<"ready">>],                   _Req) -> ready();
 dispatch(<<"GET">>,  [<<"status">>],                  _Req) -> status();
 dispatch(<<"GET">>,  [<<"dht">>, <<"stats">>],        _Req) -> dht_stats();
 dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
@@ -245,6 +247,36 @@ dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"reload">>], Req) ->
     with_auth(Req, fun() -> reload_identity(Id) end);
 dispatch(_Method, _Segments, _Req) ->
     not_found().
+
+%%==================================================================
+%% Liveness / readiness probes — V1 parity.
+%%==================================================================
+
+%% `/health' — process-up sanity check. Always 200 once this admin
+%% gen_server has started its acceptor; the supervisor would have
+%% killed us otherwise.
+health() ->
+    {200, <<"application/json">>, <<"{\"status\":\"healthy\"}">>}.
+
+%% `/ready' — at least one identity supervisor has booted past
+%% the listener stage. Fits the K8s readiness-probe contract:
+%% return 503 while the station is still wiring identities, 200
+%% once any identity is accepting traffic.
+ready() ->
+    case any_identity_listening() of
+        true  -> {200, <<"application/json">>, <<"{\"status\":\"ready\"}">>};
+        false -> {503, <<"application/json">>,
+                  <<"{\"status\":\"not_ready\"}">>}
+    end.
+
+any_identity_listening() ->
+    try
+        Ids = hecate_station_identity_registry:list(),
+        lists:any(fun(#{listener_pid := P}) when is_pid(P) -> is_process_alive(P);
+                     (_)                                    -> false
+                  end, Ids)
+    catch _:_ -> false
+    end.
 
 %% Split a `/foo/bar/baz' binary path into `[<<"foo">>, <<"bar">>,
 %% <<"baz">>]'. Empty segments (leading slash, trailing slash, double
