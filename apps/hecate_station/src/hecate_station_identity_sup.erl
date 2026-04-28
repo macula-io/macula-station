@@ -357,7 +357,10 @@ on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
     %% Announcer comes AFTER callback install so the boot put_record
     %% fans out as a `_mesh.station.announced_v1' event from the
     %% very first tick.
-    seed_announcer(Sup, Opts, DhtPid, ObsPid).
+    %% Pass the observer pid through to the announcer so each
+    %% refresh tick can include the live overlay-peer set in the
+    %% node_record's `peers' field.
+    seed_announcer(Sup, Opts#{peer_observer => ObsPid}, DhtPid, ObsPid).
 
 %% Bind the DHT's `on_record_stored' callback to the publisher. The
 %% DHT server stores the function and invokes it after every
@@ -440,13 +443,20 @@ announcer_spec(DhtPid, IdentityOpts) ->
       modules  => [hecate_station_announcer]}.
 
 announcer_opts(DhtPid, IdentityOpts) ->
-    Base = #{
+    Base0 = #{
         dht          => DhtPid,
         identity     => maps:get(identity, IdentityOpts),
         identity_key => maps:get(identity_key, IdentityOpts),
         realms       => maps:get(realms, IdentityOpts, []),
         capabilities => maps:get(capabilities, IdentityOpts, 0)
     },
+    %% Forward the peer_observer pid (planted by `on_fact_publisher')
+    %% so the announcer can query the live overlay-peer set on each
+    %% refresh and stamp it onto the node_record's `peers' field.
+    Base = case maps:find(peer_observer, IdentityOpts) of
+        {ok, ObsPid} -> Base0#{peer_observer => ObsPid};
+        error        -> Base0
+    end,
     add_announcer_optionals(Base, IdentityOpts).
 
 add_announcer_optionals(Base, Src) ->

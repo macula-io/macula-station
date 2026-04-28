@@ -91,6 +91,33 @@ graceful_stop_publishes_tombstone_test_() ->
         end)
     end}.
 
+peer_observer_pubkeys_land_in_record_test_() ->
+    {setup, fun setup/0, fun cleanup/1, fun(Ctx) ->
+        ?_test(begin
+            #{dht := Dht, kp := Kp} = Ctx,
+            Peer1 = <<1:256>>,
+            Peer2 = <<2:256>>,
+            ObsPid = fake_peer_observer([{self(), Peer1}, {self(), Peer2}]),
+            {ok, Pid} = hecate_station_announcer:start_link(#{
+                dht           => Dht,
+                identity      => Kp,
+                ttl_ms        => 600_000,
+                peer_observer => ObsPid
+            }),
+            unlink(Pid),
+            Pub = macula_identity:public(Kp),
+            wait_until(fun() ->
+                hecate_dht:find_local_record(Dht, Pub) =/= []
+            end, 1_000),
+            [Record] = hecate_dht:find_local_record(Dht, Pub),
+            Payload  = macula_record:payload(Record),
+            ?assertEqual([Peer1, Peer2],
+                         maps:get({text, <<"peers">>}, Payload)),
+            catch hecate_station_announcer:stop(Pid),
+            exit(ObsPid, normal)
+        end)
+    end}.
+
 crash_exit_does_not_tombstone_test_() ->
     {setup, fun setup/0, fun cleanup/1, fun(Ctx) ->
         ?_test(begin
@@ -128,4 +155,19 @@ wait_until(F, Budget) ->
     case F() of
         true  -> ok;
         false -> timer:sleep(20), wait_until(F, Budget - 20)
+    end.
+
+%% Tiny stand-in for `hecate_station_peer_observer'. Replies to the
+%% `peers' gen_server call with a canned `[{Pid, Pubkey}]' list — the
+%% announcer pulls just the pubkeys, so Pid is irrelevant here.
+fake_peer_observer(Peers) ->
+    spawn_link(fun() -> fake_peer_observer_loop(Peers) end).
+
+fake_peer_observer_loop(Peers) ->
+    receive
+        {'$gen_call', From, peers} ->
+            gen_server:reply(From, Peers),
+            fake_peer_observer_loop(Peers);
+        stop ->
+            ok
     end.

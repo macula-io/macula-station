@@ -56,6 +56,11 @@
     ttl_ms       => pos_integer(),
     %% Fraction of TTL after which to refresh (default 0.75).
     refresh_at_fraction => float(),
+    %% Per-identity peer observer. Queried at every refresh so the
+    %% record's `peers' field stays in lockstep with the live overlay
+    %% session set. Optional — when absent the announcer omits the
+    %% peers field (matches the pre-3.12 SDK shape).
+    peer_observer => pid(),
     %% Logger metadata.
     identity_key => term()
 }.
@@ -71,7 +76,10 @@
     capabilities :: non_neg_integer(),
     ttl_ms       :: pos_integer(),
     refresh_ms   :: pos_integer(),
-    timer_ref    :: reference() | undefined
+    timer_ref    :: reference() | undefined,
+    %% Per-identity peer observer pid. `undefined' for unit tests that
+    %% don't bring up a real observer.
+    peer_observer :: pid() | undefined
 }).
 
 %%====================================================================
@@ -103,14 +111,15 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
     Fraction  = maps:get(refresh_at_fraction, Opts, ?DEFAULT_REFRESH_FRACTION),
     RefreshMs = max(1_000, round(Ttl * Fraction)),
     #state{
-        dht          = Dht,
-        identity     = Kp,
-        record_opts  = node_record_opts(Opts),
-        realms       = maps:get(realms, Opts, []),
-        capabilities = maps:get(capabilities, Opts, 0),
-        ttl_ms       = Ttl,
-        refresh_ms   = RefreshMs,
-        timer_ref    = undefined
+        dht           = Dht,
+        identity      = Kp,
+        record_opts   = node_record_opts(Opts),
+        realms        = maps:get(realms, Opts, []),
+        capabilities  = maps:get(capabilities, Opts, 0),
+        ttl_ms        = Ttl,
+        refresh_ms    = RefreshMs,
+        timer_ref     = undefined,
+        peer_observer = maps:get(peer_observer, Opts, undefined)
     }.
 
 node_record_opts(Opts) ->
@@ -163,12 +172,40 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 publish_node_record(#state{dht = Dht, identity = Kp,
                            record_opts = RecOpts,
                            realms = Realms,
-                           capabilities = Caps}) ->
+                           capabilities = Caps,
+                           peer_observer = ObsPid} = _S) ->
     Pub      = macula_identity:public(Kp),
-    Unsigned = macula_record:node_record(Pub, Realms, Caps, RecOpts),
+    %% Merge the live overlay-peer pubkey list from `peer_observer'
+    %% into the record opts on every refresh. The set may have
+    %% changed between ticks (peers up/down), so we re-read each
+    %% time rather than caching at boot.
+    OptsWithPeers = with_current_peers(ObsPid, RecOpts),
+    Unsigned = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
     Signed   = macula_record:sign(Unsigned, Kp),
     ok = hecate_dht:put_record(Dht, Signed),
     ok.
+
+with_current_peers(undefined, RecOpts) ->
+    RecOpts;
+with_current_peers(ObsPid, RecOpts) ->
+    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]'. Pull just
+    %% the pubkeys; macula_record:with_peers handles dedup + sort for
+    %% canonical CBOR.
+    Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
+    RecOpts#{peers => Pubkeys}.
+
+%% Defensive call against the observer — if it's down or busy, fall
+%% back to an empty peer list rather than crashing the whole announcer
+%% (which would kill the entire identity sub-tree). Logged at info so
+%% intermittent observer hangs are visible without spamming.
+safe_peers(ObsPid) ->
+    try hecate_station_peer_observer:peers(ObsPid)
+    catch _:Reason ->
+        logger:info(
+          "[announcer] peer_observer query failed: ~p — publishing without peers",
+          [Reason]),
+        []
+    end.
 
 %% Reasons that mean "we're going away on purpose" — tombstone the
 %% node_record so peers can clear their caches without waiting for
