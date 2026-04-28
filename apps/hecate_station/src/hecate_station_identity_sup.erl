@@ -287,23 +287,10 @@ on_each(Sup, Rest, Opts, DhtPid, Next, Tag, {ok, _Pid}) ->
 %% through the now-installed `on_record_stored' callback —
 %% otherwise the boot announce is silent on the wire and the realm
 %% only sees the next refresh-tick announcement (~7.5 min later).
-seed_announcer(Sup, Opts, DhtPid, ObsPid) ->
-    on_announcer(Sup, Opts, ObsPid,
-                 supervisor:start_child(Sup, announcer_spec(DhtPid, Opts))).
-
-on_announcer(_Sup, _Opts, _ObsPid, {error, R}) ->
-    {error, {announcer_start_failed, R}};
-on_announcer(Sup, Opts, ObsPid, {ok, _Pid}) ->
-    seed_overlay_seeder(Sup, Opts, ObsPid).
-
-%% Per-identity overlay seeder — initiates outbound peering connects
-%% to the URLs in `MACULA_OVERLAY_SEEDS' so peer_observer actually
-%% has peers to report. Without this, station-to-station peering
-%% never happens and the realm topology has no edges to draw.
-%%
-%% Soft-fails: a missing/empty env var means no outbound connects,
-%% station continues to boot listener as before. Failed dials are
-%% logged but don't abort the chain.
+%% Per-identity overlay seeder runs BEFORE the announcer so its pid
+%% can be plumbed into announcer opts and surfaced via caps_hint.
+%% Soft-fails: missing/empty env var means no outbound connects,
+%% station continues to boot listener as before.
 seed_overlay_seeder(Sup, Opts, ObsPid) ->
     on_overlay_seeder(Sup, Opts, ObsPid,
                        supervisor:start_child(Sup,
@@ -311,7 +298,17 @@ seed_overlay_seeder(Sup, Opts, ObsPid) ->
 
 on_overlay_seeder(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {overlay_seeder_start_failed, R}};
-on_overlay_seeder(Sup, Opts, ObsPid, {ok, _Pid}) ->
+on_overlay_seeder(Sup, Opts, ObsPid, {ok, SeedPid}) ->
+    seed_announcer(Sup, Opts#{overlay_seeder => SeedPid}, ObsPid).
+
+seed_announcer(Sup, Opts, ObsPid) ->
+    DhtPid = maps:get(dht_pid, Opts),
+    on_announcer(Sup, Opts, ObsPid,
+                 supervisor:start_child(Sup, announcer_spec(DhtPid, Opts))).
+
+on_announcer(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {announcer_start_failed, R}};
+on_announcer(Sup, Opts, ObsPid, {ok, _Pid}) ->
     seed_listener(Sup, Opts, ObsPid).
 
 overlay_seeder_spec(IdentityOpts, ObsPid) ->
@@ -387,13 +384,14 @@ on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
       "[identity_sup] fact_publisher started pid=~p — installing DHT callback",
       [FpPid]),
     install_dht_callback(DhtPid, FpPid),
-    %% Announcer comes AFTER callback install so the boot put_record
-    %% fans out as a `_mesh.station.announced_v1' event from the
-    %% very first tick.
-    %% Pass the observer pid through to the announcer so each
-    %% refresh tick can include the live overlay-peer set in the
-    %% node_record's `peers' field.
-    seed_announcer(Sup, Opts#{peer_observer => ObsPid}, DhtPid, ObsPid).
+    %% Boot order: overlay_seeder -> announcer -> listener.
+    %% Seeder runs first so its pid can be plumbed into the
+    %% announcer's opts; the announcer reads connected_hostnames/1
+    %% on every refresh and surfaces them in caps_hint, giving the
+    %% realm topology view edges to draw even before peer node_records
+    %% replicate into local DHT.
+    Opts1 = Opts#{peer_observer => ObsPid, dht_pid => DhtPid},
+    seed_overlay_seeder(Sup, Opts1, ObsPid).
 
 %% Bind the DHT's `on_record_stored' callback to the publisher. The
 %% DHT server stores the function and invokes it after every
@@ -486,11 +484,18 @@ announcer_opts(DhtPid, IdentityOpts) ->
     %% Forward the peer_observer pid (planted by `on_fact_publisher')
     %% so the announcer can query the live overlay-peer set on each
     %% refresh and stamp it onto the node_record's `peers' field.
-    Base = case maps:find(peer_observer, IdentityOpts) of
-        {ok, ObsPid} -> Base0#{peer_observer => ObsPid};
-        error        -> Base0
-    end,
+    Base1 = forward_pid(peer_observer, IdentityOpts, Base0),
+    %% Forward the overlay_seeder pid so the announcer can include
+    %% explicit dial targets (which may not yet be in local DHT) in
+    %% the caps_hint peers list.
+    Base = forward_pid(overlay_seeder, IdentityOpts, Base1),
     add_announcer_optionals(Base, IdentityOpts).
+
+forward_pid(Key, Src, Acc) ->
+    case maps:find(Key, Src) of
+        {ok, Pid} -> Acc#{Key => Pid};
+        error     -> Acc
+    end.
 
 add_announcer_optionals(Base, Src) ->
     %% `hostname' was missing here, so the announcer published every

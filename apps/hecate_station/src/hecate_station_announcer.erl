@@ -61,6 +61,11 @@
     %% session set. Optional — when absent the announcer omits the
     %% peers field (matches the pre-3.12 SDK shape).
     peer_observer => pid(),
+    %% Per-identity overlay seeder pid — exposes the list of hostnames
+    %% this identity has dialled outbound. The announcer adds these to
+    %% the caps_hint peer list so the realm topology can render edges
+    %% even before peers' own node_records replicate into local DHT.
+    overlay_seeder => pid(),
     %% Logger metadata.
     identity_key => term()
 }.
@@ -79,7 +84,10 @@
     timer_ref    :: reference() | undefined,
     %% Per-identity peer observer pid. `undefined' for unit tests that
     %% don't bring up a real observer.
-    peer_observer :: pid() | undefined
+    peer_observer :: pid() | undefined,
+    %% Per-identity overlay seeder pid — `undefined' when no outbound
+    %% peering is configured.
+    overlay_seeder :: pid() | undefined
 }).
 
 %%====================================================================
@@ -111,15 +119,16 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
     Fraction  = maps:get(refresh_at_fraction, Opts, ?DEFAULT_REFRESH_FRACTION),
     RefreshMs = max(1_000, round(Ttl * Fraction)),
     #state{
-        dht           = Dht,
-        identity      = Kp,
-        record_opts   = node_record_opts(Opts),
-        realms        = maps:get(realms, Opts, []),
-        capabilities  = maps:get(capabilities, Opts, 0),
-        ttl_ms        = Ttl,
-        refresh_ms    = RefreshMs,
-        timer_ref     = undefined,
-        peer_observer = maps:get(peer_observer, Opts, undefined)
+        dht            = Dht,
+        identity       = Kp,
+        record_opts    = node_record_opts(Opts),
+        realms         = maps:get(realms, Opts, []),
+        capabilities   = maps:get(capabilities, Opts, 0),
+        ttl_ms         = Ttl,
+        refresh_ms     = RefreshMs,
+        timer_ref      = undefined,
+        peer_observer  = maps:get(peer_observer, Opts, undefined),
+        overlay_seeder = maps:get(overlay_seeder, Opts, undefined)
     }.
 
 node_record_opts(Opts) ->
@@ -173,40 +182,35 @@ publish_node_record(#state{dht = Dht, identity = Kp,
                            record_opts = RecOpts,
                            realms = Realms,
                            capabilities = Caps,
-                           peer_observer = ObsPid} = _S) ->
+                           peer_observer = ObsPid,
+                           overlay_seeder = SeedPid} = _S) ->
     Pub      = macula_identity:public(Kp),
     %% Merge the live overlay-peer pubkey list from `peer_observer'
     %% into the record opts on every refresh. The set may have
     %% changed between ticks (peers up/down), so we re-read each
     %% time rather than caching at boot.
-    OptsWithPeers = with_current_peers(ObsPid, Dht, RecOpts),
+    OptsWithPeers = with_current_peers(ObsPid, Dht, SeedPid, RecOpts),
     Unsigned = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
     Signed   = macula_record:sign(Unsigned, Kp),
     ok = hecate_dht:put_record(Dht, Signed),
     ok.
 
-with_current_peers(undefined, _Dht, RecOpts) ->
-    RecOpts;
-with_current_peers(ObsPid, Dht, RecOpts) ->
-    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]' for EVERY
-    %% QUIC peer this identity has — daemons doing put_record, the
-    %% realm subscribing via station_link, sibling stations on this
-    %% box, etc.
+with_current_peers(undefined, _Dht, SeedPid, RecOpts) ->
+    %% No peer_observer (test harness path) — fall back to the seeder.
+    add_seeder_hosts(SeedPid, RecOpts, []);
+with_current_peers(ObsPid, Dht, SeedPid, RecOpts) ->
+    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]' for every
+    %% QUIC peer this identity has. Filter to kind=station via local
+    %% DHT lookup. The realm topology renderer matches edges by
+    %% HOSTNAME, so we resolve each peer's hostname from the same
+    %% DHT lookup and emit a comma-separated list in caps_hint.
     %%
-    %% The realm topology renderer matches edges by HOSTNAME (its
-    %% visibleSet is keyed on `relay.hostname'), so we look up each
-    %% peer's record in the local DHT in one pass and emit:
-    %%   * only peers whose record says `kind=station'
-    %%   * a comma-separated peer-hostname string in `caps_hint'
-    %%
-    %% Why caps_hint and not the SDK's `peers' opt: macula 3.12's
-    %% `with_peers' enforces 32-byte pubkey entries, so variable-
-    %% length hostnames would get filtered out. Riding caps_hint
-    %% (existing text field) avoids another SDK bump.
-    %% The pubkey-keyed `peers' field is still emitted for backwards
-    %% compat with anyone who joins by pubkey.
+    %% Outbound peers seeded by `hecate_station_overlay_seeder' may
+    %% not have replicated their node_record into our local DHT yet,
+    %% so the seeder also exposes its dialled hostnames directly —
+    %% we union both lists into the announce payload.
     Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
-    PeerHostnames =
+    DhtHosts =
         [Host
          || PK <- Pubkeys,
             {ok, Host} <- [station_peer_hostname(Dht, PK)]],
@@ -214,11 +218,22 @@ with_current_peers(ObsPid, Dht, RecOpts) ->
         [PK
          || PK <- Pubkeys,
             {ok, _} <- [station_peer_hostname(Dht, PK)]],
-    HostsCsv = iolist_to_binary(lists:join($,, lists:usort(PeerHostnames))),
     RecOpts1 = RecOpts#{peers => StationPubkeys},
+    add_seeder_hosts(SeedPid, RecOpts1, DhtHosts).
+
+add_seeder_hosts(SeedPid, RecOpts, DhtHosts) ->
+    SeederHosts = seeder_hostnames(SeedPid),
+    AllHosts    = lists:usort(DhtHosts ++ SeederHosts),
+    HostsCsv    = iolist_to_binary(lists:join($,, AllHosts)),
     case HostsCsv of
-        <<>> -> RecOpts1;
-        _    -> RecOpts1#{caps_hint => <<"peers=", HostsCsv/binary>>}
+        <<>> -> RecOpts;
+        _    -> RecOpts#{caps_hint => <<"peers=", HostsCsv/binary>>}
+    end.
+
+seeder_hostnames(undefined) -> [];
+seeder_hostnames(SeedPid)   ->
+    try hecate_station_overlay_seeder:connected_hostnames(SeedPid)
+    catch _:_ -> []
     end.
 
 %% Returns `{ok, Hostname}' iff the peer's local DHT record exists,

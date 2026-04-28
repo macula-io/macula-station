@@ -22,7 +22,7 @@
 -module(hecate_station_overlay_seeder).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1]).
+-export([start_link/1, stop/1, connected_hostnames/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -62,6 +62,17 @@ start_link(#{identity := _, peer_observer := _} = Opts) ->
 stop(Pid) ->
     gen_server:stop(Pid).
 
+%% @doc Return the list of hostnames the seeder is currently connected
+%% to (one per still-alive outbound peering). The announcer joins this
+%% with peer_observer's locally-resolved peers so the relay-to-relay
+%% edges show up even when the peer's own node_record hasn't yet
+%% replicated into the local DHT.
+-spec connected_hostnames(pid()) -> [binary()].
+connected_hostnames(Pid) ->
+    try gen_server:call(Pid, connected_hostnames, 1_000)
+    catch _:_ -> []
+    end.
+
 %%====================================================================
 %% gen_server
 %%====================================================================
@@ -95,8 +106,19 @@ set_logger_identity(#{identity_key := Key}) ->
 set_logger_identity(_) ->
     ok.
 
+handle_call(connected_hostnames, _From, #state{conns = Conns} = S) ->
+    Hosts = [hostname_of(Url) || {Url, _Pid} <- Conns],
+    {reply, [H || H <- Hosts, H =/= undefined], S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+%% Strip scheme + port off a seed URL to produce the hostname the
+%% realm/JS visualiser expects (e.g. "relay-de-nuremberg.macula.io").
+hostname_of(Url) ->
+    case parse_url(Url) of
+        {ok, Host, _Port} when is_binary(Host) -> Host;
+        _ -> undefined
+    end.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
