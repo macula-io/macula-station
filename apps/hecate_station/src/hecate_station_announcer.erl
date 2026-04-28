@@ -195,39 +195,139 @@ publish_node_record(#state{dht = Dht, identity = Kp,
     ok = hecate_dht:put_record(Dht, Signed),
     ok.
 
-with_current_peers(undefined, _Dht, SeedPid, RecOpts) ->
-    %% No peer_observer (test harness path) — fall back to the seeder.
-    add_seeder_hosts(SeedPid, RecOpts, []);
 with_current_peers(ObsPid, Dht, SeedPid, RecOpts) ->
-    %% peer_observer:peers/1 returns `[{pid(), pubkey()}]' for every
-    %% QUIC peer this identity has. Filter to kind=station via local
-    %% DHT lookup. The realm topology renderer matches edges by
-    %% HOSTNAME, so we resolve each peer's hostname from the same
-    %% DHT lookup and emit a comma-separated list in caps_hint.
+    %% Three sources for relay-to-relay edges, unioned into caps_hint:
     %%
-    %% Outbound peers seeded by `hecate_station_overlay_seeder' may
-    %% not have replicated their node_record into our local DHT yet,
-    %% so the seeder also exposes its dialled hostnames directly —
-    %% we union both lists into the announce payload.
-    Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
-    DhtHosts =
-        [Host
-         || PK <- Pubkeys,
-            {ok, Host} <- [station_peer_hostname(Dht, PK)]],
-    StationPubkeys =
-        [PK
-         || PK <- Pubkeys,
-            {ok, _} <- [station_peer_hostname(Dht, PK)]],
-    RecOpts1 = RecOpts#{peers => StationPubkeys},
-    add_seeder_hosts(SeedPid, RecOpts1, DhtHosts).
+    %%   1. KLEINBERG OVERLAY (load-bearing) — geographic small-world
+    %%      computation against every kind=station record in local DHT.
+    %%      Local cluster + K-nearest + log-N long-range bands. Same
+    %%      algorithm V1 used; ports `macula_relay_overlay'.
+    %%
+    %%   2. peer_observer LIVE PEERS (operational signal) — resolved
+    %%      to hostnames via local DHT lookup, kind=station only.
+    %%      Captures real QUIC peerings the seeder/listener brought up.
+    %%
+    %%   3. SEEDER DIALED HOSTS (bootstrap fallback) — peers we dialed
+    %%      whose own announce hasn't yet replicated into our DHT.
+    %%
+    %% The realm topology only needs ONE of these to populate edges,
+    %% but the union keeps coverage robust against churn + replication
+    %% lag.
+    KleinbergHosts = kleinberg_hostnames(Dht, RecOpts),
+    DhtHosts       = peer_observer_hosts(ObsPid, Dht),
+    SeederHosts    = seeder_hostnames(SeedPid),
+    StationPubkeys = peer_observer_pubkeys(ObsPid, Dht),
 
-add_seeder_hosts(SeedPid, RecOpts, DhtHosts) ->
-    SeederHosts = seeder_hostnames(SeedPid),
-    AllHosts    = lists:usort(DhtHosts ++ SeederHosts),
-    HostsCsv    = iolist_to_binary(lists:join($,, AllHosts)),
+    AllHosts = lists:usort(KleinbergHosts ++ DhtHosts ++ SeederHosts),
+    HostsCsv = iolist_to_binary(lists:join($,, AllHosts)),
+
+    RecOpts1 = RecOpts#{peers => StationPubkeys},
     case HostsCsv of
-        <<>> -> RecOpts;
-        _    -> RecOpts#{caps_hint => <<"peers=", HostsCsv/binary>>}
+        <<>> -> RecOpts1;
+        _    -> RecOpts1#{caps_hint => <<"peers=", HostsCsv/binary>>}
+    end.
+
+peer_observer_hosts(undefined, _Dht) -> [];
+peer_observer_hosts(ObsPid, Dht) ->
+    [Host
+     || {_Pid, PK} <- safe_peers(ObsPid),
+        {ok, Host} <- [station_peer_hostname(Dht, PK)]].
+
+peer_observer_pubkeys(undefined, _Dht) -> [];
+peer_observer_pubkeys(ObsPid, Dht) ->
+    [PK
+     || {_Pid, PK} <- safe_peers(ObsPid),
+        {ok, _} <- [station_peer_hostname(Dht, PK)]].
+
+%% Walk every record in the local DHT, keep kind=station ones, build
+%% the {Hostname, Lat, Lng} list and feed it to compute_peers/4.
+kleinberg_hostnames(undefined, _RecOpts) -> [];
+kleinberg_hostnames(Dht, RecOpts) ->
+    case my_geo(RecOpts) of
+        {MyHost, MyLat, MyLng} when is_binary(MyHost) ->
+            All = local_dht_stations(Dht),
+            hecate_station_overlay:compute_peers(MyHost, MyLat, MyLng, All);
+        _ ->
+            []
+    end.
+
+%% Pull our own hostname/lat/lng out of `RecOpts' (set at boot from
+%% identity_config). compute_peers/4 needs them to filter self-out and
+%% measure haversine distance.
+my_geo(RecOpts) ->
+    Host = maps:get(hostname, RecOpts, undefined),
+    Lat  = to_number(maps:get(lat, RecOpts, undefined)),
+    Lng  = to_number(maps:get(lng, RecOpts, undefined)),
+    {Host, Lat, Lng}.
+
+to_number(N) when is_number(N) -> float(N);
+to_number(_)                   -> undefined.
+
+%% Walk every local DHT record once, project into the
+%% `{Hostname, Lat, Lng}' shape compute_peers/4 expects. Records
+%% without geo (lat/lng nil or 0) and non-station kinds are dropped.
+local_dht_stations(Dht) ->
+    Records = try hecate_dht:list_records(Dht)
+              catch _:_ -> []
+              end,
+    lists:filtermap(fun project_station/1, Records).
+
+project_station(Record) when is_map(Record) ->
+    Payload = macula_record:payload(Record),
+    project_station(payload_kind_is_station(Payload), Payload);
+project_station(_) -> false.
+
+project_station(false, _Payload) -> false;
+project_station(true, Payload) ->
+    case payload_hostname(Payload) of
+        Host when is_binary(Host), byte_size(Host) > 0 ->
+            project_station_geo(Host, payload_geo(Payload));
+        _ -> false
+    end.
+
+project_station_geo(Host, {Lat, Lng}) when is_number(Lat), is_number(Lng) ->
+    {true, {Host, float(Lat), float(Lng)}};
+project_station_geo(_Host, _) -> false.
+
+%% Geo coordinates travel as text strings (`{text, "50.123"}') in the
+%% canonical CBOR shape — float canonicalisation is fragile across
+%% language impls. Try every representation we might see.
+payload_geo(P) ->
+    {payload_lat(P), payload_lng(P)}.
+
+payload_lat(P) -> read_geo_field(P, <<"lat">>, lat).
+payload_lng(P) -> read_geo_field(P, <<"lng">>, lng).
+
+read_geo_field(P, TextKey, AtomKey) ->
+    parse_geo(geo_lookup(P, TextKey, AtomKey)).
+
+geo_lookup(P, TextKey, AtomKey) ->
+    case maps:find({text, TextKey}, P) of
+        {ok, V} -> V;
+        error   ->
+            case maps:find(TextKey, P) of
+                {ok, V} -> V;
+                error   -> maps:get(AtomKey, P, undefined)
+            end
+    end.
+
+parse_geo({text, Bin}) when is_binary(Bin) -> parse_geo(Bin);
+parse_geo(Bin) when is_binary(Bin) ->
+    case binary:split(Bin, <<".">>) of
+        [_]    -> parse_int(Bin);
+        [_, _] -> parse_float(Bin)
+    end;
+parse_geo(N) when is_number(N) -> float(N);
+parse_geo(_) -> undefined.
+
+parse_float(Bin) ->
+    try binary_to_float(Bin)
+    catch error:badarg -> undefined
+    end.
+
+parse_int(Bin) ->
+    try float(binary_to_integer(Bin))
+    catch error:badarg -> undefined
     end.
 
 seeder_hostnames(undefined) -> [];
