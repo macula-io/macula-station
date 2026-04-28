@@ -228,10 +228,17 @@ broadcast_to_local_facts(_Topic, Record) ->
     seed_local_dhts_if_node_record(macula_record:type(Record), Record).
 
 seed_local_dhts_if_node_record(16#01, Record) ->
+    %% Fan out seeds in parallel — `hecate_dht:put_record/2' is a
+    %% synchronous gen_server:call, and serially blocking on 20 of
+    %% them per inbound event is enough to back up the bridge under
+    %% fleet load. Discovered on Paris with a 42k-message backlog
+    %% while Nuremberg/Helsinki kept up. The spawned pids exit on
+    %% completion; failures are absorbed (best-effort seeding).
+    Pids = identity_dht_pids(),
     lists:foreach(
       fun(DhtPid) ->
-              catch hecate_dht:put_record(DhtPid, Record)
-      end, identity_dht_pids());
+              spawn(fun() -> catch hecate_dht:put_record(DhtPid, Record) end)
+      end, Pids);
 seed_local_dhts_if_node_record(_Type, _Record) ->
     ok.
 
