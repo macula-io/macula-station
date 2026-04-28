@@ -218,7 +218,37 @@ on_peer_event(Topic, Payload) ->
 broadcast_to_local_facts(_Topic, Record) ->
     Members = pg_members(?PG_SCOPE, ?PG_GROUP),
     [gen_server:cast(Pid, {cross_publish, Record}) || Pid <- Members],
-    ok.
+    %% Also seed the local-box DHTs with the inbound record so
+    %% per-identity Kleinberg overlay computation has cross-box
+    %% nodes to reason about. Without this, each identity's local DHT
+    %% only contains same-box records and Kleinberg never produces
+    %% cross-box edges. Cost is bounded — ~N identities × M records/min.
+    seed_local_dhts(Record).
+
+seed_local_dhts(Record) ->
+    lists:foreach(
+      fun(DhtPid) ->
+              catch hecate_dht:put_record(DhtPid, Record)
+      end, identity_dht_pids()).
+
+%% Walk the identity registry, ask each identity_sup for its child
+%% list, pick the `hecate_dht' pid. Cached per call — refresh is
+%% cheap relative to the put_record fan-out.
+identity_dht_pids() ->
+    try hecate_station_identity_registry:list() of
+        Identities when is_list(Identities) ->
+            [Dht || {_Key, SupPid} <- Identities,
+                    is_pid(SupPid), is_process_alive(SupPid),
+                    Dht <- [identity_child(SupPid, hecate_dht)],
+                    is_pid(Dht)]
+    catch _:_ -> []
+    end.
+
+identity_child(SupPid, ChildId) ->
+    case lists:keyfind(ChildId, 1, supervisor:which_children(SupPid)) of
+        {_, Pid, _, _} when is_pid(Pid) -> Pid;
+        _ -> undefined
+    end.
 
 pg_members(Scope, Group) ->
     try pg:get_members(Scope, Group)
