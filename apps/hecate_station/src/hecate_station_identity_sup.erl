@@ -450,7 +450,14 @@ announcer_opts(DhtPid, IdentityOpts) ->
     add_announcer_optionals(Base, IdentityOpts).
 
 add_announcer_optionals(Base, Src) ->
-    Optional = [city, country, lat, lng, endpoint, ttl_ms,
+    %% `hostname' was missing here, so the announcer published every
+    %% station record with `hostname = <<>>'. The realm's continental
+    %% zoom aggregation falls back to the `country' field when
+    %% hostname is empty, but other UI paths (relay tooltip, hostname
+    %% match in topology_map.js) need the actual hostname. Identity
+    %% config already populates it from the
+    %% `Host/City/Country/Lat/Lng[/Addr]' MACULA_RELAY_IDENTITIES entry.
+    Optional = [hostname, city, country, lat, lng, endpoint, ttl_ms,
                 display_name, caps_hint],
     lists:foldl(fun(K, Acc) ->
         case maps:find(K, Src) of
