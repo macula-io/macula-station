@@ -511,6 +511,98 @@ forwarded_result_relayed_back_to_origin_test_() ->
         end
      end}.
 
+forwarded_entry_purged_on_origin_disconnect_test_() ->
+    %% Origin disconnects mid-CALL while the advertiser is still
+    %% connected. The forwarded entry must be cleared (else the
+    %% relay accumulates dangling state).
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, adv_kp := AdvKp, caller_kp := CallerKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            CallerId = macula_identity:public(CallerKp),
+            AdvConn    = spawn_recorder(),
+            CallerConn = spawn_recorder(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 2, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            timer:sleep(50),
+            CallId = <<70:128>>,
+            Call = macula_frame:sign(
+                     macula_frame:call(#{
+                       call_id     => CallId,
+                       procedure   => Procedure,
+                       realm       => Realm,
+                       payload     => #{},
+                       deadline_ms => erlang:system_time(millisecond) + 5_000,
+                       caller      => CallerId}),
+                     CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            assert_recorded_frame(AdvConn, call, CallId, 500),
+            ?assertEqual(1, forwarded_size(Obs)),
+            Obs ! {macula_peering, disconnected, CallerConn, peer_closed},
+            wait_for(fun() -> forwarded_size(Obs) =:= 0 end, 500)
+        end
+     end}.
+
+forwarded_entry_purged_on_ttl_timeout_test_() ->
+    %% The TTL timer fires when no reply ever arrives (advertiser
+    %% wedged or returned a malformed frame). The default
+    %% FORWARDED_TTL_MS is 60s — too long for a unit test, so we
+    %% trigger the timeout path directly by sending the
+    %% `{forwarded_timeout, CallId}' message to the observer.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, adv_kp := AdvKp, caller_kp := CallerKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            CallerId = macula_identity:public(CallerKp),
+            AdvConn    = spawn_recorder(),
+            CallerConn = spawn_recorder(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 2, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            timer:sleep(50),
+            CallId = <<71:128>>,
+            Call = macula_frame:sign(
+                     macula_frame:call(#{
+                       call_id     => CallId,
+                       procedure   => Procedure,
+                       realm       => Realm,
+                       payload     => #{},
+                       deadline_ms => erlang:system_time(millisecond) + 5_000,
+                       caller      => CallerId}),
+                     CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            assert_recorded_frame(AdvConn, call, CallId, 500),
+            ?assertEqual(1, forwarded_size(Obs)),
+            %% Synthetic TTL fire — what `erlang:send_after' would do
+            %% after FORWARDED_TTL_MS without a reply.
+            Obs ! {forwarded_timeout, CallId},
+            wait_for(fun() -> forwarded_size(Obs) =:= 0 end, 500)
+        end
+     end}.
+
+%% Reach into the observer's state record. The `forwarded' field is
+%% the LAST element of the record (as of this commit); when the
+%% record layout changes update both the index and the comment.
+%%
+%% State layout (record positions):
+%%   1: tag (state)        2: dht                 3: swim
+%%   4: handler_registry   5: pubsub_registry     6: remote_advertise
+%%   7: self_id            8: peers               9: conns
+%%  10: forwarded
+forwarded_size(Obs) ->
+    State = sys:get_state(Obs),
+    F = element(10, State),
+    map_size(F).
+
 advertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->
     AdvId = macula_identity:public(AdvKp),
     Frame = macula_frame:sign(

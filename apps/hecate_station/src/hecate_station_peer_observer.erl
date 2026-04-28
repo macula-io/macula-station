@@ -73,11 +73,21 @@
     peers                :: #{pid() => macula_identity:pubkey()},
     conns                :: #{macula_identity:pubkey() => pid()},
     %% In-flight forwarded CALLs. Maps each forwarded call_id to the
-    %% origin connection that issued the CALL, so the inbound RESULT
-    %% / call_error from the advertiser can be relayed back without
-    %% disturbing the original caller's gen_server pending map.
-    forwarded = #{}      :: #{<<_:128>> => pid()}
+    %% origin connection that issued the CALL plus a TTL timer ref
+    %% so an entry whose advertiser never replies (advertiser
+    %% disconnects mid-call, advertiser process wedges, etc.) is
+    %% reaped instead of leaking. The origin's station_link enforces
+    %% its own deadline at the SDK level — the relay-side timer is
+    %% pure cleanup.
+    forwarded = #{}      :: #{<<_:128>> => {pid(), reference()}}
 }).
+
+%% Hard upper bound on how long a forwarded CALL entry may live on
+%% the relay. Above any reasonable per-call deadline (the longest
+%% caller-side timeout in the fleet today is 10 s on
+%% `_realm.membership.join_with_token_v1`). Defensive — purges
+%% stragglers even when a buggy peer never sends RESULT/ERROR.
+-define(FORWARDED_TTL_MS, 60_000).
 
 %%==================================================================
 %% API
@@ -136,8 +146,22 @@ handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     {noreply, on_frame(ConnPid, Frame, S)};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
+handle_info({forwarded_timeout, CallId}, #state{forwarded = F} = S) ->
+    {noreply, on_forwarded_timeout(maps:take(CallId, F), S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
+
+%% TTL fired with no reply ever arriving. The origin's station_link
+%% has already given up at the SDK level (its own deadline timer
+%% surfaced `{error, timeout}` to the caller), so we simply clear
+%% our entry. Logged at info so a flood of timeouts surfaces in
+%% operations dashboards before it becomes a memory leak.
+on_forwarded_timeout(error, S) ->
+    S;
+on_forwarded_timeout({{_Origin, _TRef}, NewF}, S) ->
+    logger:info("[peer_observer] forwarded CALL timed out — purging",
+                []),
+    S#state{forwarded = NewF}.
 
 terminate(_Reason, _S) -> ok.
 code_change(_OldVsn, S, _Extra) -> {ok, S}.
@@ -281,7 +305,13 @@ track_forwarded(_CallId, undefined, _F, S) ->
     %% arrival because no `forwarded' entry exists. Safe.
     S;
 track_forwarded(CallId, Origin, F, S) ->
-    S#state{forwarded = F#{CallId => Origin}}.
+    %% TTL timer ensures the entry is purged even when no reply ever
+    %% arrives (advertiser disconnects mid-call, advertiser process
+    %% hangs, malformed reply). Cancelled in `relay_forwarded_reply'
+    %% on a normal RESULT/ERROR.
+    TRef = erlang:send_after(?FORWARDED_TTL_MS, self(),
+                             {forwarded_timeout, CallId}),
+    S#state{forwarded = F#{CallId => {Origin, TRef}}}.
 
 unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
     macula_frame:call_error(#{call_id     => CallId,
@@ -301,7 +331,8 @@ relay_forwarded_reply(error, _Frame, S) ->
     %% relay_ping carry their own state_link gen_server pending map).
     %% Pass through.
     S;
-relay_forwarded_reply({Origin, NewF}, Frame, S) ->
+relay_forwarded_reply({{Origin, TRef}, NewF}, Frame, S) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
     macula_peering:send_frame(Origin, Frame),
     S#state{forwarded = NewF}.
 
@@ -417,12 +448,20 @@ on_disconnected(ConnPid, #state{swim = Swim, peers = P, conns = C,
             conns     = drop_conn(NodeId, C),
             forwarded = drop_forwarded_for(ConnPid, F)}.
 
-%% Drop in-flight forwarded entries whose origin has just gone. The
-%% advertiser's eventual reply will be relayed but the origin is
-%% gone so there's nowhere to send it; clearing now avoids growing
-%% a stale map.
+%% Drop in-flight forwarded entries whose origin (or advertiser, for
+%% bulk-purge by either endpoint) has just gone. Cancels TTL timers
+%% on the entries being dropped so we don't accumulate stale
+%% `forwarded_timeout' messages in our mailbox.
 drop_forwarded_for(ConnPid, F) ->
-    maps:filter(fun(_, Origin) -> Origin =/= ConnPid end, F).
+    maps:fold(fun(CallId, {Origin, TRef}, Acc) ->
+        keep_or_drop(Origin =:= ConnPid, CallId, Origin, TRef, Acc)
+    end, #{}, F).
+
+keep_or_drop(true, _CallId, _Origin, TRef, Acc) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    Acc;
+keep_or_drop(false, CallId, Origin, TRef, Acc) ->
+    Acc#{CallId => {Origin, TRef}}.
 
 maybe_purge_advertise(undefined, _ConnPid) ->
     ok;
