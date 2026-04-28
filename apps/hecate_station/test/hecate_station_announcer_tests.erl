@@ -95,9 +95,25 @@ peer_observer_pubkeys_land_in_record_test_() ->
     {setup, fun setup/0, fun cleanup/1, fun(Ctx) ->
         ?_test(begin
             #{dht := Dht, kp := Kp} = Ctx,
-            Peer1 = <<1:256>>,
-            Peer2 = <<2:256>>,
-            ObsPid = fake_peer_observer([{self(), Peer1}, {self(), Peer2}]),
+            %% Plant station + daemon node_records for the candidate
+            %% peers so the announcer's `peer_is_station/2' lookup
+            %% finds them in the local DHT. Two stations + one daemon
+            %% — the daemon must be filtered out of the announce.
+            StationKp1 = macula_identity:generate(),
+            StationKp2 = macula_identity:generate(),
+            DaemonKp   = macula_identity:generate(),
+            StationPub1 = macula_identity:public(StationKp1),
+            StationPub2 = macula_identity:public(StationKp2),
+            DaemonPub   = macula_identity:public(DaemonKp),
+            put_station_record(Dht, StationKp1),
+            put_station_record(Dht, StationKp2),
+            put_daemon_record(Dht, DaemonKp),
+
+            ObsPid = fake_peer_observer(
+                       [{self(), StationPub1},
+                        {self(), DaemonPub},        %% should be filtered out
+                        {self(), StationPub2}]),
+
             {ok, Pid} = hecate_station_announcer:start_link(#{
                 dht           => Dht,
                 identity      => Kp,
@@ -107,11 +123,16 @@ peer_observer_pubkeys_land_in_record_test_() ->
             unlink(Pid),
             Pub = macula_identity:public(Kp),
             wait_until(fun() ->
-                hecate_dht:find_local_record(Dht, Pub) =/= []
+                lists:any(fun(R) ->
+                    macula_record:type(R) =:= ?TYPE_NODE
+                end, hecate_dht:find_local_record(Dht, Pub))
             end, 1_000),
-            [Record] = hecate_dht:find_local_record(Dht, Pub),
+            [Record] = [R || R <- hecate_dht:find_local_record(Dht, Pub),
+                             macula_record:type(R) =:= ?TYPE_NODE],
             Payload  = macula_record:payload(Record),
-            ?assertEqual([Peer1, Peer2],
+            %% macula_record:with_peers/2 sorts via lists:usort/1 for
+            %% canonical CBOR — the assertion uses the sorted view too.
+            ?assertEqual(lists:usort([StationPub1, StationPub2]),
                          maps:get({text, <<"peers">>}, Payload)),
             catch hecate_station_announcer:stop(Pid),
             exit(ObsPid, normal)
@@ -171,3 +192,16 @@ fake_peer_observer_loop(Peers) ->
         stop ->
             ok
     end.
+
+%% Build + sign a `kind=station' node_record and put it in the DHT.
+put_station_record(Dht, Kp) ->
+    Pub      = macula_identity:public(Kp),
+    Unsigned = macula_record:node_record(Pub, [], 0, #{kind => <<"station">>}),
+    Signed   = macula_record:sign(Unsigned, Kp),
+    ok = hecate_dht:put_record(Dht, Signed).
+
+put_daemon_record(Dht, Kp) ->
+    Pub      = macula_identity:public(Kp),
+    Unsigned = macula_record:node_record(Pub, [], 0, #{kind => <<"daemon">>}),
+    Signed   = macula_record:sign(Unsigned, Kp),
+    ok = hecate_dht:put_record(Dht, Signed).
