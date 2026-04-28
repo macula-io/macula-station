@@ -218,18 +218,22 @@ on_peer_event(Topic, Payload) ->
 broadcast_to_local_facts(_Topic, Record) ->
     Members = pg_members(?PG_SCOPE, ?PG_GROUP),
     [gen_server:cast(Pid, {cross_publish, Record}) || Pid <- Members],
-    %% Also seed the local-box DHTs with the inbound record so
-    %% per-identity Kleinberg overlay computation has cross-box
-    %% nodes to reason about. Without this, each identity's local DHT
-    %% only contains same-box records and Kleinberg never produces
-    %% cross-box edges. Cost is bounded — ~N identities × M records/min.
-    seed_local_dhts(Record).
+    %% Seed local DHTs with NODE_RECORDS only (type 0x01) so per-identity
+    %% Kleinberg overlay has cross-box nodes to reason about. Tombstones
+    %% (type 0x0C) are deliberately NOT seeded: each peer-bridged
+    %% tombstone, once stored locally, fires a record_stored callback,
+    %% re-publishes on local pubsub, gets bridged back to the origin box,
+    %% and bounces forever. Cross_publish (above) is enough to surface
+    %% departures to local subscribers without entering the loop.
+    seed_local_dhts_if_node_record(macula_record:type(Record), Record).
 
-seed_local_dhts(Record) ->
+seed_local_dhts_if_node_record(16#01, Record) ->
     lists:foreach(
       fun(DhtPid) ->
               catch hecate_dht:put_record(DhtPid, Record)
-      end, identity_dht_pids()).
+      end, identity_dht_pids());
+seed_local_dhts_if_node_record(_Type, _Record) ->
+    ok.
 
 %% Walk the identity registry, ask each identity_sup for its child
 %% list, pick the `hecate_dht' pid. Cached per call — refresh is
