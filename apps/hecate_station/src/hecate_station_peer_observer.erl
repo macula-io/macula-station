@@ -60,12 +60,23 @@
     %% / EVENT frames route through here, keyed by realm tag).
     %% Optional: when undefined, those frames are dropped silently.
     pubsub_registry      :: pid() | undefined,
+    %% Per-identity remote-advertise registry. Tracks procedures a
+    %% connected peer has registered via ADVERTISE frames. CALL frames
+    %% not matched by the local handler_registry fall through to here;
+    %% if a match is found the CALL is forwarded over the advertiser's
+    %% QUIC connection.
+    remote_advertise     :: pid() | undefined,
     %% This station's own identity — RESULT / call_error frames
     %% carry it as the `responded_by' / `reported_by' pubkey so the
     %% caller knows who answered.
     self_id              :: macula_identity:pubkey() | undefined,
     peers                :: #{pid() => macula_identity:pubkey()},
-    conns                :: #{macula_identity:pubkey() => pid()}
+    conns                :: #{macula_identity:pubkey() => pid()},
+    %% In-flight forwarded CALLs. Maps each forwarded call_id to the
+    %% origin connection that issued the CALL, so the inbound RESULT
+    %% / call_error from the advertiser can be relayed back without
+    %% disturbing the original caller's gen_server pending map.
+    forwarded = #{}      :: #{<<_:128>> => pid()}
 }).
 
 %%==================================================================
@@ -97,6 +108,7 @@ init(#{dht := Dht, swim := Swim} = Opts)
                 swim             = Swim,
                 handler_registry = maps:get(handler_registry, Opts, undefined),
                 pubsub_registry  = maps:get(pubsub_registry, Opts, undefined),
+                remote_advertise = maps:get(remote_advertise, Opts, undefined),
                 self_id          = maps:get(self_id, Opts, undefined),
                 peers            = #{},
                 conns            = #{}}}.
@@ -121,8 +133,7 @@ handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     logger:debug("[peer_observer] frame pid=~p type=~p",
                  [ConnPid, macula_frame:frame_type(Frame)]),
-    on_frame(ConnPid, Frame, S),
-    {noreply, S};
+    {noreply, on_frame(ConnPid, Frame, S)};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info(_Msg, S) ->
@@ -156,15 +167,15 @@ direct_peer_spec(NodeId) ->
 %%==================================================================
 
 on_frame(ConnPid, Frame, #state{peers = P} = S) ->
-    route(Frame, frame_source(ConnPid, P), S).
+    route(Frame, ConnPid, frame_source(ConnPid, P), S).
 
 frame_source(ConnPid, P) ->
     maps:get(ConnPid, P, undefined).
 
-route(_Frame, undefined, _S) ->
-    ok;
-route(Frame, NodeId, S) ->
-    dispatch(frame_category(Frame), Frame, NodeId, S).
+route(_Frame, _ConnPid, undefined, S) ->
+    S;
+route(Frame, ConnPid, NodeId, S) ->
+    dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S).
 
 frame_category(Frame) -> classify(macula_frame:frame_type(Frame)).
 
@@ -173,42 +184,163 @@ classify(swim_ack)     -> swim;
 classify(swim_suspect) -> swim;
 classify(swim_confirm) -> swim;
 classify(call)         -> call;
+classify(result)       -> reply;
+classify(error)        -> reply;
+classify(advertise)    -> advertise;
+classify(unadvertise)  -> advertise;
 classify(subscribe)    -> pubsub;
 classify(unsubscribe)  -> pubsub;
 classify(publish)      -> pubsub;
 classify(event)        -> pubsub;
 classify(_)            -> other.
 
-dispatch(swim, Frame, NodeId, #state{swim = Swim}) ->
-    deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim);
-dispatch(call, Frame, NodeId, S) ->
-    deliver_call(macula_frame:verify(Frame, NodeId), Frame, NodeId, S);
-dispatch(pubsub, Frame, NodeId, S) ->
-    deliver_pubsub(macula_frame:verify(Frame, NodeId), Frame, NodeId, S);
-dispatch(other, _Frame, _NodeId, _S) ->
-    ok.
+dispatch(swim, Frame, _ConnPid, NodeId, #state{swim = Swim} = S) ->
+    deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim),
+    S;
+dispatch(call, Frame, ConnPid, NodeId, S) ->
+    deliver_call(macula_frame:verify(Frame, NodeId), Frame, ConnPid, NodeId, S);
+dispatch(reply, Frame, _ConnPid, NodeId, S) ->
+    deliver_reply(macula_frame:verify(Frame, NodeId), Frame, S);
+dispatch(advertise, Frame, ConnPid, NodeId, S) ->
+    deliver_advertise(macula_frame:verify(Frame, NodeId), Frame, ConnPid, NodeId, S),
+    S;
+dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
+    deliver_pubsub(macula_frame:verify(Frame, NodeId), Frame, NodeId, S),
+    S;
+dispatch(other, _Frame, _ConnPid, _NodeId, S) ->
+    S.
 
 deliver_swim({ok, _}, Frame, NodeId, Swim) ->
     ok = hecate_swim:handle_frame(Swim, NodeId, Frame);
 deliver_swim({error, _Reason}, _Frame, _NodeId, _Swim) ->
     ok.
 
-%% CALL dispatch — verify signature, dispatch to per-identity
-%% handler registry, send the resulting RESULT / call_error back
-%% on the originating connection. Handler invocation runs inside
-%% the dispatch helper which traps crashes; the observer process
-%% is never blocked or killed by a misbehaving handler.
-deliver_call(_Verified, _Frame, _NodeId,
-             #state{handler_registry = undefined}) ->
-    ok;
-deliver_call({error, _}, _Frame, _NodeId, _S) ->
-    ok;
-deliver_call({ok, _}, Frame, NodeId,
-             #state{handler_registry = Registry,
-                    self_id = SelfId,
-                    conns = C}) ->
+%% CALL dispatch — verify signature, then look the procedure up
+%% first against the local per-identity handler_registry (DHT
+%% primitives etc), and on miss fall through to the remote-advertise
+%% registry (procedures registered by connected peers via the
+%% ADVERTISE wire frame). On a remote-advertise hit we forward the
+%% CALL across the advertiser's QUIC connection and remember the
+%% origin in `forwarded' so the inbound RESULT / call_error can be
+%% relayed back. Handler invocation for local procedures runs inside
+%% `hecate_handler_dispatch' which traps crashes; the observer
+%% process is never blocked by a misbehaving handler.
+deliver_call(_Verified, _Frame, _ConnPid, _NodeId,
+             #state{handler_registry = undefined,
+                    remote_advertise = undefined} = S) ->
+    S;
+deliver_call({error, _}, _Frame, _ConnPid, _NodeId, S) ->
+    S;
+deliver_call({ok, Frame}, _OrigFrame, ConnPid, NodeId, S) ->
+    on_call_lookup(local_lookup(Frame, S), Frame, ConnPid, NodeId, S).
+
+local_lookup(_Frame, #state{handler_registry = undefined}) ->
+    {error, not_found};
+local_lookup(Frame, #state{handler_registry = Registry}) ->
+    Procedure = maps:get(procedure, Frame),
+    hecate_handler_registry:lookup(Registry, Procedure).
+
+on_call_lookup({ok, _Handler}, Frame, _ConnPid, NodeId,
+               #state{handler_registry = Registry,
+                      self_id = SelfId, conns = C} = S) ->
     Reply = hecate_handler_dispatch:dispatch_call(Frame, Registry, SelfId),
-    send_reply_to(maps:find(NodeId, C), Reply).
+    send_reply_to(maps:find(NodeId, C), Reply),
+    S;
+on_call_lookup({error, not_found}, Frame, ConnPid, NodeId, S) ->
+    on_remote_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
+
+remote_lookup(_Frame, #state{remote_advertise = undefined}) ->
+    {error, not_found};
+remote_lookup(Frame, #state{remote_advertise = R}) ->
+    Realm     = maps:get(realm,     Frame),
+    Procedure = maps:get(procedure, Frame),
+    hecate_remote_advertise_registry:lookup(R, Realm, Procedure).
+
+%% Remote-advertise miss — synthesize a signed `unknown_next_peer'
+%% reply to the caller (origin connection) so they fail fast.
+on_remote_lookup({error, not_found}, Frame, _ConnPid, NodeId,
+                 #state{self_id = SelfId, conns = C} = S) ->
+    Reply = unknown_next_peer_reply(Frame, SelfId),
+    send_reply_to(maps:find(NodeId, C), Reply),
+    S;
+on_remote_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame, _ConnPid, NodeId,
+                 #state{conns = C, forwarded = F} = S) ->
+    %% Forward the CALL frame as-is over the advertiser's connection.
+    %% The advertiser's `macula_station_link' will dispatch it to its
+    %% local handler and emit a RESULT or call_error back. Track the
+    %% origin so we can route the reply.
+    macula_peering:send_frame(AdvertiserConn, Frame),
+    Origin = origin_for_reply(maps:find(NodeId, C)),
+    track_forwarded(maps:get(call_id, Frame), Origin, F, S).
+
+origin_for_reply({ok, ConnPid}) -> ConnPid;
+origin_for_reply(error)         -> undefined.
+
+track_forwarded(_CallId, undefined, _F, S) ->
+    %% Origin already gone; the eventual RESULT will be dropped on
+    %% arrival because no `forwarded' entry exists. Safe.
+    S;
+track_forwarded(CallId, Origin, F, S) ->
+    S#state{forwarded = F#{CallId => Origin}}.
+
+unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
+    macula_frame:call_error(#{call_id     => CallId,
+                              code        => 16#01,
+                              reported_by => SelfId}).
+
+%% RESULT / call_error from an advertiser destined for a previously-
+%% forwarded CALL. Match by call_id; relay back to the origin.
+deliver_reply({error, _}, _Frame, S) ->
+    S;
+deliver_reply({ok, Frame}, _OrigFrame, S) ->
+    relay_forwarded_reply(maps:take(maps:get(call_id, Frame, <<>>),
+                                    S#state.forwarded), Frame, S).
+
+relay_forwarded_reply(error, _Frame, S) ->
+    %% Not a forwarded reply (e.g. station-internal callers like
+    %% relay_ping carry their own state_link gen_server pending map).
+    %% Pass through.
+    S;
+relay_forwarded_reply({Origin, NewF}, Frame, S) ->
+    macula_peering:send_frame(Origin, Frame),
+    S#state{forwarded = NewF}.
+
+%% ADVERTISE / UNADVERTISE — register or drop a remote procedure
+%% routing entry. Frames are signed by the advertiser; verification
+%% already happened in `dispatch'. The advertiser pubkey on the
+%% wire MUST equal the connection-bound NodeId so a peer cannot
+%% advertise on behalf of another identity.
+deliver_advertise({error, _}, _Frame, _ConnPid, _NodeId, _S) ->
+    ok;
+deliver_advertise({ok, Frame}, _OrigFrame, ConnPid, NodeId,
+                  #state{remote_advertise = R}) ->
+    on_advertise_frame(R, macula_frame:frame_type(Frame), Frame,
+                       ConnPid, NodeId).
+
+on_advertise_frame(undefined, _Type, _Frame, _ConnPid, _NodeId) ->
+    ok;
+on_advertise_frame(R, advertise, Frame, ConnPid, NodeId) ->
+    Realm     = maps:get(realm,      Frame),
+    Procedure = maps:get(procedure,  Frame),
+    Adv       = maps:get(advertiser, Frame),
+    %% Reject mismatched advertiser to keep the per-conn invariant.
+    on_advertise_match(Adv =:= NodeId, R, Realm, Procedure, Adv, ConnPid);
+on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId) ->
+    Realm     = maps:get(realm,      Frame),
+    Procedure = maps:get(procedure,  Frame),
+    Adv       = maps:get(advertiser, Frame),
+    on_unadvertise_match(Adv =:= NodeId, R, Realm, Procedure).
+
+on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid) ->
+    ok;
+on_advertise_match(true, R, Realm, Proc, Adv, ConnPid) ->
+    hecate_remote_advertise_registry:register(
+      R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}).
+
+on_unadvertise_match(false, _R, _Realm, _Proc) ->
+    ok;
+on_unadvertise_match(true, R, Realm, Proc) ->
+    hecate_remote_advertise_registry:unregister(R, Realm, Proc).
 
 send_reply_to(error, _Reply) ->
     %% Caller's connection is gone — RESULT goes nowhere. The
@@ -275,11 +407,27 @@ send_event_to_sub(error, _EventFrame) ->
 %% disconnected
 %%==================================================================
 
-on_disconnected(ConnPid, #state{swim = Swim, peers = P, conns = C} = S) ->
+on_disconnected(ConnPid, #state{swim = Swim, peers = P, conns = C,
+                                forwarded = F,
+                                remote_advertise = R} = S) ->
     NodeId = maps:get(ConnPid, P, undefined),
     maybe_remove(NodeId, Swim),
-    S#state{peers = maps:remove(ConnPid, P),
-            conns = drop_conn(NodeId, C)}.
+    maybe_purge_advertise(R, ConnPid),
+    S#state{peers     = maps:remove(ConnPid, P),
+            conns     = drop_conn(NodeId, C),
+            forwarded = drop_forwarded_for(ConnPid, F)}.
+
+%% Drop in-flight forwarded entries whose origin has just gone. The
+%% advertiser's eventual reply will be relayed but the origin is
+%% gone so there's nowhere to send it; clearing now avoids growing
+%% a stale map.
+drop_forwarded_for(ConnPid, F) ->
+    maps:filter(fun(_, Origin) -> Origin =/= ConnPid end, F).
+
+maybe_purge_advertise(undefined, _ConnPid) ->
+    ok;
+maybe_purge_advertise(R, ConnPid) ->
+    hecate_remote_advertise_registry:purge_conn(R, ConnPid).
 
 maybe_remove(undefined, _Swim) -> ok;
 maybe_remove(NodeId,     Swim) -> hecate_swim:remove_peer(Swim, NodeId).

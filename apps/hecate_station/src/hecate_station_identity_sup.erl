@@ -216,7 +216,29 @@ seed_handler_registry(Sup, Opts) ->
 on_handler_registry(_Sup, _Opts, {error, R}) ->
     {error, {handler_registry_start_failed, R}};
 on_handler_registry(Sup, Opts, {ok, HrPid}) ->
-    seed_dht(Sup, Opts#{handler_registry => HrPid}).
+    seed_remote_advertise_registry(Sup, Opts#{handler_registry => HrPid}).
+
+%% Per-identity registry of procedures advertised by connected peers.
+%% Lives alongside `hecate_handler_registry'; the peer_observer wires
+%% to both and falls through from one to the other on CALL dispatch.
+seed_remote_advertise_registry(Sup, Opts) ->
+    on_remote_advertise_registry(
+      Sup, Opts,
+      supervisor:start_child(Sup, remote_advertise_registry_spec(Opts))).
+
+on_remote_advertise_registry(_Sup, _Opts, {error, R}) ->
+    {error, {remote_advertise_registry_start_failed, R}};
+on_remote_advertise_registry(Sup, Opts, {ok, RaPid}) ->
+    seed_dht(Sup, Opts#{remote_advertise => RaPid}).
+
+remote_advertise_registry_spec(IdentityOpts) ->
+    Opts = #{identity_key => maps:get(identity_key, IdentityOpts)},
+    #{id       => hecate_remote_advertise_registry,
+      start    => {hecate_remote_advertise_registry, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_remote_advertise_registry]}.
 
 seed_dht(Sup, Opts) ->
     on_dht(Sup, Opts,
@@ -663,6 +685,7 @@ observer_spec(DhtPid, SwimPid, IdentityOpts) ->
         swim             => SwimPid,
         handler_registry => maps:get(handler_registry, IdentityOpts, undefined),
         pubsub_registry  => maps:get(pubsub_registry, IdentityOpts, undefined),
+        remote_advertise => maps:get(remote_advertise, IdentityOpts, undefined),
         self_id          => self_id_of(IdentityOpts)
     },
     #{id       => hecate_station_peer_observer,

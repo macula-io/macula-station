@@ -246,6 +246,318 @@ setup() ->
     #{dht => Dht, swim => Swim, obs => Obs,
       self_kp => SelfKp, peer_kp => PeerKp}.
 
+%%==================================================================
+%% Remote advertise + CALL forwarding
+%%==================================================================
+
+setup_with_advertise() ->
+    application:ensure_all_started(crypto),
+    SelfKp     = macula_identity:generate(),
+    AdvKp      = macula_identity:generate(),
+    CallerKp   = macula_identity:generate(),
+    SelfId     = macula_identity:public(SelfKp),
+    {ok, Dht}  = hecate_dht:start_link(#{self_id => SelfId}),
+    {ok, Swim} = hecate_swim:start_link(#{
+        self_node_id    => SelfId,
+        identity        => SelfKp,
+        controlling_pid => self()
+    }),
+    {ok, Hr}   = hecate_handler_registry:start_link(#{}),
+    {ok, Ra}   = hecate_remote_advertise_registry:start_link(#{}),
+    {ok, Obs}  = hecate_station_peer_observer:start_link(#{
+        dht              => Dht,
+        swim             => Swim,
+        handler_registry => Hr,
+        remote_advertise => Ra,
+        self_id          => SelfId
+    }),
+    #{dht => Dht, swim => Swim, hr => Hr, ra => Ra, obs => Obs,
+      self_kp => SelfKp, adv_kp => AdvKp, caller_kp => CallerKp,
+      self_id => SelfId}.
+
+teardown_with_advertise(#{obs := Obs, hr := Hr, ra := Ra,
+                          swim := Swim, dht := Dht}) ->
+    _ = catch hecate_station_peer_observer:stop(Obs),
+    _ = catch hecate_handler_registry:stop(Hr),
+    _ = catch hecate_remote_advertise_registry:stop(Ra),
+    _ = catch hecate_swim:stop(Swim),
+    _ = catch hecate_dht:stop(Dht),
+    ok.
+
+advertise_frame_registers_handler_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId   = macula_identity:public(AdvKp),
+            AdvConn = spawn_dummy(),
+            Realm   = <<7:256>>,
+            Procedure = <<"_realm.membership.join_with_token_v1">>,
+            %% Connect the advertiser so the observer's `peers' map
+            %% knows their NodeId.
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            Frame = macula_frame:sign(
+                      macula_frame:advertise(#{realm      => Realm,
+                                               procedure  => Procedure,
+                                               advertiser => AdvId}),
+                      AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, Frame},
+            wait_for(fun() ->
+                case hecate_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, _} -> true;
+                    _       -> false
+                end
+            end, 500),
+            {ok, Entry} = hecate_remote_advertise_registry:lookup(
+                            Ra, Realm, Procedure),
+            ?assertEqual(AdvId,   maps:get(advertiser, Entry)),
+            ?assertEqual(AdvConn, maps:get(conn_pid,   Entry))
+        end
+     end}.
+
+mismatched_advertiser_pubkey_rejected_test_() ->
+    %% A peer cannot advertise on behalf of a different identity —
+    %% the on-wire `advertiser' field MUST equal the connection's
+    %% NodeId. This check defends against a misbehaving SDK.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId   = macula_identity:public(AdvKp),
+            AdvConn = spawn_dummy(),
+            Imposter = <<99:256>>,
+            Realm   = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            Frame = macula_frame:sign(
+                      macula_frame:advertise(#{realm      => Realm,
+                                               procedure  => Procedure,
+                                               advertiser => Imposter}),
+                      AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, Frame},
+            timer:sleep(100),
+            ?assertEqual(
+               {error, not_found},
+               hecate_remote_advertise_registry:lookup(Ra, Realm, Procedure))
+        end
+     end}.
+
+unadvertise_frame_clears_handler_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId     = macula_identity:public(AdvKp),
+            AdvConn   = spawn_dummy(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case hecate_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, _} -> true;
+                    _       -> false
+                end
+            end, 500),
+            UnAdv = macula_frame:sign(
+                      macula_frame:unadvertise(#{realm      => Realm,
+                                                 procedure  => Procedure,
+                                                 advertiser => AdvId}),
+                      AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, UnAdv},
+            wait_for(fun() ->
+                case hecate_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {error, not_found} -> true;
+                    _                  -> false
+                end
+            end, 500)
+        end
+     end}.
+
+inbound_call_forwards_to_advertiser_conn_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, adv_kp := AdvKp, caller_kp := CallerKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            CallerId = macula_identity:public(CallerKp),
+            AdvConn    = spawn_recorder(),
+            CallerConn = spawn_recorder(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_realm.membership.join_with_token_v1">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 2, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            timer:sleep(50),
+            CallId = <<42:128>>,
+            Call = macula_frame:sign(
+                     macula_frame:call(#{
+                       call_id     => CallId,
+                       procedure   => Procedure,
+                       realm       => Realm,
+                       payload     => #{token => <<"abc">>},
+                       deadline_ms => erlang:system_time(millisecond) + 5_000,
+                       caller      => CallerId}),
+                     CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            %% The advertiser conn should receive the forwarded CALL
+            %% frame verbatim.
+            assert_recorded_frame(AdvConn, call, CallId, 500)
+        end
+     end}.
+
+call_for_unadvertised_proc_returns_unknown_next_peer_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, caller_kp := CallerKp} = Ctx,
+            CallerId   = macula_identity:public(CallerKp),
+            CallerConn = spawn_recorder(),
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 1, 500),
+            CallId = <<99:128>>,
+            Call = macula_frame:sign(
+                     macula_frame:call(#{
+                       call_id     => CallId,
+                       procedure   => <<"_no.such.thing">>,
+                       realm       => <<7:256>>,
+                       payload     => #{},
+                       deadline_ms => erlang:system_time(millisecond) + 5_000,
+                       caller      => CallerId}),
+                     CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            {Frame, _} = await_recorded(CallerConn, error, 500),
+            ?assertEqual(CallId, maps:get(call_id, Frame)),
+            ?assertEqual(16#01, maps:get(code, Frame))
+        end
+     end}.
+
+advertiser_disconnect_purges_advertised_procedures_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId     = macula_identity:public(AdvKp),
+            AdvConn   = spawn_dummy(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case hecate_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, _} -> true;
+                    _       -> false
+                end
+            end, 500),
+            Obs ! {macula_peering, disconnected, AdvConn, peer_closed},
+            wait_for(fun() ->
+                case hecate_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {error, not_found} -> true;
+                    _                  -> false
+                end
+            end, 500)
+        end
+     end}.
+
+forwarded_result_relayed_back_to_origin_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, adv_kp := AdvKp, caller_kp := CallerKp,
+              self_kp := _SelfKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            CallerId = macula_identity:public(CallerKp),
+            AdvConn    = spawn_recorder(),
+            CallerConn = spawn_recorder(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 2, 500),
+            advertise(Obs, AdvConn, AdvKp, Realm, Procedure),
+            timer:sleep(50),
+            CallId = <<13:128>>,
+            Call = macula_frame:sign(
+                     macula_frame:call(#{
+                       call_id     => CallId,
+                       procedure   => Procedure,
+                       realm       => Realm,
+                       payload     => #{},
+                       deadline_ms => erlang:system_time(millisecond) + 5_000,
+                       caller      => CallerId}),
+                     CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            assert_recorded_frame(AdvConn, call, CallId, 500),
+            %% Advertiser sends RESULT back; the observer should
+            %% relay it to the original caller's connection.
+            Result = macula_frame:sign(
+                       macula_frame:result(#{
+                         call_id      => CallId,
+                         payload      => #{ok => done},
+                         responded_by => AdvId}),
+                       AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, Result},
+            assert_recorded_frame(CallerConn, result, CallId, 500)
+        end
+     end}.
+
+advertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->
+    AdvId = macula_identity:public(AdvKp),
+    Frame = macula_frame:sign(
+              macula_frame:advertise(#{realm      => Realm,
+                                       procedure  => Procedure,
+                                       advertiser => AdvId}),
+              AdvKp),
+    Obs ! {macula_peering, frame, AdvConn, Frame}.
+
+%% A dummy "conn" process that records every `send_frame' cast it
+%% receives, keyed by frame_type. Tests can poll with
+%% `await_recorded/3'.
+spawn_recorder() ->
+    Test = self(),
+    spawn(fun() -> recorder_loop(Test, []) end).
+
+recorder_loop(Test, Acc) ->
+    receive
+        {'$gen_cast', {send_frame, Frame}} ->
+            Test ! {recorded, self(), Frame},
+            recorder_loop(Test, [Frame | Acc]);
+        stop ->
+            ok
+    end.
+
+%% Skip non-matching `{recorded, _}' messages (e.g. SWIM ping frames
+%% the observer fires after `connected') and surface the first one
+%% that matches `(ConnPid, Type)'. Other messages stay in the
+%% mailbox so a subsequent `await_recorded' can pick them up.
+await_recorded(ConnPid, Type, Ms) ->
+    receive
+        {recorded, P, #{frame_type := T} = F}
+          when P =:= ConnPid, T =:= Type ->
+            {F, ConnPid}
+    after Ms ->
+        erlang:error({no_recorded_frame, ConnPid, Type})
+    end.
+
+assert_recorded_frame(ConnPid, Type, CallId, Ms) ->
+    {Frame, _} = await_recorded(ConnPid, Type, Ms),
+    ?assertEqual(CallId, maps:get(call_id, Frame)).
+
+wait_for_peers(Obs, N, Ms) ->
+    wait_for(fun() ->
+        length(hecate_station_peer_observer:peers(Obs)) =:= N
+    end, Ms).
+
 teardown(#{obs := Obs, swim := Swim, dht := Dht}) ->
     _ = catch hecate_station_peer_observer:stop(Obs),
     _ = catch hecate_swim:stop(Swim),
