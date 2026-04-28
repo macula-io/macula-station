@@ -206,19 +206,42 @@ with_current_peers(ObsPid, Dht, RecOpts) ->
     %% The pubkey-keyed `peers' field is still emitted for backwards
     %% compat with anyone who joins by pubkey.
     Pubkeys = [PK || {_Pid, PK} <- safe_peers(ObsPid)],
+    %% TEMP DEBUG: emit hostnames for ALL peers whose record exists in
+    %% local DHT (regardless of kind) so we can see whether the kind
+    %% filter or the absence of peers is the blocker. Roll back to
+    %% kind=station filter once verified.
     PeerHostnames =
         [Host
          || PK <- Pubkeys,
-            {ok, Host} <- [station_peer_hostname(Dht, PK)]],
+            {ok, Host} <- [any_peer_hostname(Dht, PK)]],
     StationPubkeys =
         [PK
          || PK <- Pubkeys,
             {ok, _} <- [station_peer_hostname(Dht, PK)]],
     HostsCsv = iolist_to_binary(lists:join($,, lists:usort(PeerHostnames))),
+    PubkeyCount = length(Pubkeys),
+    HostCount   = length(PeerHostnames),
+    logger:info(
+      "[announcer] DEBUG peer_observer=~b host_count=~b csv=~tp",
+      [PubkeyCount, HostCount, HostsCsv]),
     RecOpts1 = RecOpts#{peers => StationPubkeys},
     case HostsCsv of
         <<>> -> RecOpts1;
         _    -> RecOpts1#{caps_hint => <<"peers=", HostsCsv/binary>>}
+    end.
+
+%% Like station_peer_hostname/2 but accepts ANY kind — used during
+%% the temp debug build to determine whether peer_observer has any
+%% peers at all + whether their records are in local DHT.
+any_peer_hostname(Dht, Pubkey) ->
+    case hecate_dht:find_local_record(Dht, Pubkey) of
+        [Record | _] when is_map(Record) ->
+            case payload_hostname(macula_record:payload(Record)) of
+                Bin when is_binary(Bin), byte_size(Bin) > 0 -> {ok, Bin};
+                _ -> error
+            end;
+        _ ->
+            error
     end.
 
 %% Returns `{ok, Hostname}' iff the peer's local DHT record exists,
