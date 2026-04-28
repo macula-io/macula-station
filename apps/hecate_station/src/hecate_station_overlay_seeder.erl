@@ -138,7 +138,12 @@ dial(Url, #state{identity = Kp,
                  capabilities = Caps}) ->
     case parse_url(Url) of
         {ok, Host, Port} ->
+            %% role is set by macula_peering:connect/1 internally but
+            %% the typespec marks it required, so include it here too
+            %% to avoid a dialyzer contract warning. The duplicate
+            %% Opts#{role => client} in connect/1 is idempotent.
             macula_peering:connect(#{
+                role            => client,
                 identity        => Kp,
                 realms          => Realms,
                 capabilities    => Caps,
@@ -157,10 +162,10 @@ parse_url(Bin) when is_binary(Bin) -> parse_host_port(Bin).
 
 parse_host_port(Bin) ->
     case binary:split(Bin, <<":">>, [global]) of
-        [Host]            -> {ok, binary_to_list(Host), ?DEFAULT_PORT};
+        [Host]            -> {ok, Host, ?DEFAULT_PORT};
         [Host, PortBin]   ->
             case strip_path(PortBin) of
-                {ok, PortStr} -> port_to_target(binary_to_list(Host), PortStr);
+                {ok, PortStr} -> port_to_target(Host, PortStr);
                 error         -> {error, {bad_url, Bin}}
             end;
         _                 -> {error, {bad_url, Bin}}
