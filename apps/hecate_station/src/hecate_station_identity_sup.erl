@@ -294,7 +294,40 @@ seed_announcer(Sup, Opts, DhtPid, ObsPid) ->
 on_announcer(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {announcer_start_failed, R}};
 on_announcer(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    seed_overlay_seeder(Sup, Opts, ObsPid).
+
+%% Per-identity overlay seeder — initiates outbound peering connects
+%% to the URLs in `MACULA_OVERLAY_SEEDS' so peer_observer actually
+%% has peers to report. Without this, station-to-station peering
+%% never happens and the realm topology has no edges to draw.
+%%
+%% Soft-fails: a missing/empty env var means no outbound connects,
+%% station continues to boot listener as before. Failed dials are
+%% logged but don't abort the chain.
+seed_overlay_seeder(Sup, Opts, ObsPid) ->
+    on_overlay_seeder(Sup, Opts, ObsPid,
+                       supervisor:start_child(Sup,
+                                              overlay_seeder_spec(Opts, ObsPid))).
+
+on_overlay_seeder(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {overlay_seeder_start_failed, R}};
+on_overlay_seeder(Sup, Opts, ObsPid, {ok, _Pid}) ->
     seed_listener(Sup, Opts, ObsPid).
+
+overlay_seeder_spec(IdentityOpts, ObsPid) ->
+    Opts = #{
+        identity      => maps:get(identity, IdentityOpts),
+        peer_observer => ObsPid,
+        realms        => maps:get(realms, IdentityOpts, []),
+        capabilities  => maps:get(capabilities, IdentityOpts, 0),
+        identity_key  => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_overlay_seeder,
+      start    => {hecate_station_overlay_seeder, start_link, [Opts]},
+      restart  => transient,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_overlay_seeder]}.
 
 %% Bootstrap cascade — runs between DHT start and SWIM start so the
 %% routing table is seeded before SWIM begins probing peers. The
