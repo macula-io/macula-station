@@ -185,15 +185,81 @@ publish_node_record(#state{dht = Dht, identity = Kp,
                            peer_observer = ObsPid,
                            overlay_seeder = SeedPid} = _S) ->
     Pub      = macula_identity:public(Kp),
-    %% Merge the live overlay-peer pubkey list from `peer_observer'
-    %% into the record opts on every refresh. The set may have
-    %% changed between ticks (peers up/down), so we re-read each
-    %% time rather than caching at boot.
     OptsWithPeers = with_current_peers(ObsPid, Dht, SeedPid, RecOpts),
-    Unsigned = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
-    Signed   = macula_record:sign(Unsigned, Kp),
+    Unsigned0 = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
+    %% Inject the V1-style rich identity metadata into the payload —
+    %% macula 3.12's node_record/4 only emits the fields it knows
+    %% about (kind/hostname/endpoint/city/country/lat/lng), so any
+    %% extras must be appended directly. Lights up the realm detail
+    %% panel (version / OTP / RAM / CPU cores / bind addr / etc).
+    Unsigned  = inject_identity_metadata(Unsigned0, OptsWithPeers),
+    Signed    = macula_record:sign(Unsigned, Kp),
     ok = hecate_dht:put_record(Dht, Signed),
     ok.
+
+%% Stamp runtime + station identity metadata onto the announce
+%% payload as canonical CBOR text fields. Mirrors V1
+%% macula_relay_identity's PrimaryIdentity map.
+inject_identity_metadata(#{payload := Payload0} = Record, RecOpts) ->
+    Extras = identity_metadata(RecOpts),
+    Payload = maps:fold(
+                fun(K, V, Acc) -> Acc#{ {text, K} => {text, V} } end,
+                Payload0, Extras),
+    Record#{payload => Payload}.
+
+identity_metadata(RecOpts) ->
+    Mb = system_ram_mb(),
+    Cores = case erlang:system_info(logical_processors) of
+                I when is_integer(I) -> integer_to_binary(I);
+                _                    -> <<"?">>
+            end,
+    Map0 = #{
+        <<"version">>   => station_version(),
+        <<"otp">>       => list_to_binary(erlang:system_info(otp_release)),
+        <<"ram_mb">>    => integer_to_binary(Mb),
+        <<"cpu_cores">> => Cores
+    },
+    Map1 = add_env(Map0, <<"provider">>,  "MACULA_PROVIDER"),
+    add_bind_addr(Map1, RecOpts).
+
+%% Surface the IPv6 listener bind from identity_config as `ipv6' so
+%% the realm topology label shows it at street-zoom.
+add_bind_addr(Map, RecOpts) ->
+    case maps:get(bind, RecOpts, undefined) of
+        Bin when is_binary(Bin), byte_size(Bin) > 0 -> Map#{<<"ipv6">> => Bin};
+        L when is_list(L), L =/= ""                 -> Map#{<<"ipv6">> => list_to_binary(L)};
+        _                                            -> Map
+    end.
+
+station_version() ->
+    case application:get_key(hecate_station, vsn) of
+        {ok, Vsn} -> list_to_binary(Vsn);
+        undefined -> <<"dev">>
+    end.
+
+%% Best-effort RAM total. /proc/meminfo on Linux; 0 elsewhere.
+system_ram_mb() ->
+    case os:type() of
+        {unix, linux} -> linux_ram_mb();
+        _             -> 0
+    end.
+
+linux_ram_mb() ->
+    case file:read_file("/proc/meminfo") of
+        {ok, Data} ->
+            case re:run(Data, "MemTotal:\\s+(\\d+)", [{capture, [1], list}]) of
+                {match, [KBStr]} -> list_to_integer(KBStr) div 1024;
+                nomatch          -> 0
+            end;
+        {error, _} -> 0
+    end.
+
+add_env(Map, Key, EnvVar) ->
+    case os:getenv(EnvVar) of
+        false -> Map;
+        ""    -> Map;
+        Val   -> Map#{Key => list_to_binary(Val)}
+    end.
 
 with_current_peers(ObsPid, Dht, SeedPid, RecOpts) ->
     %% Three sources for relay-to-relay edges, unioned into caps_hint:

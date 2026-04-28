@@ -527,15 +527,12 @@ forward_pid(Key, Src, Acc) ->
     end.
 
 add_announcer_optionals(Base, Src) ->
-    %% `hostname' was missing here, so the announcer published every
-    %% station record with `hostname = <<>>'. The realm's continental
-    %% zoom aggregation falls back to the `country' field when
-    %% hostname is empty, but other UI paths (relay tooltip, hostname
-    %% match in topology_map.js) need the actual hostname. Identity
-    %% config already populates it from the
-    %% `Host/City/Country/Lat/Lng[/Addr]' MACULA_RELAY_IDENTITIES entry.
+    %% `hostname' / `bind' added 2026-04 to fix V2 regressions:
+    %%   * hostname: realm relay tooltip + country aggregate regex
+    %%   * bind:     IPv6 listener address surfaced as `ipv6' in the
+    %%               topology view
     Optional = [hostname, city, country, lat, lng, endpoint, ttl_ms,
-                display_name, caps_hint],
+                display_name, caps_hint, bind],
     lists:foldl(fun(K, Acc) ->
         case maps:find(K, Src) of
             {ok, V} -> Acc#{K => V};
