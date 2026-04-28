@@ -314,7 +314,7 @@ seed_bloom_exchange(Sup, Opts, ObsPid) ->
 on_bloom_exchange(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {bloom_exchange_start_failed, R}};
 on_bloom_exchange(Sup, Opts, ObsPid, {ok, _Pid}) ->
-    seed_announcer(Sup, Opts, ObsPid).
+    seed_forwarder_sup(Sup, Opts, ObsPid).
 
 bloom_exchange_spec(IdentityOpts) ->
     Opts = #{
@@ -329,6 +329,66 @@ bloom_exchange_spec(IdentityOpts) ->
       shutdown => 5_000,
       type     => worker,
       modules  => [hecate_station_bloom_exchange]}.
+
+%% Per-identity simple_one_for_one supervisor for outbound peering
+%% forwarders. The peering router asks it to start/stop forwarder
+%% workers as the (Topic, Peer) cross-product changes. Decouples
+%% lifecycle management (the router) from worker supervision.
+seed_forwarder_sup(Sup, Opts, ObsPid) ->
+    on_forwarder_sup(Sup, Opts, ObsPid,
+                     supervisor:start_child(Sup, forwarder_sup_spec())).
+
+on_forwarder_sup(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {forwarder_sup_start_failed, R}};
+on_forwarder_sup(Sup, Opts, ObsPid, {ok, FwdSup}) ->
+    Opts1 = Opts#{forwarder_sup => FwdSup},
+    seed_peering_router(Sup, Opts1, ObsPid).
+
+forwarder_sup_spec() ->
+    #{id       => hecate_station_forwarder_sup,
+      start    => {hecate_station_forwarder_sup, start_link, []},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => supervisor,
+      modules  => [hecate_station_forwarder_sup]}.
+
+%% Per-identity peering router — periodically polls local topics +
+%% peer links, reconciles outbound forwarders + inbound peer
+%% subscriptions. Drives the cross-relay pubsub plumbing V1 had built
+%% into macula_relay_peering's maybe_subscribe_on_peers cycle.
+seed_peering_router(Sup, Opts, ObsPid) ->
+    on_peering_router(Sup, Opts, ObsPid,
+                       supervisor:start_child(Sup, peering_router_spec(Opts))).
+
+on_peering_router(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {peering_router_start_failed, R}};
+on_peering_router(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    seed_announcer(Sup, Opts, ObsPid).
+
+peering_router_spec(IdentityOpts) ->
+    Kp = maps:get(identity, IdentityOpts),
+    Opts = #{
+        pubsub_registry => maps:get(pubsub_registry, IdentityOpts),
+        identity        => Kp,
+        forwarder_sup   => maps:get(forwarder_sup, IdentityOpts),
+        overlay_seeder  => maps:get(overlay_seeder, IdentityOpts),
+        pg_scope        => pg_scope_for(Kp),
+        realm           => <<0:256>>,
+        identity_key    => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_peering_router,
+      start    => {hecate_station_peering_router, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_peering_router]}.
+
+%% Per-identity pg scope so forwarders running for sibling identities
+%% on the same BEAM don't cross-pollinate. Hashed off the identity's
+%% pubkey for stability across restarts.
+pg_scope_for(Kp) ->
+    Pub = macula_identity:public(Kp),
+    binary_to_atom(<<"hecate_station_relay_", (binary:encode_hex(Pub))/binary>>).
 
 seed_announcer(Sup, Opts, ObsPid) ->
     DhtPid = maps:get(dht_pid, Opts),
