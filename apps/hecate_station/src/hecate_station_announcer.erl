@@ -209,10 +209,7 @@ inject_identity_metadata(#{payload := Payload0} = Record, RecOpts) ->
 
 identity_metadata(RecOpts) ->
     Mb = system_ram_mb(),
-    Cores = case erlang:system_info(logical_processors) of
-                I when is_integer(I) -> integer_to_binary(I);
-                _                    -> <<"?">>
-            end,
+    Cores = integer_to_binary(erlang:system_info(logical_processors)),
     Map0 = #{
         <<"version">>   => station_version(),
         <<"otp">>       => list_to_binary(erlang:system_info(otp_release)),
@@ -307,7 +304,6 @@ peer_observer_pubkeys(ObsPid, Dht) ->
 
 %% Walk every record in the local DHT, keep kind=station ones, build
 %% the {Hostname, Lat, Lng} list and feed it to compute_peers/4.
-kleinberg_hostnames(undefined, _RecOpts) -> [];
 kleinberg_hostnames(Dht, RecOpts) ->
     case my_geo(RecOpts) of
         {MyHost, MyLat, MyLng} when is_binary(MyHost) ->
