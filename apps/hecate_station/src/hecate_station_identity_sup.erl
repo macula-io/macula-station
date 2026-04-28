@@ -363,7 +363,39 @@ seed_peering_router(Sup, Opts, ObsPid) ->
 on_peering_router(_Sup, _Opts, _ObsPid, {error, R}) ->
     {error, {peering_router_start_failed, R}};
 on_peering_router(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    seed_relay_ping(Sup, Opts, ObsPid).
+
+%% Per-identity relay-to-relay ping pinger + responder. Ports the
+%% V1 macula_relay_heartbeat ping cycle onto V2's macula_station_link
+%% RPC primitive: `_relay.ping' RPC handler returns immediately,
+%% periodic call/5 measures RTT, result published as
+%% `_mesh.relay.ping' so the realm topology LATENCY toggle has data.
+seed_relay_ping(Sup, Opts, ObsPid) ->
+    on_relay_ping(Sup, Opts, ObsPid,
+                   supervisor:start_child(Sup, relay_ping_spec(Opts))).
+
+on_relay_ping(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {relay_ping_start_failed, R}};
+on_relay_ping(Sup, Opts, ObsPid, {ok, _Pid}) ->
     seed_announcer(Sup, Opts, ObsPid).
+
+relay_ping_spec(IdentityOpts) ->
+    Opts = #{
+        handler_registry => maps:get(handler_registry, IdentityOpts),
+        pubsub_registry  => maps:get(pubsub_registry, IdentityOpts),
+        overlay_seeder   => maps:get(overlay_seeder, IdentityOpts),
+        identity         => maps:get(identity, IdentityOpts),
+        hostname         => maps:get(hostname, IdentityOpts, <<>>),
+        lat              => maps:get(lat, IdentityOpts, undefined),
+        lng              => maps:get(lng, IdentityOpts, undefined),
+        identity_key     => maps:get(identity_key, IdentityOpts)
+    },
+    #{id       => hecate_station_relay_ping,
+      start    => {hecate_station_relay_ping, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [hecate_station_relay_ping]}.
 
 peering_router_spec(IdentityOpts) ->
     Kp = maps:get(identity, IdentityOpts),
