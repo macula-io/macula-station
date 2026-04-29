@@ -418,7 +418,7 @@ on_peer_kind(true, Payload) ->
 on_peer_kind(false, _Payload) ->
     error.
 
-%% Mirrors `hecate_station_fact_publisher:payload_kind/1' across the
+%% Mirrors `hecate_station_record_fanout:payload_kind/1' across the
 %% canonical CBOR shape (`{text, K} => {text, V}') and the wire-decoded
 %% atom-key shape (`from_wire_envelope/1' atomizes recognised keys).
 payload_kind_is_station(#{{text, <<"kind">>} := {text, <<"station">>}}) -> true;

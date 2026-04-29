@@ -36,7 +36,10 @@
          lookup/1,
          lookup_opts/1,
          list/0,
-         terminate/1]).
+         terminate/1,
+         set_phase3/2,
+         clear_phase3/1,
+         phase3_snapshot/0]).
 
 -export([init/1,
          handle_call/3,
@@ -60,7 +63,13 @@
     %% this so the admin `/admin/identities/:id/reload' endpoint
     %% can re-register an identity with its original config.
     by_opts = #{} :: #{identity_key()
-                       := hecate_station_identity_sup:identity_opts()}
+                       := hecate_station_identity_sup:identity_opts()},
+    %% Phase-3 wiring info per identity, recorded by the identity
+    %% supervisor once `pubsub_registry' + `peer_observer' are up.
+    %% `hecate_station_record_fanout' queries this to broadcast
+    %% record-stored events across all box-local identities.
+    by_phase3 = #{} :: #{identity_key()
+                         := hecate_station_record_fanout:phase3_info()}
 }).
 
 %%------------------------------------------------------------------
@@ -107,6 +116,42 @@ list() ->
 terminate(Key) ->
     gen_server:call(?MODULE, {terminate, Key}, 10_000).
 
+%% @doc Record an identity's Phase-3 wiring info (pubsub_registry
+%% pid, peer_observer pid, identity keypair). Called by the identity
+%% supervisor once the per-identity chain has produced both pids.
+%%
+%% Cast (not call): `register/2' invokes the identity supervisor's
+%% Phase-3 chain INSIDE the registry's `handle_call', so a synchronous
+%% recursive call back into the registry would deadlock with
+%% `calling_self'. The cast queues in the registry's mailbox and is
+%% processed after the outer `register/2' call returns. The
+%% `record_fanout' reads `phase3_snapshot/0' on every record cast, so
+%% the brief window between the cast queueing and being processed only
+%% delays fan-out for records that arrive in those microseconds —
+%% well-tolerated under steady-state operation.
+-spec set_phase3(identity_key(),
+                 hecate_station_record_fanout:phase3_info()) -> ok.
+set_phase3(Key, Info) when is_map(Info) ->
+    gen_server:cast(?MODULE, {set_phase3, Key, Info}).
+
+%% @doc Drop the Phase-3 wiring entry for `Key'. Symmetrical with
+%% `set_phase3/2' (also cast for the same reason) for clean identity
+%% teardown; supervisor crashes are cleaned up by the registry's
+%% `'EXIT'' handler.
+-spec clear_phase3(identity_key()) -> ok.
+clear_phase3(Key) ->
+    gen_server:cast(?MODULE, {clear_phase3, Key}).
+
+%% @doc Snapshot every identity's Phase-3 wiring info as
+%% `[{Key, Info}]'. Used by `hecate_station_record_fanout' on each
+%% `record_stored' cast to find every identity's pubsub_server +
+%% peer_observer for fan-out.
+-spec phase3_snapshot() ->
+        [{identity_key(),
+          hecate_station_record_fanout:phase3_info()}].
+phase3_snapshot() ->
+    gen_server:call(?MODULE, phase3_snapshot).
+
 %%------------------------------------------------------------------
 %% gen_server callbacks
 %%------------------------------------------------------------------
@@ -127,8 +172,14 @@ handle_call({lookup_opts, Key}, _From, S) ->
 handle_call(list, _From, S) ->
     {reply, snapshot(S#state.by_key), S};
 handle_call({terminate, Key}, _From, S) ->
-    do_terminate(Key, maps:find(Key, S#state.by_key), S).
+    do_terminate(Key, maps:find(Key, S#state.by_key), S);
+handle_call(phase3_snapshot, _From, S) ->
+    {reply, maps:to_list(S#state.by_phase3), S}.
 
+handle_cast({set_phase3, Key, Info}, #state{by_phase3 = Ph3} = S) ->
+    {noreply, S#state{by_phase3 = Ph3#{Key => Info}}};
+handle_cast({clear_phase3, Key}, #state{by_phase3 = Ph3} = S) ->
+    {noreply, S#state{by_phase3 = maps:remove(Key, Ph3)}};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
@@ -211,7 +262,10 @@ drop_pid_step(error, _Pid, S) ->
 drop_pid_step({ok, Key}, Pid, S) ->
     drop_key(Key, Pid, S).
 
-drop_key(Key, Pid, #state{by_key = K, by_pid = P, by_opts = O} = S) ->
-    S#state{by_key  = maps:remove(Key, K),
-            by_pid  = maps:remove(Pid, P),
-            by_opts = maps:remove(Key, O)}.
+drop_key(Key, Pid,
+         #state{by_key = K, by_pid = P, by_opts = O,
+                by_phase3 = Ph3} = S) ->
+    S#state{by_key    = maps:remove(Key, K),
+            by_pid    = maps:remove(Pid, P),
+            by_opts   = maps:remove(Key, O),
+            by_phase3 = maps:remove(Key, Ph3)}.

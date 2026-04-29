@@ -296,10 +296,10 @@ delete_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {delete_record, Record}).
 
 %% @doc Install (or replace) the `on_record_stored' callback at
-%% runtime. Used by the identity supervisor to wire the DHT to a
-%% `hecate_station_fact_publisher' that starts later in the boot
-%% chain (the publisher depends on observer + pubsub_registry, which
-%% in turn depend on DHT — late wiring breaks the cycle).
+%% runtime. Used by the identity supervisor to wire the DHT to the
+%% node-singleton `hecate_station_record_fanout' (the fan-out
+%% depends on observer + pubsub_registry, which in turn depend on
+%% DHT — late wiring breaks the cycle).
 -spec set_on_record_stored(pid(), on_record_stored_fun() | undefined) -> ok.
 set_on_record_stored(Pid, Fun)
   when is_pid(Pid), (is_function(Fun, 1) orelse Fun =:= undefined) ->

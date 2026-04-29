@@ -25,9 +25,17 @@ disabled_env_yields_registry_only_sup_test_() ->
             process_flag(trap_exit, true),
             {ok, Sup} = hecate_station_app:start(normal, []),
             ?assert(is_pid(Sup)),
+            %% Two always-on infrastructure children:
+            %% identity_registry (yellow pages) +
+            %% record_fanout (singleton DHT-record fan-out).
+            %% supervisor:which_children/1 returns them in
+            %% reverse-start order, so fanout comes first.
             Children = supervisor:which_children(Sup),
-            ?assertMatch([{hecate_station_identity_registry,
-                           _Pid, worker,
+            ?assertMatch([{hecate_station_record_fanout,
+                           _, worker,
+                           [hecate_station_record_fanout]},
+                          {hecate_station_identity_registry,
+                           _, worker,
                            [hecate_station_identity_registry]}],
                          Children),
             %% Empty registry — disabled env never registers an identity.
