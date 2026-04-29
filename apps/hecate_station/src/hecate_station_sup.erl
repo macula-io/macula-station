@@ -60,7 +60,8 @@ start_link() ->
 
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
-    {ok, {SupFlags, [identity_registry_child()]}}.
+    {ok, {SupFlags, [identity_registry_child(),
+                     record_fanout_child()]}}.
 
 identity_registry_child() ->
     #{
@@ -70,6 +71,22 @@ identity_registry_child() ->
         shutdown => 5_000,
         type     => worker,
         modules  => [hecate_station_identity_registry]
+    }.
+
+%% Node-singleton fan-out for DHT record-stored events. Replaces the
+%% N per-identity `hecate_station_fact_publisher' processes that
+%% previously held N independent heaps; one bounded heap here.
+%% Started AFTER the registry so its on-init bootstrap path
+%% (`identity_registry:phase3_snapshot/0') has somewhere to read
+%% from. See `PLAN_RECORD_FANOUT_REFACTOR.md'.
+record_fanout_child() ->
+    #{
+        id       => hecate_station_record_fanout,
+        start    => {hecate_station_record_fanout, start_link, []},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [hecate_station_record_fanout]
     }.
 
 %%==================================================================

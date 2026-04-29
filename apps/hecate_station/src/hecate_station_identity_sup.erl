@@ -507,26 +507,32 @@ seed_observer(Sup, Opts, DhtPid, SwimPid) ->
 on_observer(_Sup, _Opts, _DhtPid, {error, R}) ->
     {error, {observer_start_failed, R}};
 on_observer(Sup, Opts, DhtPid, {ok, ObsPid}) ->
-    seed_fact_publisher(Sup, Opts, DhtPid, ObsPid).
+    seed_fanout_registration(Sup, Opts, DhtPid, ObsPid).
 
-%% Fact publisher translates record-store events into typed business
-%% events on the peering pubsub channel. Started AFTER observer
-%% (needs ObsPid) and AFTER pubsub_registry (in static children) but
-%% BEFORE listener — so the very first inbound peer that subscribes
-%% sees a live publisher.
-seed_fact_publisher(Sup, Opts, DhtPid, ObsPid) ->
-    on_fact_publisher(Sup, Opts, DhtPid, ObsPid,
-                      supervisor:start_child(
-                        Sup,
-                        fact_publisher_spec(Opts, ObsPid))).
-
-on_fact_publisher(_Sup, _Opts, _DhtPid, _ObsPid, {error, R}) ->
-    {error, {fact_publisher_start_failed, R}};
-on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
+%% Register this identity's Phase-3 wiring with
+%% `hecate_station_identity_registry' so the node-singleton
+%% `hecate_station_record_fanout' picks it up on the next
+%% `record_stored' cast. Replaces the per-identity `fact_publisher'
+%% gen_server that previously sat at this stage of the chain — the
+%% fan-out is one process per node now, not one per identity (see
+%% `PLAN_RECORD_FANOUT_REFACTOR.md').
+%%
+%% The DHT callback is installed AFTER the registry update so a
+%% record stored between the two steps still reaches a fan-out that
+%% knows about this identity.
+seed_fanout_registration(Sup, Opts, DhtPid, ObsPid) ->
+    IdentityKey = maps:get(identity_key, Opts),
+    Phase3 = #{
+        pubsub_registry => maps:get(pubsub_registry, Opts),
+        peer_observer   => ObsPid,
+        identity        => maps:get(identity, Opts),
+        sup             => Sup
+    },
+    ok = hecate_station_record_fanout:identity_ready(IdentityKey, Phase3),
+    install_dht_callback(DhtPid, IdentityKey),
     logger:info(
-      "[identity_sup] fact_publisher started pid=~p — installing DHT callback",
-      [FpPid]),
-    install_dht_callback(DhtPid, FpPid),
+      "[identity_sup] fanout-registered identity_key=~p — DHT callback installed",
+      [IdentityKey]),
     %% Boot order: overlay_seeder -> announcer -> listener.
     %% Seeder runs first so its pid can be plumbed into the
     %% announcer's opts; the announcer reads connected_hostnames/1
@@ -536,17 +542,17 @@ on_fact_publisher(Sup, Opts, DhtPid, ObsPid, {ok, FpPid}) ->
     Opts1 = Opts#{peer_observer => ObsPid, dht_pid => DhtPid},
     seed_overlay_seeder(Sup, Opts1, ObsPid).
 
-%% Bind the DHT's `on_record_stored' callback to the publisher. The
-%% DHT server stores the function and invokes it after every
-%% successful `store_put' (own put + incoming custodian STORE).
-install_dht_callback(DhtPid, FpPid) ->
+%% Bind the DHT's `on_record_stored' callback to the singleton fan-out.
+%% The DHT server stores the function and invokes it after every
+%% successful `store_put' (own put + incoming custodian STORE). The
+%% closure captures the per-identity `IdentityKey' so the fan-out
+%% knows which identity originated the record.
+install_dht_callback(DhtPid, IdentityKey) ->
     ok = hecate_dht:set_on_record_stored(
            DhtPid,
            fun(Record) ->
-               hecate_station_fact_publisher:on_record_stored(FpPid, Record)
-           end),
-    logger:info("[identity_sup] DHT callback installed: dht=~p fp=~p",
-                [DhtPid, FpPid]).
+               hecate_station_record_fanout:on_record(IdentityKey, Record)
+           end).
 
 seed_listener(Sup, Opts, ObsPid) ->
     on_listener(supervisor:start_child(Sup, listener_spec(Opts, ObsPid))).
@@ -694,20 +700,6 @@ observer_spec(DhtPid, SwimPid, IdentityOpts) ->
       shutdown => 5_000,
       type     => worker,
       modules  => [hecate_station_peer_observer]}.
-
-fact_publisher_spec(IdentityOpts, ObsPid) ->
-    Opts = #{
-        pubsub_registry => maps:get(pubsub_registry, IdentityOpts),
-        peer_observer   => ObsPid,
-        identity        => maps:get(identity, IdentityOpts),
-        identity_key    => maps:get(identity_key, IdentityOpts)
-    },
-    #{id       => hecate_station_fact_publisher,
-      start    => {hecate_station_fact_publisher, start_link, [Opts]},
-      restart  => permanent,
-      shutdown => 5_000,
-      type     => worker,
-      modules  => [hecate_station_fact_publisher]}.
 
 %% observer_spec/3 only fires through the Phase-3 chain, which is
 %% gated by `has_listener_opts/1' — `identity' is therefore always
