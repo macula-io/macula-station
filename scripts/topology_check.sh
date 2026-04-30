@@ -21,10 +21,10 @@ station_mem() {
     local host=$1 key=$2
     ssh -i ~/.ssh/$key -o ConnectTimeout=10 -o BatchMode=yes \
         -o StrictHostKeyChecking=no root@$host \
-        "docker exec hecate-station bin/hecate_station eval '
+        "docker exec macula-station bin/macula_station eval '
             M = erlang:memory(),
             T = proplists:get_value(total, M) div (1024*1024),
-            F = case whereis(hecate_station_record_fanout) of
+            F = case whereis(macula_station_record_fanout) of
                 undefined -> 0;
                 P -> {element(2, process_info(P, memory)),
                       element(2, process_info(P, message_queue_len))}

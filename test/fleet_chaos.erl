@@ -20,7 +20,7 @@
 %%   <li>`wait_until/2' — poll a predicate with a 50 ms cadence
 %%       until it returns true or the budget expires.</li>
 %%   <li>`wait_alive/3' / `wait_confirmed_failed/3' — specialised
-%%       waits against a `hecate_swim' member list. The resilience
+%%       waits against a `macula_swim' member list. The resilience
 %%       scenarios always end with a check against one of these.</li>
 %% </ul>
 %%
@@ -123,9 +123,9 @@ wait_confirmed_failed(Swim, NodeId, Ms) ->
 %% @doc Current SWIM state of `NodeId' on the given SWIM pid, or
 %% `missing' if the node is not on the member list.
 -spec member_state(pid(), macula_identity:pubkey()) ->
-    hecate_swim:member_state() | missing.
+    macula_swim:member_state() | missing.
 member_state(Swim, NodeId) ->
-    Match = [S || #{node_id := N, state := S} <- hecate_swim:members(Swim),
+    Match = [S || #{node_id := N, state := S} <- macula_swim:members(Swim),
                   N =:= NodeId],
     case Match of
         [State] -> State;

@@ -3,7 +3,7 @@
 %% From PLAN_MULTI_IDENTITY_RELAY §Phase 2 onwards the overlay
 %% module-set is pure-library — pubsub state machines, plumtree
 %% gossip, OR-sets — plus a `hecate_pubsub_registry' gen_server
-%% that is now spawned PER-IDENTITY by `hecate_station_identity_sup'
+%% that is now spawned PER-IDENTITY by `macula_station_identity_sup'
 %% rather than as a singleton under this supervisor.
 %%
 %% The supervisor stays as an empty OTP shell so the application

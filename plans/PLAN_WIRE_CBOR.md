@@ -1,16 +1,16 @@
-# Plan: Migrate hecate-station wire codec from BERT to CBOR
+# Plan: Migrate macula-station wire codec from BERT to CBOR
 
 **Status:** In progress
 **Created:** 2026-04-26
-**Drives:** hecate-station, macula SDK (additive — frame type IDs)
+**Drives:** macula-station, macula SDK (additive — frame type IDs)
 
 ## Why
 
-hecate-station and the macula SDK speak different wire formats. macula
+macula-station and the macula SDK speak different wire formats. macula
 3.x ships CBOR (RFC 8949) per Part 6 §3 — the canonical Macula V2 wire.
-hecate-station's `hecate_frame.erl` ships BERT (`term_to_binary`
+macula-station's `hecate_frame.erl` ships BERT (`term_to_binary`
 deterministic). When a macula client (the realm's `macula_mesh_client`
-or any daemon) connects to a hecate-station listener:
+or any daemon) connects to a macula-station listener:
 
 1. QUIC handshake completes (TLS works — both speak `*.macula.io` ALPN).
 2. macula client sends a CBOR-encoded CONNECT frame.
@@ -28,7 +28,7 @@ read models from DHT records.
 
 ## Inventory
 
-| Frame family | hecate-station | macula SDK | Action |
+| Frame family | macula-station | macula SDK | Action |
 |---|---|---|---|
 | CONNECT / HELLO / GOODBYE | `hecate_frame` | `macula_protocol_types` (`connect`, `disconnect`) | Align |
 | SWIM (ping/ack/suspect/confirm/update) | `hecate_frame` | (none) | Add to SDK |
@@ -69,8 +69,8 @@ Replaces hecate's current `<<Length:32/big, BERT/binary>>` framing.
    stays internal; serialised as type id.
 3. **Update `hecate_frame_tests.erl`** — every BERT round-trip test
    becomes a CBOR round-trip test. Same field assertions.
-4. **Verify downstream consumers** — `hecate_peering`, `hecate_dht`,
-   `hecate_swim`, `hecate_overlay` all use `hecate_frame` constructors
+4. **Verify downstream consumers** — `hecate_peering`, `macula_dht`,
+   `macula_swim`, `hecate_overlay` all use `hecate_frame` constructors
    only; no direct `term_to_binary` calls outside the codec module.
    Should be a recompile.
 5. **Verify station boots** — `rebar3 eunit` + `rebar3 ct`.

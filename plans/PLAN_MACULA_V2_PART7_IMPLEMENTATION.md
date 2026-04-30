@@ -16,7 +16,7 @@ Three constraints shape the plan:
 
 1. **Walking skeleton first.** Two stations exchanging one signed record end-to-end is the minimum viable artifact; everything else is iteration on top.
 2. **Phase-gated.** Each phase has an acceptance test (Part 8) that must pass before the next phase begins. No stacked debt.
-3. **Clean repo.** New code goes into `hecate-social/hecate-station` (new private repo) + `macula-io/macula` (V2 branch = new main). V1 codebase (`macula-relay`) receives no changes.
+3. **Clean repo.** New code goes into `macula-io/macula-station` (new private repo) + `macula-io/macula` (V2 branch = new main). V1 codebase (`macula-relay`) receives no changes.
 
 ---
 
@@ -27,13 +27,13 @@ Three constraints shape the plan:
 | Repo | Role | Branch model |
 |------|------|--------------|
 | `macula-io/macula` | Macula SDK (client library for consumers) | V1 frozen on `v1.x` branches; V2 develops on `main` (hex `macula` 2.x) |
-| `hecate-social/hecate-station` | Reference station implementation (the product) | `main` is V2; no V1 history |
+| `macula-io/macula-station` | Reference station implementation (the product) | `main` is V2; no V1 history |
 
 ### 2.2 Archived repos
 
 | Repo | Disposition |
 |------|-------------|
-| `macula-io/macula-relay` | Archived; README redirects to `hecate-station`; V1 Docker images continue to run in legacy fleet until Phase 8 cutover. |
+| `macula-io/macula-relay` | Archived; README redirects to `macula-station`; V1 Docker images continue to run in legacy fleet until Phase 8 cutover. |
 
 ### 2.3 Continuously active repos (consuming V2 later)
 
@@ -48,7 +48,7 @@ Three constraints shape the plan:
 ## 3. Repo layouts (revised 2026-04-14)
 
 Two repos: SDK lives in `macula-io/macula` v2; station-role implementations
-live in `hecate-social/hecate-station` and consume the SDK.
+live in `macula-io/macula-station` and consume the SDK.
 
 ### 3.1 `macula-io/macula` (SDK — hex `macula` 2.x)
 
@@ -77,17 +77,17 @@ macula/                             % v2 branch
 ├── README.md, CHANGELOG.md, LICENSE
 ```
 
-### 3.2 `hecate-social/hecate-station` (station product)
+### 3.2 `macula-io/macula-station` (station product)
 
 ```
-hecate-station/
+macula-station/
 ├── apps/
-│   ├── hecate_station/             % root: config, admin, health, lifecycle
-│   ├── hecate_dht/                 % S/Kademlia node (server role)
-│   ├── hecate_swim/                % SWIM-Lifeguard member
-│   ├── hecate_routing/             % path computation + source-route forwarding
-│   ├── hecate_handler/             % CALL dispatch registry, single-provider, heartbeat
-│   ├── hecate_bootstrap/           % 5-tier cascade orchestrator
+│   ├── macula_station/             % root: config, admin, health, lifecycle
+│   ├── macula_dht/                 % S/Kademlia node (server role)
+│   ├── macula_swim/                % SWIM-Lifeguard member
+│   ├── macula_routing/             % path computation + source-route forwarding
+│   ├── macula_handler/             % CALL dispatch registry, single-provider, heartbeat
+│   ├── macula_bootstrap/           % 5-tier cascade orchestrator
 │   ├── hecate_overlay/             % HyParView + Plumtree (intra-realm)
 │   └── hecate_realm/               % realm directory cache
 ├── plans/                          % PLAN_MACULA_V2_*.md (mirrored)
@@ -116,14 +116,14 @@ SDK (macula-io/macula):
     ├─ macula_peering     (depends on macula_frame, macula_transport, macula_record, macula_identity)
     └─ macula_diagnostics (no deps; used everywhere)
 
-Station (hecate-social/hecate-station):
-  hecate_station (root sup, config, admin, health)
-    ├─ hecate_dht       (depends on macula)
-    ├─ hecate_swim      (depends on macula)
-    ├─ hecate_routing   (depends on macula, hecate_dht)
-    ├─ hecate_handler   (depends on macula)
-    ├─ hecate_bootstrap (depends on macula, hecate_dht)
-    ├─ hecate_overlay   (depends on macula, hecate_dht)
+Station (macula-io/macula-station):
+  macula_station (root sup, config, admin, health)
+    ├─ macula_dht       (depends on macula)
+    ├─ macula_swim      (depends on macula)
+    ├─ macula_routing   (depends on macula, macula_dht)
+    ├─ macula_handler   (depends on macula)
+    ├─ macula_bootstrap (depends on macula, macula_dht)
+    ├─ hecate_overlay   (depends on macula, macula_dht)
     └─ hecate_realm     (depends on macula)
 ```
 
@@ -136,8 +136,8 @@ No cycles. SDK never depends on station; station depends only on SDK.
 ### 4.1 Conventions
 
 - **`macula_<concern>`** for SDK protocol-layer modules — live in `macula-io/macula`.
-- **`hecate_<concern>`** for station-role modules — live in `hecate-social/hecate-station`.
-- **`hecate_station_<concern>`** for station shell modules (config, admin, health, lifecycle).
+- **`hecate_<concern>`** for station-role modules — live in `macula-io/macula-station`.
+- **`macula_station_<concern>`** for station shell modules (config, admin, health, lifecycle).
 - **`<verb>_<noun>`** for command-style modules when vertical slicing applies (e.g. `register_station_in_realm.erl`).
 - Erlang modules use snake_case; types use lower_snake_case; macros SCREAMING_SNAKE.
 
@@ -154,23 +154,23 @@ No cycles. SDK never depends on station; station depends only on SDK.
 | `macula_peering:connect/2` | Peer state machine (Part 4 §10) |
 | `macula_peering:refresh/1` | REFRESH phase (Part 4 §7) |
 | `macula:advertise/3` | Client-side handler registration (SDK facade) |
-| `hecate_handler:register/3`, `unregister/2` | Server-side registry (Pillars 1 + 2) |
-| `hecate_handler:heartbeat/1` | Pillar 3 |
-| `hecate_dht:lookup/2`, `store/2`, `find_node/2` | DHT ops (Part 3 §10) |
-| `hecate_dht:admit_peer/2` | Tier-diverse bucket admission (Part 3 §4.3) |
-| `hecate_swim:join/2`, `leave/1` | SWIM group membership |
-| `hecate_swim:probe_round/1` | Lifeguard probe logic |
-| `hecate_routing:compute_paths/3` | Suurballe k=3 disjoint (Part 3 §6.3) |
+| `macula_handler:register/3`, `unregister/2` | Server-side registry (Pillars 1 + 2) |
+| `macula_handler:heartbeat/1` | Pillar 3 |
+| `macula_dht:lookup/2`, `store/2`, `find_node/2` | DHT ops (Part 3 §10) |
+| `macula_dht:admit_peer/2` | Tier-diverse bucket admission (Part 3 §4.3) |
+| `macula_swim:join/2`, `leave/1` | SWIM group membership |
+| `macula_swim:probe_round/1` | Lifeguard probe logic |
+| `macula_routing:compute_paths/3` | Suurballe k=3 disjoint (Part 3 §6.3) |
 | `macula_frame:verify_source_route/2` | Source-route header parse + verify (Part 6 §11.2) |
-| `hecate_routing:forward/2` | Per-hop forwarding (Part 6 §11.2) |
-| `hecate_bootstrap:cascade/1` | 5-tier cascade (Part 5 §3) |
+| `macula_routing:forward/2` | Per-hop forwarding (Part 6 §11.2) |
+| `macula_bootstrap:cascade/1` | 5-tier cascade (Part 5 §3) |
 | `hecate_overlay:join_realm/2` | HyParView join |
 | `hecate_overlay:publish/3`, `subscribe/3` | Plumtree push-lazy |
 | `hecate_realm:endorse_member/3`, `verify_endorsement/2` | Realm admission |
 | `macula_diagnostics:emit_metric/3`, `emit_event/2` | Structured observability (SDK; namespaced) |
-| `hecate_station:start/0`, `stop/0` | Public lifecycle facade |
-| `hecate_station_health:status/0` | /status JSON snapshot |
-| `hecate_station_admin:authorise/2` | /admin authn gate |
+| `macula_station:start/0`, `stop/0` | Public lifecycle facade |
+| `macula_station_health:status/0` | /status JSON snapshot |
+| `macula_station_admin:authorise/2` | /admin authn gate |
 
 ### 4.3 Behaviours
 
@@ -185,14 +185,14 @@ Reusable OTP behaviours defined under `macula_*`:
 
 ### 5.1 Deliverable
 
-Private repo `hecate-social/hecate-station` exists; CI green on empty skeleton; ROOT + all Part plans committed to `plans/` subdir; README committed; Apache-2.0 LICENSE.
+Private repo `macula-io/macula-station` exists; CI green on empty skeleton; ROOT + all Part plans committed to `plans/` subdir; README committed; Apache-2.0 LICENSE.
 
 ### 5.2 Tasks
 
-1. Create GitHub repo via `gh repo create hecate-social/hecate-station --private --description "Macula V2 reference station"`.
+1. Create GitHub repo via `gh repo create macula-io/macula-station --private --description "Macula V2 reference station"`.
 2. Seed from local scaffold: `rebar3 new release` + prune to umbrella layout.
-3. Copy all PLAN_MACULA_V2_* files from `~/.claude/plans/` into `hecate-station/plans/`.
-4. Copy `THREAT_MODEL_MACULA.md` to `hecate-station/plans/`.
+3. Copy all PLAN_MACULA_V2_* files from `~/.claude/plans/` into `macula-station/plans/`.
+4. Copy `THREAT_MODEL_MACULA.md` to `macula-station/plans/`.
 5. Write minimal README pointing at PLAN_MACULA_V2_ROOT.md + explaining repo status.
 6. `.gitignore` includes `rebar.lock`, `_build/`, `.eunit/`, `priv/` generated artefacts.
 7. `.github/workflows/ci.yml`: rebar3 compile + eunit + dialyzer + xref on push.
@@ -224,8 +224,8 @@ Two stations exchange a signed `node_record` over QUIC. Tombstone on stop works.
 3. `macula_frame` — BERT envelope + CONNECT/HELLO/GOODBYE frames only.
 4. `macula_transport` — thin wrapper over quicer; accept + connect.
 5. `macula_peering` — CONNECTING → HANDSHAKING → CONNECTED state machine (simplified; no REFRESH phase yet).
-6. `hecate_station` — start/stop API; loads config, derives identity, opens listener.
-7. `hecate_station_health` — `/status` returning JSON with peer list, node_record version.
+6. `macula_station` — start/stop API; loads config, derives identity, opens listener.
+7. `macula_station_health` — `/status` returning JSON with peer list, node_record version.
 8. `macula_diagnostics` — structured logs; metrics emitted to process dictionary (upgrade later).
 9. Phase-1 Integration test: launch two stations, connect, exchange records, verify signatures, stop one, observe tombstone.
 
@@ -253,7 +253,7 @@ Liveness between stations. Killing a peer is detected within 10 s by surviving s
 2. SWIM frame types in `macula_frame`.
 3. Heartbeat obligation in `macula_peering` (Part 4 §5).
 4. Fast-fail on `suspect|confirmed_failed` in ongoing operations (partial Pillar 4).
-5. Chaos test harness — `hecate_station_testkit` or separate `apps/macula_chaos/` — SIGKILL a station mid-flight and verify detection.
+5. Chaos test harness — `macula_station_testkit` or separate `apps/macula_chaos/` — SIGKILL a station mid-flight and verify detection.
 
 ### 7.3 Acceptance
 
@@ -425,7 +425,7 @@ mesh_chat demo runs end-to-end on V2 stations only. V1 `macula-relay` fleet deco
 
 ### 13.2 Tasks
 
-1. Build `ghcr.io/hecate-social/hecate-station:main` OCI image via CI.
+1. Build `ghcr.io/macula-io/macula-station:main` OCI image via CI.
 2. Update `macula-io/macula-demo` compose files to use new image.
 3. Stage on one box (relays-hetzner-helsinki); validate for 48 h.
 4. Roll to remaining two boxes with 1 h gap for observability.
@@ -451,7 +451,7 @@ mesh_chat demo runs end-to-end on V2 stations only. V1 `macula-relay` fleet deco
 
 `.github/workflows/ci.yml`:
 - On every push: `rebar3 compile`, `eunit`, `dialyzer`, `xref`, `ct` (common test).
-- On tag: build OCI image, push to `ghcr.io/hecate-social/hecate-station:{tag,latest,main}`.
+- On tag: build OCI image, push to `ghcr.io/macula-io/macula-station:{tag,latest,main}`.
 - Matrix: OTP 27, 28.
 - Arch matrix: amd64 + arm64 (target RPi 4B/5 + x86 mini-PCs).
 
@@ -517,7 +517,7 @@ From Part 1 §11, inherited unchanged into V2:
 
 ### 15.5 Data migration
 
-None. V1 DHT records are not migrated to V2. Fleet runs both in parallel (V1 on legacy boxes, V2 on `hecate-station` boxes) during Phase 7 staging; Phase 8 cutover removes V1 altogether. No user data loss because V1 is pre-user.
+None. V1 DHT records are not migrated to V2. Fleet runs both in parallel (V1 on legacy boxes, V2 on `macula-station` boxes) during Phase 7 staging; Phase 8 cutover removes V1 altogether. No user data loss because V1 is pre-user.
 
 ---
 

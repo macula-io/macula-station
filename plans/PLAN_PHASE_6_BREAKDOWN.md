@@ -26,18 +26,18 @@ verifies against.
     + envelope signature + expiry.
   - `live_pubkeys/0` distinguishes operator-supplied from placeholder.
 
-**Station side** — `hecate-station@f83af56`:
-- `hecate_bootstrap` cascade orchestrator: ordered tier list, per-tier
+**Station side** — `macula-station@f83af56`:
+- `macula_bootstrap` cascade orchestrator: ordered tier list, per-tier
   stagger, deadline, first-tier-to-meet-`min_peers` wins, remaining
   workers cancelled.
-- `hecate_bootstrap_tier` behaviour: `tier/0`, `stagger_ms/0`,
+- `macula_bootstrap_tier` behaviour: `tier/0`, `stagger_ms/0`,
   `probe/1 -> {ok, [verified_peer()]} | {error, _}`.
-- `hecate_bootstrap_peer_url` codec: `macula-peer:<base64url(cbor{r,a})>`
+- `macula_bootstrap_peer_url` codec: `macula-peer:<base64url(cbor{r,a})>`
   — signed `node_record` + transport hints.
-- `hecate_bootstrap_tier_e`: zero-stagger, decodes operator-pasted
+- `macula_bootstrap_tier_e`: zero-stagger, decodes operator-pasted
   URLs, tolerant of bad URLs in a paste.
 
-+CT suite `hecate_phase6_SUITE` covers Tier E happy path, cascade
++CT suite `macula_phase6_SUITE` covers Tier E happy path, cascade
 fall-through to a working tier, and foundation trust-boundary
 (trusted vs untrusted signer, wrong record type rejected).
 
@@ -48,12 +48,12 @@ network I/O abstracted behind a behaviour so unit tests can drive
 the corroboration logic without DoH endpoints.
 
 **Files added:**
-- `hecate_bootstrap_resolver` — behaviour with one callback,
+- `macula_bootstrap_resolver` — behaviour with one callback,
   `resolve(Url, FoundationKey, Opts) -> {ok, RecordBytes} | {error, _}`.
   Resolvers MUST return raw bytes; the orchestrator owns decoding,
   signer-trust, expiry, and storage-key checks (a single trusted
   resolver would be a trust-anchor failure mode).
-- `hecate_bootstrap_tier_a` — zero-stagger probe.
+- `macula_bootstrap_tier_a` — zero-stagger probe.
   - Spawns one worker per `(Pubkey, Resolver)` pair in parallel.
   - Tallies replies by `{Pubkey, raw bytes}`; any group reaching
     `corroboration` (default 2) is accepted.
@@ -65,13 +65,13 @@ the corroboration logic without DoH endpoints.
     the corroborated `foundation_seed_list` record as its anchor.
 
 **Test side:**
-- `hecate_bootstrap_tier_a_fake` — ETS-backed in-memory resolver;
+- `macula_bootstrap_tier_a_fake` — ETS-backed in-memory resolver;
   honours `{sleep, Ms, Reply}` so timeout behaviour can be exercised.
-- `hecate_bootstrap_tier_a_tests` — 9 eunit cases:
+- `macula_bootstrap_tier_a_tests` — 9 eunit cases:
   threshold met / unmet, single-hijack outvoted, untrusted signer
   rejected, wrong-storage-key rejected, no-resolvers, no-pubkeys,
   verified-peer shape, slow resolver doesn't block.
-- `hecate_phase6_SUITE` adds two CT cases:
+- `macula_phase6_SUITE` adds two CT cases:
   Tier A wins on corroborated bytes; Tier A under-quorum cascades
   to Tier E.
 
@@ -81,16 +81,16 @@ the corroboration logic without DoH endpoints.
 ## Session 6.3 — DoH codec + concrete resolver (shipped 2026-04-15)
 
 **Scope:** pure RFC 8484 codec, concrete `inets:httpc`-backed resolver
-implementing `hecate_bootstrap_resolver`, and the base32 codec needed
+implementing `macula_bootstrap_resolver`, and the base32 codec needed
 to derive PKARR zone labels. Anycast probe split out to a later
 session (6.3.5) to keep this scope tight.
 
 **Files added:**
-- `hecate_bootstrap_base32` — RFC 4648 canonical base32, lowercase
+- `macula_bootstrap_base32` — RFC 4648 canonical base32, lowercase
   unpadded output, case-insensitive decode. A 32-byte pubkey encodes
   to exactly 52 chars (fits the 63-char DNS-label limit); trailing
   sub-byte bit fragments on decode are discarded deterministically.
-- `hecate_bootstrap_doh` — pure codec + resolver core.
+- `macula_bootstrap_doh` — pure codec + resolver core.
   - `query_domain(Pubkey, ZoneBase)` → `"_pkarr.<52b32>.<zone>"`
     (lowercase Erlang string, what `inet_dns' wants).
   - `build_query/1,2` → DoH `application/dns-message` binary via
@@ -102,26 +102,26 @@ session (6.3.5) to keep this scope tight.
     are typed atoms + `{rcode, N}` / `{http, Reason}`.
   - `resolve/4` composes the codec with a caller-supplied `SendFun`
     `(Url, Body) -> {ok, RespBody} | {error, _}`.
-- `hecate_bootstrap_doh_http` — thin concrete resolver: reads
+- `macula_bootstrap_doh_http` — thin concrete resolver: reads
   `doh_zone_base` from app env (default `<<"macula.io">>`), delegates
-  to `hecate_bootstrap_doh:resolve/4` with an `httpc`-backed send fun
+  to `macula_bootstrap_doh:resolve/4` with an `httpc`-backed send fun
   that POSTs `application/dns-message` and maps HTTP status to
   `{ok, Body} | {error, {http_status, Code, Phrase}} | {error, _}`.
-- `inets` + `ssl` added to `hecate_bootstrap.app.src` applications.
+- `inets` + `ssl` added to `macula_bootstrap.app.src` applications.
 
 **Test coverage:**
-- `hecate_bootstrap_base32_tests` — RFC 4648 vectors, random-input
+- `macula_bootstrap_base32_tests` — RFC 4648 vectors, random-input
   round-trips, 52-char fits-in-label invariant, case-insensitive
   decode, bad-char rejection. 20 cases.
-- `hecate_bootstrap_doh_tests` — 29 cases covering query_domain
+- `macula_bootstrap_doh_tests` — 29 cases covering query_domain
   (zero-key, random-key round-trip, string zones), build_query
   (encoding shape, random-id range), parse_response (single-string,
   multi-string concat, multi-RR concat, case-insensitive name match,
   id mismatch, QR=false, NXDOMAIN, REFUSED, no_txt_answer, wrong
   domain, garbage bytes), and resolve/4 (happy path, http-error
   wrapping, zone_base override, parse-error propagation).
-- `hecate_bootstrap_tier_a_doh_tests` — integration: a module that
-  implements `hecate_bootstrap_resolver` by running the real codec
+- `macula_bootstrap_tier_a_doh_tests` — integration: a module that
+  implements `macula_bootstrap_resolver` by running the real codec
   with a canned HTTP transport, proving Tier A + DoH + foundation
   record pipeline all compose. Exercises multi-chunk TXT splitting
   (records split into 200-byte chars-strings).
@@ -131,7 +131,7 @@ session (6.3.5) to keep this scope tight.
 
 ## Session 6.3.5 — IPv6 anycast probe (planned)
 
-- `hecate_bootstrap_anycast` probe: parallel QUIC handshake against
+- `macula_bootstrap_anycast` probe: parallel QUIC handshake against
   the foundation-published anycast prefix `2001:...:macula:a::/48';
   any reachable peer becomes an additional Tier A resolver target
   (corroboration prevents BGP-hijack).
@@ -140,8 +140,8 @@ session (6.3.5) to keep this scope tight.
 
 ## Session 6.3.6 — Network-integrated gated CT (planned)
 
-- `hecate_bootstrap_doh_SUITE` skipped without `MACULA_DOH_ENABLE=1`;
-  exercises `hecate_bootstrap_doh_http' against Cloudflare 1.1.1.1,
+- `macula_bootstrap_doh_SUITE` skipped without `MACULA_DOH_ENABLE=1`;
+  exercises `macula_bootstrap_doh_http' against Cloudflare 1.1.1.1,
   Quad9 9.9.9.9, Mullvad, with a test record actually published to
   a throwaway domain.
 
@@ -153,7 +153,7 @@ into a separate Phase 6.4.x follow-up — the probe path is the piece
 needed for cold-boot cascade.
 
 **Files added:**
-- `hecate_bootstrap_mdns` — pure codec.
+- `macula_bootstrap_mdns` — pure codec.
   - `service_name/0`, `multicast_group/0`, `multicast_port/0` —
     well-known `_macula._udp.local`, `ff02::fb`, `5353`.
   - `build_query/0,1,2` — DNS `any` query over standard DNS wire
@@ -164,13 +164,13 @@ needed for cold-boot cascade.
     (case-insensitive) and decodes TXT key-value pairs
     (`node_id=<64 hex>`, `port=<1..65535>`, `tier=<0..4>`). Drops
     malformed rows silently.
-- `hecate_bootstrap_mdns_transport` behaviour — single callback
+- `macula_bootstrap_mdns_transport` behaviour — single callback
   `query(QueryBin, TimeoutMs) -> [{SrcAddr, PacketBin}]`.
-- `hecate_bootstrap_mdns_udp` — concrete `gen_udp` implementation:
+- `macula_bootstrap_mdns_udp` — concrete `gen_udp` implementation:
   inet6 socket, `multicast_ttl=1`, `multicast_loop=false`, sends to
   `[ff02::fb]:5353`, collects unicast replies until deadline.
   (Scope-id handling for link-local peers tracked as 6.4.x.)
-- `hecate_bootstrap_tier_b` — probe module (200 ms stagger per
+- `macula_bootstrap_tier_b` — probe module (200 ms stagger per
   Part 5 §3). Two pluggable dependencies:
   - `udp_transport` (module implementing the behaviour).
   - `handshake_fun(SrcAddr, Port, ExpectedNodeId)
@@ -185,16 +185,16 @@ needed for cold-boot cascade.
     peer collapse).
 
 **Test coverage:**
-- `hecate_bootstrap_mdns_tests` — 23 eunit cases (constants, query
+- `macula_bootstrap_mdns_tests` — 23 eunit cases (constants, query
   shape, empty/garbage parse, answer map, TXT extraction,
   case-insensitive name match, drop missing/bad fields, range checks
   for port + tier).
-- `hecate_bootstrap_tier_b_tests` — 8 eunit cases (happy path, no
+- `macula_bootstrap_tier_b_tests` — 8 eunit cases (happy path, no
   replies, handshake failure, identity mismatch, expired record,
   malformed TXT skipped alongside good one, dedup, default handshake
   rejects everything). Fake transport: ETS-backed
-  `hecate_bootstrap_mdns_fake`.
-- `hecate_phase6_SUITE` adds one CT case:
+  `macula_bootstrap_mdns_fake`.
+- `macula_phase6_SUITE` adds one CT case:
   tier_b wins cascade when tier_a has no resolvers (Tier B's 200 ms
   stagger does not block it; three handshake-corroborated peers
   pass the min_peers=3 threshold).
@@ -209,13 +209,13 @@ probes find us. Link-local scope-id plumbing split to 6.4.y
 (multi-interface fan-out remains on the to-do list).
 
 **Files added:**
-- `hecate_bootstrap_mdns:build_advertisement/2` — pure fn mapping an
+- `macula_bootstrap_mdns:build_advertisement/2` — pure fn mapping an
   incoming query + our `node_info` to response bytes or `ignore`.
   Filters: QR=1 (don't echo responses), non-service name, unsupported
   qtype, garbage bytes. TXT answer carries the exact same
   `node_id=hex/port/tier` triple that the probe side decodes.
   Transaction id is echoed.
-- `hecate_bootstrap_mdns_responder` — gen_server owning the UDP
+- `macula_bootstrap_mdns_responder` — gen_server owning the UDP
   socket. Pluggable `socket_opener` opt (tests bind an ephemeral
   loopback port; production joins `[ff02::fb]:5353`, which may
   conflict with avahi). `silent=true` keeps the socket bound but
@@ -244,11 +244,11 @@ The actual Kademlia-over-UDP BT-DHT client lives in 6.5.x — we ship
 everything a production transport will need to plug in cleanly.
 
 **Files added:**
-- `hecate_bootstrap_bencode` — BEP 3 bencode codec. Integers, byte
+- `macula_bootstrap_bencode` — BEP 3 bencode codec. Integers, byte
   strings, lists, dicts (binary keys, sorted on encode).
   Deterministic: encoding two equal maps produces byte-identical
   output regardless of insertion order.
-- `hecate_bootstrap_bep44` — mutable-item envelope.
+- `macula_bootstrap_bep44` — mutable-item envelope.
   - `target_id/1,2` — SHA-1 of pubkey [+ salt] per BEP 44 §2.
   - `signed_payload/2,3` — exact BEP 44 §1 wire shape
     `3:seqi<seq>e1:v<bencoded-value>` (and the salt-prefixed
@@ -258,11 +258,11 @@ everything a production transport will need to plug in cleanly.
     (production uses FROST threshold).
   - `verify/1` — shape check (32-byte pubkey, 64-byte sig, seq≥0)
     then Ed25519 verify over the BEP 44 payload.
-- `hecate_bootstrap_dht_transport` behaviour — single callback
+- `macula_bootstrap_dht_transport` behaviour — single callback
   `get_mutable(TargetId, TimeoutMs) -> {ok, item()} | {error, _}`.
-- `hecate_bootstrap_tier_c` — probe (500 ms stagger). For each
+- `macula_bootstrap_tier_c` — probe (500 ms stagger). For each
   foundation pubkey in parallel: derive target id → DHT get →
-  verify item.pubkey matches → `hecate_bootstrap_bep44:verify/1` →
+  verify item.pubkey matches → `macula_bootstrap_bep44:verify/1` →
   decode inner DNS packet → concatenate every TXT character-string
   → `macula_record:decode/1` → `macula_foundation:verify_record/1`
   → emit seeds as verified peers. First successful pubkey wins;
@@ -270,18 +270,18 @@ everything a production transport will need to plug in cleanly.
   (`{error, no_transport}`).
 
 **Tests — 27 new eunit + 1 CT:**
-- `hecate_bootstrap_bencode_tests` (44 cases across encode/decode/
+- `macula_bootstrap_bencode_tests` (44 cases across encode/decode/
   round-trip/canonicalisation/error-paths).
-- `hecate_bootstrap_bep44_tests` (13 cases: target_id vectors,
+- `macula_bootstrap_bep44_tests` (13 cases: target_id vectors,
   signed_payload shape including BEP 44's published example, sign+
   verify round-trip with and without salt, tampered value/seq/pubkey
   rejected, salt mismatch rejected, malformed shape rejected).
-- `hecate_bootstrap_tier_c_tests` (10 cases with ETS-backed
-  `hecate_bootstrap_dht_fake`): happy path, no_transport,
+- `macula_bootstrap_tier_c_tests` (10 cases with ETS-backed
+  `macula_bootstrap_dht_fake`): happy path, no_transport,
   no_pubkeys, wrong pubkey in DHT item, tampered BEP 44 signature,
   non-DNS value, PKARR with no TXT, DHT get failure, record not
   signed by foundation, multi-pubkey first-success wins.
-- `hecate_phase6_SUITE` gains tier_c cascade-winner case when Tiers
+- `macula_phase6_SUITE` gains tier_c cascade-winner case when Tiers
   A and B are effectively down.
 
 **State of green (post-6.5):** 598 station eunit / 27 station CT /
@@ -303,11 +303,11 @@ drop in real block-explorer HTTP clients (or light-client libs)
 against a stable interface.
 
 **Files added:**
-- `hecate_bootstrap_chain_transport` behaviour — single callback
+- `macula_bootstrap_chain_transport` behaviour — single callback
   `latest_anchor(chain_opts(), TimeoutMs) -> {ok, Bytes} | {error, _}'.
   Bytes MUST be a `macula_record:encode/1' envelope of a
   foundation-signed record so Tier D verification matches Tier A.
-- `hecate_bootstrap_tier_d` — probe (2000 ms stagger per Part 5 §3).
+- `macula_bootstrap_tier_d` — probe (2000 ms stagger per Part 5 §3).
   Parallel `latest_anchor' across every configured chain, first
   successful anchor wins the cascade, failures fall through, no
   chains = hard `{error, no_chains}'. Pipeline: fetch → safe_decode
@@ -320,29 +320,29 @@ now wrap the decode call in a trust-boundary try/catch so a single
 bad response cannot crash a worker and time the tier out.
 
 **Tests — 8 new eunit + 1 CT case (tier_d wins cascade):**
-- `hecate_bootstrap_tier_d_tests`: happy-single-chain, no-chains,
+- `macula_bootstrap_tier_d_tests`: happy-single-chain, no-chains,
   all-chains-fail, first-successful-chain-wins, slow-chain-does-
   not-block, untrusted-signer-rejected, garbage-bytes-rejected
   (exercises the new safe_decode path), expired-record-rejected.
-- `hecate_phase6_SUITE` gains `tier_d_wins_when_a_b_c_are_down'.
+- `macula_phase6_SUITE` gains `tier_d_wins_when_a_b_c_are_down'.
 
 ## Session 6.6.x — Real chain adapters (shipped 2026-04-15)
 
 **Scope:** Ethereum JSON-RPC and Bitcoin Esplora adapters, both
-implementing `hecate_bootstrap_chain_transport' and both using a
+implementing `macula_bootstrap_chain_transport' and both using a
 new shared HTTP abstraction so unit tests plug in canned responses
 without real network I/O. Gated real-endpoint CT deferred until
 foundation has actually published testnet anchors to probe.
 
 **Files added:**
-- `hecate_bootstrap_http` behaviour — `get/2' + `post_json/3'
+- `macula_bootstrap_http` behaviour — `get/2' + `post_json/3'
   callbacks. One transport surface, shared by both chain adapters
   (and future HTTP adapters).
-- `hecate_bootstrap_http_httpc` — concrete `inets:httpc' impl;
+- `macula_bootstrap_http_httpc` — concrete `inets:httpc' impl;
   thin translator from httpc's 4-tuple result to the behaviour's
   `{ok, Body} | {error, _}'. HTTP non-200 becomes
   `{error, {http_status, Code, Phrase}}'.
-- `hecate_bootstrap_chain_eth_jsonrpc` — reads latest
+- `macula_bootstrap_chain_eth_jsonrpc` — reads latest
   `AnchorPublished(bytes)' event from a foundation contract via
   `eth_getLogs'. Pure codec fully unit-tested: `build_request/3'
   (JSON-RPC request shape), `parse_response/1' (picks highest
@@ -350,7 +350,7 @@ foundation has actually published testnet anchors to probe.
   (32-byte offset + 32-byte length + padded payload). Ethereum has
   effectively no log-size limit so the event carries the full
   `macula_record:encode/1' envelope directly.
-- `hecate_bootstrap_chain_esplora` — reads latest foundation
+- `macula_bootstrap_chain_esplora` — reads latest foundation
   anchor pointer from Blockstream/Esplora `/address/<addr>/txs'.
   Bitcoin's 80-byte OP_RETURN limit requires a pointer scheme:
   `"MCLA" magic (4 bytes) | SHA-256 hash (32 bytes) | URL (≤44
@@ -359,20 +359,20 @@ foundation has actually published testnet anchors to probe.
   anchor bytes. Any mismatch or missing marker falls through.
 
 **Tests — 29 new eunit + 1 CT case:**
-- `hecate_bootstrap_chain_eth_jsonrpc_tests` (15): request shape,
+- `macula_bootstrap_chain_eth_jsonrpc_tests` (15): request shape,
   JSON round-trip, no-logs, rpc error, bad json, happy path,
   highest-block wins, missing data, bad hex, bad ABI
   (zero-length, short header, claimed length exceeds payload),
   plus full `latest_anchor/2' end-to-end with canned HTTP +
   http-error propagation.
-- `hecate_bootstrap_chain_esplora_tests` (14): OP_RETURN raw push,
+- `macula_bootstrap_chain_esplora_tests` (14): OP_RETURN raw push,
   OP_PUSHDATA1, non-our-marker rejected, non-op-return script,
   empty-URL rejected, trailing-null trim, vout filtering,
   missing-vout, full end-to-end (happy, no-matching-tx,
   hash-mismatch-rejected, URL-fetch-error, bad-esplora-json).
-- `hecate_phase6_SUITE` gains `tier_d_eth_adapter_end_to_end` —
-  Tier D wired with the real `hecate_bootstrap_chain_eth_jsonrpc'
-  adapter using `hecate_bootstrap_http_fake' for transport;
+- `macula_phase6_SUITE` gains `tier_d_eth_adapter_end_to_end` —
+  Tier D wired with the real `macula_bootstrap_chain_eth_jsonrpc'
+  adapter using `macula_bootstrap_http_fake' for transport;
   proves the full foundation-record pipeline (RPC → ABI decode →
   macula_record → foundation verify → verified peers) end-to-end.
 
@@ -386,7 +386,7 @@ anchors to probe — we'd otherwise be testing third-party uptime.
 
 ## Session 6.9 — Station integration (shipped 2026-04-15)
 
-**Scope:** promote `hecate_bootstrap' from a passive library app to
+**Scope:** promote `macula_bootstrap' from a passive library app to
 an active OTP application with its own supervisor + app callback, so
 the station-level `applications' dependency transitively starts the
 subsystem. Add a config-driven `run/0,1' orchestrator so the station
@@ -394,22 +394,22 @@ has one call to make on boot. mDNS responder becomes an optional
 supervisor child controlled by application env.
 
 **Files added:**
-- `hecate_bootstrap_sup' — `one_for_one' supervisor. Conditional
-  single child: `hecate_bootstrap_mdns_responder' spawned only when
-  `application:get_env(hecate_bootstrap, responder, disabled)' is
+- `macula_bootstrap_sup' — `one_for_one' supervisor. Conditional
+  single child: `macula_bootstrap_mdns_responder' spawned only when
+  `application:get_env(macula_bootstrap, responder, disabled)' is
   a map of responder opts. Default-disabled matters because the
   real responder binds UDP 5353 which conflicts with `avahi-daemon'
   on most Linux hosts.
-- `hecate_bootstrap_app' — application callback delegating
-  `start/2' to `hecate_bootstrap_sup:start_link/0'.
-- `hecate_bootstrap:run/0,1' — config-driven cascade entry point.
+- `macula_bootstrap_app' — application callback delegating
+  `start/2' to `macula_bootstrap_sup:start_link/0'.
+- `macula_bootstrap:run/0,1' — config-driven cascade entry point.
   `run/0' reads `tiers' + `cascade_opts' from app env; `run/1'
   accepts an explicit `station_config()' map (for per-realm
   runtime config or deterministic test input). Empty / missing
   tiers produce `{error, no_tiers}' rather than trying to cascade.
 
-**app.src updates:** `mod = {hecate_bootstrap_app, []}',
-`registered = [hecate_bootstrap_sup]', default env
+**app.src updates:** `mod = {macula_bootstrap_app, []}',
+`registered = [macula_bootstrap_sup]', default env
 `{responder, disabled}'.
 
 **Tests — 9 new eunit:**
@@ -433,31 +433,31 @@ xref / dialyzer clean.
 **Scope:** closes Phase 6's last-mile gap — the cascade returned
 verified peers but nothing consumed them. Now a one-call bridge
 feeds every cascade peer into the station's Kademlia routing table
-via `hecate_dht:observe/2', returning a summary of outcomes.
+via `macula_dht:observe/2', returning a summary of outcomes.
 
-**Architectural note:** the bridge module lives in `hecate_station'
-(not `hecate_bootstrap') because it joins two apps. Keeping
-`hecate_bootstrap' self-contained preserves its "library" nature
-and avoids forcing a `hecate_dht' dependency on callers who only
+**Architectural note:** the bridge module lives in `macula_station'
+(not `macula_bootstrap') because it joins two apps. Keeping
+`macula_bootstrap' self-contained preserves its "library" nature
+and avoids forcing a `macula_dht' dependency on callers who only
 want the cascade.
 
 **Files added:**
-- `hecate_station_bootstrap`:
+- `macula_station_bootstrap`:
   - `to_entry_spec/1` — pure. Maps
-    `hecate_bootstrap_tier:verified_peer()' →
-    `hecate_dht_entry:spec()' with defaults for metadata the
+    `macula_bootstrap_tier:verified_peer()' →
+    `macula_dht_entry:spec()' with defaults for metadata the
     cascade doesn't carry (`asn => 0', `country => <<"??">>').
     Foundation-seed peers map `gateway_tier' 3|4 → `t3'; everyone
     else defaults to `t0'.
   - `ingest/2` — iterates peer list, calls
-    `hecate_dht:observe/2' per peer, classifies every response
+    `macula_dht:observe/2' per peer, classifies every response
     (`admitted' / `touched' / `{replaced, _}' / `rejected') into
     a running summary.
 
 **Upstream tweak:**
-- `hecate_bootstrap_foundation:peers_from_record/3` now surfaces
+- `macula_bootstrap_foundation:peers_from_record/3` now surfaces
   the seed's `tier' field as `gateway_tier` on the
-  verified_peer. `hecate_bootstrap_tier:verified_peer()' type
+  verified_peer. `macula_bootstrap_tier:verified_peer()' type
   gains the optional `gateway_tier => 3 | 4 | undefined' key so
   downstream consumers (like `to_entry_spec/1`) can distinguish
   foundation gateways from leaf stations.
@@ -476,10 +476,10 @@ xref / dialyzer clean.
 
 **Next usage pattern** (for station boot integration):
 ```
-{ok, Peers}  = hecate_bootstrap:run(),
-{ok, Dht}    = hecate_dht:start_link(#{self_id => MyId}),
-_Summary     = hecate_station_bootstrap:ingest(Dht, Peers),
-%% DHT is now seeded; subsequent hecate_dht:lookup_nodes/2 walks
+{ok, Peers}  = macula_bootstrap:run(),
+{ok, Dht}    = macula_dht:start_link(#{self_id => MyId}),
+_Summary     = macula_station_bootstrap:ingest(Dht, Peers),
+%% DHT is now seeded; subsequent macula_dht:lookup_nodes/2 walks
 %% start from these peers.
 ```
 
@@ -515,11 +515,11 @@ layers shipped with pluggable transport behaviours:
 
 | Tier | Source        | Module                        | Status |
 | ---- | ------------- | ----------------------------- | ------ |
-| A    | DoH PKARR     | `hecate_bootstrap_tier_a'     | ✅     |
-| B    | mDNS LAN      | `hecate_bootstrap_tier_b'     | ✅     |
-| C    | Mainline DHT  | `hecate_bootstrap_tier_c'     | ✅     |
-| D    | Blockchain    | `hecate_bootstrap_tier_d'     | ✅     |
-| E    | Operator paste| `hecate_bootstrap_tier_e'     | ✅     |
+| A    | DoH PKARR     | `macula_bootstrap_tier_a'     | ✅     |
+| B    | mDNS LAN      | `macula_bootstrap_tier_b'     | ✅     |
+| C    | Mainline DHT  | `macula_bootstrap_tier_c'     | ✅     |
+| D    | Blockchain    | `macula_bootstrap_tier_d'     | ✅     |
+| E    | Operator paste| `macula_bootstrap_tier_e'     | ✅     |
 
 All verification flows terminate at `macula_foundation:verify_record/1'
 — the DHT, chain, DoH resolver, and mDNS responder are all
@@ -532,7 +532,7 @@ Remaining work (gated network suites + real transports):
 - 6.5.x real Kademlia UDP BT-DHT client
 - 6.6.x real Bitcoin + Ethereum chain adapters
 
-## Session 6.8 — `hecate_bootstrap_foundation` refactor (shipped 2026-04-15)
+## Session 6.8 — `macula_bootstrap_foundation` refactor (shipped 2026-04-15)
 
 **Scope:** consolidate the "safe decode → verify foundation → emit
 peers" trust boundary that Tiers A, C, and D were each hand-rolling
@@ -541,7 +541,7 @@ trust-boundary surface so future real-network adapters plug into
 one well-tested helper.
 
 **Files added:**
-- `hecate_bootstrap_foundation`:
+- `macula_bootstrap_foundation`:
   - `decode_record_bytes/1` — trust-boundary `macula_record:decode'
     with `try/catch' normalising CBOR crashes to
     `{error, bad_record_bytes}'.
@@ -551,13 +551,13 @@ one well-tested helper.
     for non-seed-list record types (defensive).
 
 **Refactored callers:**
-- `hecate_bootstrap_tier_a` — `decode_and_verify/2' now delegates
+- `macula_bootstrap_tier_a` — `decode_and_verify/2' now delegates
   to `foundation:decode_record_bytes/1'; `peers_from/1' is now a
   one-liner forwarding to `foundation:peers_from_record/3'. Tier A's
   storage-key integrity check remains tier-local.
-- `hecate_bootstrap_tier_c` — same pattern; BEP 44 signature + DHT
+- `macula_bootstrap_tier_c` — same pattern; BEP 44 signature + DHT
   pubkey-match checks remain tier-local.
-- `hecate_bootstrap_tier_d` — same pattern.
+- `macula_bootstrap_tier_d` — same pattern.
 
 **Tests:** 12 new eunit for the helper (round-trip, garbage variants,
 malformed CBOR, non-macula CBOR envelope, peer stamping, seed field

@@ -448,7 +448,7 @@ Phase 6 + Martha: +1.5 weeks when Martha itself lands.
 - `system/apps/macula_realm_web/lib/macula_realm_web/live/gitops_setup_live.ex` — use mesh URIs instead of GitHub
 - Delete: `system/apps/macula_realm/lib/macula_realm/github/` entire directory
 
-### Modify (hecate-station)
+### Modify (macula-station)
 - `plans/PLAN_DEFERRED_WORK.md` — move git-over-mesh from deferred to active
 
 ## Open questions

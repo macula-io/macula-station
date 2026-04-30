@@ -2,7 +2,7 @@
 
 **Status:** in flight 2026-04-29
 **Trigger:** mesh stream_closed-after-30s outage (R=4 D=1) traced to per-identity
-`hecate_station_fact_publisher` heap leak under `pg`-based O(N²) cross-publish
+`macula_station_fact_publisher` heap leak under `pg`-based O(N²) cross-publish
 fan-out.
 **Scope:** one PR, ~150 LOC. Same protocol, same delivery semantics.
 **Out of scope:** signing-model changes, single shared pubsub_server per realm
@@ -10,7 +10,7 @@ fan-out.
 
 ## 1. Problem
 
-Each virtual relay identity runs its own `hecate_station_fact_publisher`
+Each virtual relay identity runs its own `macula_station_fact_publisher`
 gen_server. When identity X's DHT stores a record, X's publisher:
 
 1. Classifies the record + publishes on X's per-identity `pubsub_server`.
@@ -32,7 +32,7 @@ Under load (≥30 active identities, daemon reconnect cycles):
   timeouts → stream_closed → daemons cycle → R=4 D=1 floor.
 
 Forensics evidence: top-N memory hogs on Nuremberg are all
-`hecate_station_fact_publisher`, all at ~36 MB at 23-min uptime; bin_refs
+`macula_station_fact_publisher`, all at ~36 MB at 23-min uptime; bin_refs
 account for <1 MB; the rest is Erlang heap retention. See session
 `2026-04-29_mesh-stream-closed-bug-handover.md` and the diagnostic scripts
 under `scripts/forensics.sh` + `scripts/inspect_proc.sh`.
@@ -48,7 +48,7 @@ record), but:
   of **N² casts across N processes**.
 - One bounded heap (hibernate + low fullsweep_after), not N unbounded ones.
 - `pg`-based cross-publish broadcast is deleted entirely. The `pg` scope
-  `hecate_station_facts` is removed.
+  `macula_station_facts` is removed.
 
 ## 3. Non-goals (explicitly deferred)
 
@@ -64,7 +64,7 @@ record), but:
 
 ```
                  +-----------------------------+
-                 | hecate_station_record_fanout |  (singleton, gen_server)
+                 | macula_station_record_fanout |  (singleton, gen_server)
                  +-----------------------------+
                           ^
                           | cast {record_stored, IdentityKey, Record}
@@ -91,27 +91,27 @@ no protocol change.
 
 ### New
 
-- `apps/hecate_station/src/hecate_station_record_fanout.erl`
+- `apps/macula_station/src/macula_station_record_fanout.erl`
   - `start_link/1`, `on_record/3` (cast API), `init/1`, `handle_cast/2`
   - `{spawn_opt, [{fullsweep_after, 10}, {min_heap_size, 1024}]}` at start
   - `{noreply, S, hibernate}` after each record dispatch
   - State holds `identity_registry :: pid()` only. Identity snapshot fetched
     per-cast (cheap, ETS-backed).
-- `apps/hecate_station/test/hecate_station_record_fanout_tests.erl`
+- `apps/macula_station/test/macula_station_record_fanout_tests.erl`
 
 ### Modified
 
-- `apps/hecate_station/src/hecate_station_identity_registry.erl`
+- `apps/macula_station/src/macula_station_identity_registry.erl`
   - Add `snapshot/1` returning `#{IdentityKey => {pubsub_registry_pid,
     peer_observer_pid, identity}}`. Powered off the existing internal map
     (which already keys by hostname). Tracking pubsub_registry + observer
     requires the registry to learn those pids when each identity starts —
     plumb via the `on_identity_ready` notification from
-    `hecate_station_identity_sup` once the Phase-3 chain has produced both.
-- `apps/hecate_station/src/hecate_station_identity_sup.erl`
+    `macula_station_identity_sup` once the Phase-3 chain has produced both.
+- `apps/macula_station/src/macula_station_identity_sup.erl`
   - Replace `install_dht_callback/2` body — callback now invokes
-    `hecate_station_record_fanout:on_record(IdentityKey, Record)` instead of
-    `hecate_station_fact_publisher:on_record_stored(FpPid, Record)`.
+    `macula_station_record_fanout:on_record(IdentityKey, Record)` instead of
+    `macula_station_fact_publisher:on_record_stored(FpPid, Record)`.
   - Drop the `seed_fact_publisher/4` step from the procedural Phase-3 chain.
     Boot order becomes `…peer_observer → overlay_seeder → announcer →
     listener` (skipping fact_publisher entirely).
@@ -119,13 +119,13 @@ no protocol change.
     sup announces `{identity_ready, IdentityKey, PubsubRegPid, PeerObsPid,
     Identity}` to the singleton fanout (or to identity_registry, which then
     relays).
-- `apps/hecate_station/src/hecate_station_sup.erl`
-  - Add the singleton `hecate_station_record_fanout` as a permanent child.
+- `apps/macula_station/src/macula_station_sup.erl`
+  - Add the singleton `macula_station_record_fanout` as a permanent child.
 
 ### Deleted
 
-- `apps/hecate_station/src/hecate_station_fact_publisher.erl`
-- `apps/hecate_station/test/hecate_station_fact_publisher_tests.erl`
+- `apps/macula_station/src/macula_station_fact_publisher.erl`
+- `apps/macula_station/test/macula_station_fact_publisher_tests.erl`
 
 (Vertical slicing — its sole responsibility is moving into the fanout. No
 "thin helper" left behind. Rename the existing tests' coverage into the new
@@ -139,13 +139,13 @@ fanout tests where it still applies.)
 | Per-identity pubsub_server signs EVENT frames with identity's keypair? | Yes | Yes |
 | Subscriber's connection-by-pubkey lookup uses the identity-attached peer_observer? | Yes | Yes |
 | `_mesh.station.announced_v1` / `_mesh.daemon.announced_v1` topic catalog? | Yes | Yes (classify clauses move to fanout verbatim) |
-| pg scope `hecate_station_facts`? | Used for cross-publish | **Removed** |
+| pg scope `macula_station_facts`? | Used for cross-publish | **Removed** |
 
 No protocol change. No frame-shape change. No subscriber-visible difference.
 
 ## 7. Test strategy
 
-- **Unit (eunit):** new `hecate_station_record_fanout_tests` mirrors the
+- **Unit (eunit):** new `macula_station_record_fanout_tests` mirrors the
   existing fact_publisher_tests classification cases (record types 0x01,
   0x0C, payload kinds station/daemon, key-shape variants).
 - **Integration (CT):** the existing per-identity station CTs already cover

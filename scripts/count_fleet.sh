@@ -9,24 +9,24 @@ SSH="ssh -i $KEY -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$HOST"
 run_eval() {
   local label="$1"; local expr="$2"
   echo "=== $label ==="
-  $SSH "docker exec hecate-station bin/hecate_station eval '$expr'"
+  $SSH "docker exec macula-station bin/macula_station eval '$expr'"
   echo
 }
 
 run_eval "Active identity count + sup children" '
-  Id = hecate_station_identity_registry,
+  Id = macula_station_identity_registry,
   Children = supervisor:which_children(Id),
   {{registered, lists:member(Id, registered())},
    {child_count, length(Children)},
    {sample_first_3, lists:sublist(Children, 3)}}.
 '
 
-run_eval "pg group size + members on hecate_station_facts/mesh_realm" '
-  case lists:member(hecate_station_facts, pg:which_groups(hecate_station_facts)) of
+run_eval "pg group size + members on macula_station_facts/mesh_realm" '
+  case lists:member(macula_station_facts, pg:which_groups(macula_station_facts)) of
     _ -> ok
   end,
-  Groups = pg:which_groups(hecate_station_facts),
-  Members = pg:get_members(hecate_station_facts, mesh_realm),
+  Groups = pg:which_groups(macula_station_facts),
+  Members = pg:get_members(macula_station_facts, mesh_realm),
   {groups, Groups, member_count, length(Members)}.
 '
 
@@ -65,7 +65,7 @@ run_eval "Memory + GC stats one fact_publisher" '
        process_info(P, memory) =/= undefined,
        case process_info(P, dictionary) of
          {dictionary, D} ->
-           lists:any(fun({K,V}) -> K == \"$initial_call\" andalso element(1,V) == hecate_station_fact_publisher end, D);
+           lists:any(fun({K,V}) -> K == \"$initial_call\" andalso element(1,V) == macula_station_fact_publisher end, D);
          _ -> false
        end],
   case M of

@@ -28,10 +28,10 @@ fleet-deploy.sh template — run each step by hand:
 1) Bump the image tag in hecate-gitops:
 
    cd ~/work/github.com/hecate-social/hecate-gitops
-   sed -i "s|hecate-station:[^\\s]*|hecate-station:${VERSION}|" \\
-       beam-cluster/hecate-station.container
-   git add beam-cluster/hecate-station.container
-   git commit -m "deploy(hecate-station): ${VERSION}"
+   sed -i "s|macula-station:[^\\s]*|macula-station:${VERSION}|" \\
+       beam-cluster/macula-station.container
+   git add beam-cluster/macula-station.container
+   git commit -m "deploy(macula-station): ${VERSION}"
    git push
 
 2) Watch beam nodes pick up the new image (Podman auto-update
@@ -46,6 +46,6 @@ fleet-deploy.sh template — run each step by hand:
 
    for n in beam00 beam01 beam02 beam03; do
        ssh rl@\${n}.lab \\
-           'podman inspect hecate-station --format "{{.ImageName}}"'
+           'podman inspect macula-station --format "{{.ImageName}}"'
    done
 EOF

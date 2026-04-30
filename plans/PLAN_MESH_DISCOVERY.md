@@ -12,7 +12,7 @@ relay). Stations are invisible to the realm because:
 
 1. **macula SDK has no DHT record API.** `find_value`/`store` exist at
    the wire level but no client wrappers.
-2. **hecate-station has no RPC infrastructure.** `hecate_handler/` is an
+2. **macula-station has no RPC infrastructure.** `macula_handler/` is an
    empty app. Stations cannot advertise procedures (e.g. `list_stations`).
 3. **No station-side publish injection point exposed yet.** V1's
    `macula_relay_identity:publish/2` had pg-based broadcast; station has
@@ -59,32 +59,32 @@ New client APIs:
 
 Tests, version bump (3.2.0), hex publish.
 
-## Track 2: hecate-station RPC infrastructure
+## Track 2: macula-station RPC infrastructure
 
-**Repo:** `hecate-social/hecate-station`
+**Repo:** `macula-io/macula-station`
 
-Fill in `apps/hecate_handler/`:
+Fill in `apps/macula_handler/`:
 
-- `hecate_handler_registry` — gen_server tracking
+- `macula_handler_registry` — gen_server tracking
   `{Procedure => HandlerFun}` per identity.
-- `hecate_handler_advertise/2,3` — publish a procedure handler.
-- `hecate_handler_dispatch/2` — called from the listener path when a
+- `macula_handler_advertise/2,3` — publish a procedure handler.
+- `macula_handler_dispatch/2` — called from the listener path when a
   CALL frame arrives, looks up handler, invokes it, builds REPLY frame.
 - Wire CALL frames into the station listener's frame dispatch
   (currently lands at the peer observer + falls through unknown).
 
 Tests + integration with station boot.
 
-## Track 3: hecate-station station_announcer
+## Track 3: macula-station station_announcer
 
-**Repo:** `hecate-social/hecate-station`
+**Repo:** `macula-io/macula-station`
 
-Per-identity worker under `hecate_station_identity_sup`:
+Per-identity worker under `macula_station_identity_sup`:
 
 - On register: build a signed `station_record` (type tag `0x02`)
   carrying `{hostname, city, country, lat, lng, endpoint, pubkey,
   expires_at}`. Put into per-identity DHT via
-  `hecate_dht:put_record/2` (already works server-side).
+  `macula_dht:put_record/2` (already works server-side).
 - Periodic refresh before TTL (e.g. TTL=10min, refresh=8min).
 - On graceful unregister (operator stop / SIGTERM): publish a signed
   tombstone record + emit `_mesh.station.down` event via
@@ -97,7 +97,7 @@ Tests for register/refresh/unregister/crash paths.
 
 ## Track 4: cross-station mesh propagation
 
-**Repo:** `hecate-social/hecate-station`
+**Repo:** `macula-io/macula-station`
 
 For pubsub events (`_mesh.station.up`/`down`) and DHT records to
 propagate from Paris to a realm subscribed to Helsinki, the mesh
@@ -128,7 +128,7 @@ realm needs to connect to every station in the fleet.
 ## Track 6: deploy + verify
 
 - Bump macula 3.2.0 on hex.
-- hecate-station rebuilds against 3.2.0.
+- macula-station rebuilds against 3.2.0.
 - Roll out new station image to Paris + Helsinki + Nuremberg.
 - Roll out new realm image to macula.io.
 - Verify: macula.io dashboard shows 205 stations (Paris 5 + Helsinki
@@ -162,7 +162,7 @@ realm needs to connect to every station in the fleet.
    one of the per-identity IPv6s, or be removed entirely so realm
    uses per-identity hostnames?
 2. **Record type registry.** Type tag `0x01` is `node_record` (per
-   `hecate_station:tombstone_type/0`). `0x02` for `station_record`.
+   `macula_station:tombstone_type/0`). `0x02` for `station_record`.
    Need a central registry (probably in macula's record codec) so
    types don't clash with future record types (capability_announcement,
    etc.).

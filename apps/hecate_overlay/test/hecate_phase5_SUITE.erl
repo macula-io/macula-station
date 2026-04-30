@@ -13,7 +13,7 @@
 %%
 %% Larger-scale acceptance (20-station convergence, sub-second
 %% repair) is deferred to the network-integrated suite.
--module(hecate_phase5_SUITE).
+-module(macula_phase5_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 

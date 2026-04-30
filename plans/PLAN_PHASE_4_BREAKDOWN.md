@@ -39,12 +39,12 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 |---|---------|-------------|---------|
 | 4.1 | **BOLT#4 taxonomy + CALL frames** | 16-code catalog, CALL/RESULT/ERROR frames | SDK: `macula_bolt4`, `macula_frame:call/1`/`result/1`/`call_error/1` |
 | 4.2 | Source-route header codec | 44-byte header encode/decode + path_hash | SDK: `macula_source_route` (or extension to `macula_frame`) |
-| 4.3 | Routing graph + Suurballe | k=3 vertex-disjoint shortest paths over RT graph | `hecate_routing` |
-| 4.4 | Path cache + invalidation | 5min TTL + SWIM-event tear-down | `hecate_routing_cache` |
-| 4.5 | CALL state machine | gen_statem with 5 deadlines, BOLT#4 wiring | `hecate_call` |
-| 4.6 | Per-hop relay forwarding | path_hash verify + next-hop dispatch + signed errors | server extensions to `hecate_dht_server` (or new `hecate_relay`) |
-| 4.7 | Retry budget + path rotation | budget enforcement, k-rotation on retryable codes | `hecate_call` extensions |
-| 4.8 | Acceptance suite + chaos | mid-path-kill reroute test, end-to-end CT | `apps/hecate_dht/test/hecate_phase4_SUITE.erl` |
+| 4.3 | Routing graph + Suurballe | k=3 vertex-disjoint shortest paths over RT graph | `macula_routing` |
+| 4.4 | Path cache + invalidation | 5min TTL + SWIM-event tear-down | `macula_routing_cache` |
+| 4.5 | CALL state machine | gen_statem with 5 deadlines, BOLT#4 wiring | `macula_call` |
+| 4.6 | Per-hop relay forwarding | path_hash verify + next-hop dispatch + signed errors | server extensions to `macula_dht_server` (or new `macula_relay`) |
+| 4.7 | Retry budget + path rotation | budget enforcement, k-rotation on retryable codes | `macula_call` extensions |
+| 4.8 | Acceptance suite + chaos | mid-path-kill reroute test, end-to-end CT | `apps/macula_dht/test/macula_phase4_SUITE.erl` |
 
 ## Phase 4 acceptance (from Part 7 §9.3)
 
@@ -58,13 +58,13 @@ overlay (Plumtree/HyParView lands in Phase 5), bootstrap cascade
 **Scope:** acceptance Common Test suite gating the §9.3 Phase 4
 criteria.
 
-`apps/hecate_routing/test/hecate_phase4_SUITE.erl` plus
+`apps/macula_routing/test/macula_phase4_SUITE.erl` plus
 `phase4_helper.erl` — a 6-station in-VM fleet with each station
-running `hecate_relay:process_call/2` against an externally
+running `macula_relay:process_call/2` against an externally
 mutable alive set. The helper builds a CALL frame with the
 right source-route header, sends to the first hop, awaits
-RESULT or ERROR, returns a `hecate_call:outcome()`. The retry
-test wraps that in `hecate_call_retry:execute/1` so disjoint
+RESULT or ERROR, returns a `macula_call:outcome()`. The retry
+test wraps that in `macula_call_retry:execute/1` so disjoint
 paths get rotated.
 
 Test cases:
@@ -72,7 +72,7 @@ Test cases:
    → D, RESULT echoed back to A. Resolves the V1
    dist-tunnel-blocker (cross-relay CALL across &gt; 2 hops).
 2. **mid_path_failure_reroutes_via_alternate_path** — Kill C.
-   `hecate_call_retry` walks `[a,b,c,d]` (fails with
+   `macula_call_retry` walks `[a,b,c,d]` (fails with
    `unknown_next_peer`) then `[a,e,f,d]` (succeeds). Attempts
    log records both.
 3. **signed_error_attributes_failed_hop** — `unknown_next_peer`
@@ -106,7 +106,7 @@ Refs: plans/PLAN_MACULA_V2_PART7_IMPLEMENTATION.md §9.3;
 
 **Scope:** retry budget + disjoint-path rotation (Part 4 §6.4).
 
-`hecate_call_retry` (in `hecate_routing` app) — pluggable
+`macula_call_retry` (in `macula_routing` app) — pluggable
 orchestrator that wraps a single-attempt CALL function with
 the §6.4 retry machinery.
 
@@ -114,13 +114,13 @@ API: `execute(opts())` where `opts()` is:
 ```
 #{
     paths               := [path(), ...],
-    try_fn              := fun((path()) -> hecate_call:outcome()),
+    try_fn              := fun((path()) -> macula_call:outcome()),
     retry_budget        => non_neg_integer(),  %% default 2
     overall_timeout_ms  => pos_integer()        %% default 5_000
 }
 ```
 
-Returns `#{outcome := hecate_call:outcome(), attempts := [#{path,
+Returns `#{outcome := macula_call:outcome(), attempts := [#{path,
 outcome}]}` — a full per-attempt log so callers can inspect what
 each path did.
 
@@ -147,7 +147,7 @@ Three preset configs from §6.4:
 - `bulk_defaults/0`        → 100 retries, 1 h budget
                             (idempotent CALLs).
 
-The orchestrator does NOT itself drive a `hecate_call` state
+The orchestrator does NOT itself drive a `macula_call` state
 machine — that integration lands later when DHT lookup, QUIC
 handshake, and ack-routing are wired up. Callers supply the
 `try_fn` (a real CALL pipeline in production; a mock in tests).
@@ -173,7 +173,7 @@ Refs: plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md §6.4.
 
 **Scope:** per-hop relay forwarding (Part 3 §6.6).
 
-`hecate_relay` (in `hecate_routing` app) — pure-function
+`macula_relay` (in `macula_routing` app) — pure-function
 implementation of the per-hop CALL processing flow. Given a
 signed CALL frame plus a context (`self_id` + `identity` +
 `is_alive` predicate + optional `now_ms`), `process_call/2`
@@ -230,7 +230,7 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.6;
 **Scope:** CALL state machine — `gen_statem` with five
 transition deadlines from Part 4 §6.2.
 
-`hecate_call` (in `hecate_routing` app):
+`macula_call` (in `macula_routing` app):
 - Five-state pipeline `idle → resolving → selected_target →
   connecting → awaiting_ack → succeeded | failed`. Each
   transition has a state_timeout; missing it transitions to
@@ -251,7 +251,7 @@ transition deadlines from Part 4 §6.2.
 - `await/2` is multi-awaiter (parked `From` tuples replied on
   terminal entry; late awaiters get the cached outcome
   immediately).
-- `notify_pid` opt receives `{hecate_call, Pid, Outcome}` on
+- `notify_pid` opt receives `{macula_call, Pid, Outcome}` on
   terminal entry — the integration point for orchestrators that
   want a one-shot mailbox notification rather than a blocking
   call.
@@ -272,7 +272,7 @@ Refs: plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md §6.2.
 **Scope:** path cache with TTL + SWIM-event invalidation
 (Part 3 §6.3).
 
-`hecate_routing_cache` — gen_server keyed on destination NodeId.
+`macula_routing_cache` — gen_server keyed on destination NodeId.
 - Each entry stores `paths`, `inserted_at` (monotonic ms), and a
   pre-computed `hops :: sets:set(vertex())` that is the union of
   every vertex across every cached path. The hop set is the
@@ -314,7 +314,7 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §6.3.
 **Scope:** first station-side Phase 4 module — graph + Dijkstra
 + vertex-disjoint paths (Part 3 §6).
 
-`hecate_routing` — pure functional graph + pathfinding library.
+`macula_routing` — pure functional graph + pathfinding library.
 - Graph as `#{vertices, out :: #{V => #{Neighbor => Weight}}}`.
   Construction: `new/0`, `add_vertex/2`, `add_edge/4`,
   `add_edges/2`. Inspection: `vertices/1`, `has_vertex/2`,

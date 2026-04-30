@@ -160,41 +160,41 @@ provides the mesh; any realm service dials it like any other peer.
 
 ```
  1. beam VM starts → kernel + stdlib + crypto + ssl + inets up.
- 2. hecate_station_app:start/2 → hecate_station_sup:start_link/0
+ 2. macula_station_app:start/2 → macula_station_sup:start_link/0
     (empty children list initially).
- 3. Config loaded via hecate_station_config:from_env/0.
+ 3. Config loaded via macula_station_config:from_env/0.
     Identity loaded or generated at `{data_dir}/identity.erl.bin'
     (mode 0600, atomic tmp+rename).
- 4. DHT child (hecate_dht) started via hecate_station_sup wrapper,
-    registered under the `hecate_dht' atom. self_id =
+ 4. DHT child (macula_dht) started via macula_station_sup wrapper,
+    registered under the `macula_dht' atom. self_id =
     Ed25519 public key.
- 5. Warm cache load: if cache_cfg present, hecate_station_cache:load/2
+ 5. Warm cache load: if cache_cfg present, macula_station_cache:load/2
     re-injects persisted entries into the DHT before the cascade runs.
- 6. Bootstrap cascade — hecate_station_bootstrap_runner:run/1 →
-    hecate_bootstrap:run/0 → hecate_station_bootstrap:ingest/2.
+ 6. Bootstrap cascade — macula_station_bootstrap_runner:run/1 →
+    macula_bootstrap:run/0 → macula_station_bootstrap:ingest/2.
     `{error, no_tiers}' halts the sup with a clear reason.
- 7. SWIM child (hecate_swim) started; seeded from the DHT via the
+ 7. SWIM child (macula_swim) started; seeded from the DHT via the
     peer observer in step 9.
- 8. Observer child (hecate_station_peer_observer). Single
+ 8. Observer child (macula_station_peer_observer). Single
     controlling_pid for every peering worker. Routes SWIM frames
     only; application-layer frames pass end-to-end between peers.
- 9. Listener child (hecate_station_listener) — QUIC accept loop.
+ 9. Listener child (macula_station_listener) — QUIC accept loop.
     Each new_conn → macula_peering:accept with observer as
     controlling_pid.
-10. Cache child (hecate_station_cache) — periodic flush, if
+10. Cache child (macula_station_cache) — periodic flush, if
     cache_cfg present.
-11. Rebootstrap child (hecate_station_rebootstrap) — partition
+11. Rebootstrap child (macula_station_rebootstrap) — partition
     watchdog, if rebootstrap_cfg present.
-12. Admin sub-sup (hecate_station_admin_sup) — loopback HTTP API,
+12. Admin sub-sup (macula_station_admin_sup) — loopback HTTP API,
     if admin_cfg present.
 ```
 
 Each Sup child:
 - has `restart => permanent' (or `transient' for one-shot workers),
 - named children register under fixed atoms so the facade can
-  resolve them (`hecate_station:dht/0', `swim/0', etc.),
-- graceful shutdown via `hecate_station:shutdown/0,1' or OTP
-  `application:stop(hecate_station)' (publishes tombstone + flushes
+  resolve them (`macula_station:dht/0', `swim/0', etc.),
+- graceful shutdown via `macula_station:shutdown/0,1' or OTP
+  `application:stop(macula_station)' (publishes tombstone + flushes
   cache before tearing the sup down).
 
 ---
@@ -218,13 +218,13 @@ Each Sup child:
 
 ### 4.2 Minimum `sys.config` (as shipped)
 
-Keys are the exact names `hecate_station_config:from_env/0' parses.
+Keys are the exact names `macula_station_config:from_env/0' parses.
 `HECATE_STATION_*' env-var overrides are available for a subset
-(see `hecate_station_config' source for the list).
+(see `macula_station_config' source for the list).
 
 ```erlang
 [
-    {hecate_station, [
+    {macula_station, [
         %% Required.
         {data_dir, "/fast/.hecate/station"},
         {bind,     "::"},                            %% IPv6 any
@@ -240,32 +240,32 @@ Keys are the exact names `hecate_station_config:from_env/0' parses.
                         partition_window_ms => 60_000}},
         {admin, #{bind => "127.0.0.1", port => 8443}}
     ]},
-    {hecate_bootstrap, [
+    {macula_bootstrap, [
         {tiers, [
-            {hecate_bootstrap_tier_a, #{
+            {macula_bootstrap_tier_a, #{
                 resolvers => [
-                    {hecate_bootstrap_doh_http, <<"https://1.1.1.1/dns-query">>},
-                    {hecate_bootstrap_doh_http, <<"https://9.9.9.9/dns-query">>},
-                    {hecate_bootstrap_doh_http, <<"https://doh.mullvad.net/dns-query">>}
+                    {macula_bootstrap_doh_http, <<"https://1.1.1.1/dns-query">>},
+                    {macula_bootstrap_doh_http, <<"https://9.9.9.9/dns-query">>},
+                    {macula_bootstrap_doh_http, <<"https://doh.mullvad.net/dns-query">>}
                 ],
                 corroboration => 2, timeout_ms => 1500}},
-            {hecate_bootstrap_tier_b, #{
+            {macula_bootstrap_tier_b, #{
                 handshake_fun => fun macula_peering:handshake_and_record/3,
                 timeout_ms    => 2000}},
-            {hecate_bootstrap_tier_c, #{
-                dht_transport => hecate_bootstrap_dht_udp,   %% when 6.5.x lands
+            {macula_bootstrap_tier_c, #{
+                dht_transport => macula_bootstrap_dht_udp,   %% when 6.5.x lands
                 timeout_ms    => 10_000}},
-            {hecate_bootstrap_tier_d, #{
+            {macula_bootstrap_tier_d, #{
                 chains => [
-                    {hecate_bootstrap_chain_eth_jsonrpc,
+                    {macula_bootstrap_chain_eth_jsonrpc,
                      #{endpoint => <<"https://eth.llamarpc.com">>,
                        contract => <<"0x…foundation…">>,
                        topic    => <<"0x…AnchorPublished…">>}},
-                    {hecate_bootstrap_chain_esplora,
+                    {macula_bootstrap_chain_esplora,
                      #{base_url => <<"https://blockstream.info/api">>,
                        address  => <<"bc1q…foundation…">>}}],
                 timeout_ms => 20_000}},
-            {hecate_bootstrap_tier_e, #{
+            {macula_bootstrap_tier_e, #{
                 peer_urls => []       %% CLI-added as needed
             }}
         ]},
@@ -289,7 +289,7 @@ Keys are the exact names `hecate_station_config:from_env/0' parses.
 
 ```
 -name hecate@{hostname}.macula.beam
--setcookie hecate-station-<fleet-name>
+-setcookie macula-station-<fleet-name>
 +K true
 +A 32
 +sbwt very_short
@@ -324,11 +324,11 @@ Keys are the exact names `hecate_station_config:from_env/0' parses.
 Every important event emits a structured log line:
 
 ```
-2026-04-15T13:42:01 info hecate_bootstrap:cascade/2 started
+2026-04-15T13:42:01 info macula_bootstrap:cascade/2 started
     tiers=[a,b,c,d,e] min_peers=3 timeout_ms=60000
-2026-04-15T13:42:02 info hecate_bootstrap_tier_a:probe/1 returned
+2026-04-15T13:42:02 info macula_bootstrap_tier_a:probe/1 returned
     peers=20 corroboration_hit=true
-2026-04-15T13:42:02 info hecate_station_bootstrap:ingest/2 summary
+2026-04-15T13:42:02 info macula_station_bootstrap:ingest/2 summary
     observed=20 admitted=20 touched=0 replaced=0 rejected=0
 ```
 
@@ -354,13 +354,13 @@ exporter + counter registry lands alongside the Grafana dashboard.
 Sample metrics we will expose:
 
 ```
-hecate_station_up{node_id="…"} 1
-hecate_station_uptime_seconds{…} 12345
-hecate_bootstrap_cascade_duration_ms{…,winning_tier="a"} 421
-hecate_dht_size{…} 87
-hecate_swim_alive_members{…} 14
-hecate_swim_suspected_members{…} 1
-hecate_swim_confirmed_failed_members{…} 2
+macula_station_up{node_id="…"} 1
+macula_station_uptime_seconds{…} 12345
+macula_bootstrap_cascade_duration_ms{…,winning_tier="a"} 421
+macula_dht_size{…} 87
+macula_swim_alive_members{…} 14
+macula_swim_suspected_members{…} 1
+macula_swim_confirmed_failed_members{…} 2
 ```
 
 Overlay / realm metrics move to the future `hecate-realm' /
@@ -395,7 +395,7 @@ journalctl --user -u hecate-daemon -f
 
 # open a remsh to peek inside
 erl -name "remsh@beam00.macula.beam" \
-    -setcookie hecate-station-…\
+    -setcookie macula-station-…\
     -remsh hecate@beam00.macula.beam
 ```
 
@@ -403,20 +403,20 @@ Useful one-liners inside the shell:
 
 ```erlang
 %% Station facts
-hecate_station:version().
-hecate_station:identity(SupPid).           %% Ed25519 key_pair
-hecate_station:listen_addr(SupPid).
+macula_station:version().
+macula_station:identity(SupPid).           %% Ed25519 key_pair
+macula_station:listen_addr(SupPid).
 
 %% Bootstrap
-hecate_bootstrap:run().                    %% force a re-cascade
+macula_bootstrap:run().                    %% force a re-cascade
 
 %% DHT
-hecate_dht:stats(DhtPid).
-hecate_dht:k_closest(DhtPid, Target, 20).
-hecate_dht:siblings(DhtPid).
+macula_dht:stats(DhtPid).
+macula_dht:k_closest(DhtPid, Target, 20).
+macula_dht:siblings(DhtPid).
 
 %% SWIM
-hecate_swim:members(SwimPid).
+macula_swim:members(SwimPid).
 ```
 
 (Overlay introspection is not a station concern — it lives in the
@@ -456,7 +456,7 @@ to logger + updates Prometheus gauges.
 1. `curl -s --unix-socket …/admin.sock http://localhost/status' → check
    `bootstrap.last_run' / `winning_tier' / `peers_ingested'.
 2. `journalctl --user -u hecate-daemon --since "10 minutes ago" |
-   grep hecate_bootstrap'.
+   grep macula_bootstrap'.
 3. Identify which tier failed:
    - Tier A failure likely means DoH resolvers unreachable or
      foundation pubkey mismatch. Run:
@@ -484,19 +484,19 @@ to logger + updates Prometheus gauges.
 
 ### 6.3 "DHT lookups fail"
 
-1. `hecate_dht:stats(Dht)' — `size' should be > 16 after bootstrap.
+1. `macula_dht:stats(Dht)' — `size' should be > 16 after bootstrap.
    If it's 0, the ingest step didn't happen (see 6.2).
-2. `hecate_dht:siblings(Dht)' — empty sibling set = very small
+2. `macula_dht:siblings(Dht)' — empty sibling set = very small
    network, not a bug.
-3. `hecate_dht:ping_peer(Dht, PeerId)' — if every peer times out,
+3. `macula_dht:ping_peer(Dht, PeerId)' — if every peer times out,
    QUIC stack is broken (check `macula_transport' logs).
-4. `hecate_dht:lookup_nodes(Dht, Target)' — `{error, no_progress}'
+4. `macula_dht:lookup_nodes(Dht, Target)' — `{error, no_progress}'
    after N rounds means the routing table is stale; force a
    re-bootstrap.
 
 ### 6.4 "SWIM flaps members"
 
-1. `hecate_swim:members(Swim)' — observe the churn. Is it symmetric
+1. `macula_swim:members(Swim)' — observe the churn. Is it symmetric
    (all peers see the same flap) or asymmetric (only one peer
    flaps)?
 2. If asymmetric: local node's uplink is the problem (packet loss).
@@ -516,7 +516,7 @@ to logger + updates Prometheus gauges.
 3. `recon:bin_leak(10).' for binary refcount leaks.
 4. ETS growth: `ets:all()' + `ets:info(Tab, size)' on each.
 5. Likely culprits: unbounded tombstone list (check
-   `hecate_dht:record_count(Dht)'), unbounded SWIM event log, or
+   `macula_dht:record_count(Dht)'), unbounded SWIM event log, or
    an errant `subscribe/3' handler that never unsubscribes.
 6. Short-term mitigation: `erlang:garbage_collect()' across all
    processes. If that only delays the problem, it's a leak — open
@@ -524,14 +524,14 @@ to logger + updates Prometheus gauges.
 
 ### 6.6 "Can't reach peer X"
 
-1. `hecate_dht:find(Dht, PeerId)' — is the peer even known?
-2. `hecate_dht:ping_peer(Dht, PeerId, 3000)' — does PING round-trip?
+1. `macula_dht:find(Dht, PeerId)' — is the peer even known?
+2. `macula_dht:ping_peer(Dht, PeerId, 3000)' — does PING round-trip?
 3. If PING fails and the peer IS in the table: routing-table entry
-   has a stale address. `hecate_dht:forget(Dht, PeerId)' then
-   `hecate_dht:lookup_nodes(Dht, PeerId)' to re-learn.
+   has a stale address. `macula_dht:forget(Dht, PeerId)' then
+   `macula_dht:lookup_nodes(Dht, PeerId)' to re-learn.
 4. If PING fails and the peer is NOT in the table: the source-route
    computation (Part 3 §6.3) couldn't find a path. Run
-   `hecate_routing:compute_paths(…)' manually — debug output shows
+   `macula_routing:compute_paths(…)' manually — debug output shows
    which hop choked.
 
 ### 6.7 "Cascade times out"
@@ -543,9 +543,9 @@ to logger + updates Prometheus gauges.
    something short (~2 s) so the cascade moves on quickly.
 3. Run cascade with extra logging:
    ```
-   logger:set_application_level(hecate_bootstrap, debug).
-   hecate_bootstrap:run().
-   logger:set_application_level(hecate_bootstrap, info).
+   logger:set_application_level(macula_bootstrap, debug).
+   macula_bootstrap:run().
+   logger:set_application_level(macula_bootstrap, info).
    ```
 
 ### 6.8 "Foundation record rejected"
@@ -572,8 +572,8 @@ This is usually `{error, not_foundation_signed}' or
 ### 7.1 Single-host CT (dev laptop)
 
 ```
-cd ~/work/github.com/hecate-social/hecate-station
-rebar3 ct --suite=apps/hecate_bootstrap/test/hecate_phase6_SUITE
+cd ~/work/github.com/macula-io/macula-station
+rebar3 ct --suite=apps/macula_bootstrap/test/macula_phase6_SUITE
 ```
 
 12 tests today, all fakes. Runs in < 30 s. First guardrail.
@@ -583,7 +583,7 @@ rebar3 ct --suite=apps/hecate_bootstrap/test/hecate_phase6_SUITE
 ```
 # SSH into beam00
 ssh rl@beam00.lab
-cd /home/rl/hecate-station
+cd /home/rl/macula-station
 # Spin up two stations with different NodeIds on different ports
 ./scripts/dev-multi.sh --count 2 --data-root /fast/.hecate/dev
 ```
@@ -605,7 +605,7 @@ Acceptance bars (Phase 2/3 style):
 - All four stations know each other within 30 s.
 - DHT has tier-diverse buckets (at least 3 of the 4 ASes or
   countries represented in the top bucket).
-- A `hecate_dht:lookup_nodes/2' walk from beam00 converges in ≤ 3
+- A `macula_dht:lookup_nodes/2' walk from beam00 converges in ≤ 3
   rounds.
 - Kill beam02: within 10 s, beam00/01/03 mark beam02 as
   `confirmed_failed' via SWIM.
@@ -652,7 +652,7 @@ What gets checked every 5 min:
 - Every station `/status' reports `healthy: true'.
 - `hecate_erlang_processes_total' does not grow > 5% over the
   window.
-- `hecate_dht_size' is stable ± 20%.
+- `macula_dht_size' is stable ± 20%.
 - No `error' or `critical' log lines.
 - `recon:bin_leak(10)' returns no growing refcounts.
 
@@ -726,7 +726,7 @@ Stored under `~/.hecate/incidents/' per box + git-checked in
 curl -X POST https://beam02.lab:8443/admin/shutdown \
     --cert ~/.hecate/admin.pem
 # Or via remsh:
-hecate_station:stop(whereis(hecate_station_sup), administrative).
+macula_station:stop(whereis(macula_station_sup), administrative).
 ```
 
 Either path:
@@ -755,8 +755,8 @@ hard invariant.
 ```
 # Build + ship (CI does this automatically on push to main)
 rebar3 compile && rebar3 release
-podman build -t ghcr.io/hecate-social/hecate-station:<tag> .
-podman push ghcr.io/hecate-social/hecate-station:<tag>
+podman build -t ghcr.io/macula-io/macula-station:<tag> .
+podman push ghcr.io/macula-io/macula-station:<tag>
 
 # Per-node operations (beam cluster)
 ssh rl@beam0X.lab systemctl --user status hecate-daemon

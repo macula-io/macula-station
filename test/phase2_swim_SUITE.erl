@@ -65,7 +65,7 @@ swim_keeps_peers_alive_under_traffic(Config) ->
 swim_detects_paused_peer(Config) ->
     {A, B, C} = start_three_station_mesh(Config),
     %% Snapshot C's NodeId before suspending — sys:suspend blocks all calls.
-    CPub = macula_identity:public(hecate_station:identity(C)),
+    CPub = macula_identity:public(macula_station:identity(C)),
     %% Wait until the mesh is fully marked alive.
     ok = phase1_helper:wait_for(
         fun() ->
@@ -96,17 +96,17 @@ start_three_station_mesh(Config) ->
     {ok, B} = start_station(Config),
     {ok, C} = start_station(Config),
     %% Mesh: B→A, C→A, C→B  (each pair has at least one direction).
-    {_, AP} = hecate_station:listen_addr(A),
-    {_, BP} = hecate_station:listen_addr(B),
-    {ok, _} = hecate_station:connect_to(B, target(AP)),
-    {ok, _} = hecate_station:connect_to(C, target(AP)),
-    {ok, _} = hecate_station:connect_to(C, target(BP)),
+    {_, AP} = macula_station:listen_addr(A),
+    {_, BP} = macula_station:listen_addr(B),
+    {ok, _} = macula_station:connect_to(B, target(AP)),
+    {ok, _} = macula_station:connect_to(C, target(AP)),
+    {ok, _} = macula_station:connect_to(C, target(BP)),
     %% Wait until each station has 2 peer entries (handshake complete).
     ok = phase1_helper:wait_for(
         fun() ->
-            length(hecate_station:peers(A)) >= 2 andalso
-            length(hecate_station:peers(B)) >= 2 andalso
-            length(hecate_station:peers(C)) >= 2
+            length(macula_station:peers(A)) >= 2 andalso
+            length(macula_station:peers(B)) >= 2 andalso
+            length(macula_station:peers(C)) >= 2
         end, 5_000),
     {A, B, C}.
 
@@ -115,7 +115,7 @@ start_station(Config) ->
     Key  = ?config(keyfile, Config),
     Port = phase1_helper:free_port(),
     Identity = macula_identity:generate(),
-    hecate_station:start_link(#{
+    macula_station:start_link(#{
         bind         => "127.0.0.1",
         port         => Port,
         certfile     => Cert,
@@ -132,7 +132,7 @@ target(Port) ->
     #{host => "127.0.0.1", port => Port, timeout_ms => 3_000}.
 
 cleanup(Stations) ->
-    [catch hecate_station:stop(S) || S <- Stations, is_pid(S), is_process_alive(S)],
+    [catch macula_station:stop(S) || S <- Stations, is_pid(S), is_process_alive(S)],
     ok.
 
 %%------------------------------------------------------------------
@@ -140,13 +140,13 @@ cleanup(Stations) ->
 %%------------------------------------------------------------------
 
 alive_peers_of(Station) ->
-    [M || #{state := alive} = M <- hecate_station:swim_members(Station)].
+    [M || #{state := alive} = M <- macula_station:swim_members(Station)].
 
 is_confirmed(Station, NodeId) ->
     member_state(Station, NodeId) =:= confirmed_failed.
 
 member_state(Station, NodeId) ->
-    case [M || #{node_id := N} = M <- hecate_station:swim_members(Station),
+    case [M || #{node_id := N} = M <- macula_station:swim_members(Station),
                N =:= NodeId] of
         [#{state := S}] -> S;
         []              -> undefined
@@ -154,7 +154,7 @@ member_state(Station, NodeId) ->
 
 assert_state_for_all(Station, Identities, ExpectedState) ->
     [begin
-         Pub = macula_identity:public(hecate_station:identity(Other)),
+         Pub = macula_identity:public(macula_station:identity(Other)),
          ?assertEqual(ExpectedState, member_state(Station, Pub))
      end
      || Other <- Identities].

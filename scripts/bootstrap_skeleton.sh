@@ -34,13 +34,13 @@ mk_lib_app() {
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
 ]}.
 EOF
 }
 
 mk_root_app() {
-  local app=hecate_station
+  local app=macula_station
   mkdir -p "apps/${app}/src"
 
   cat > "apps/${app}/src/${app}.app.src" <<EOF
@@ -69,19 +69,19 @@ mk_root_app() {
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, [{"GitHub", "https://github.com/hecate-social/hecate-station"}]}
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
 ]}.
 EOF
 
   cat > "apps/${app}/src/${app}_app.erl" <<'EOF'
 %% @doc Application callback. Skeleton only — Phase 0.
--module(hecate_station_app).
+-module(macula_station_app).
 -behaviour(application).
 
 -export([start/2, stop/1]).
 
 start(_StartType, _StartArgs) ->
-    hecate_station_sup:start_link().
+    macula_station_sup:start_link().
 
 stop(_State) ->
     ok.
@@ -89,7 +89,7 @@ EOF
 
   cat > "apps/${app}/src/${app}_sup.erl" <<'EOF'
 %% @doc Top-level supervisor. Skeleton only — Phase 0.
--module(hecate_station_sup).
+-module(macula_station_sup).
 -behaviour(supervisor).
 
 -export([start_link/0, init/1]).
@@ -104,7 +104,7 @@ EOF
 
   cat > "apps/${app}/src/${app}.erl" <<'EOF'
 %% @doc Hecate Station facade. Skeleton only — Phase 0.
--module(hecate_station).
+-module(macula_station).
 
 -export([version/0]).
 

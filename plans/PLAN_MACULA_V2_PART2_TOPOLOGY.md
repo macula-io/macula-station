@@ -84,7 +84,7 @@ Default tier for a fresh Hecate Station out of the box is T0. Higher tiers requi
 
 ### 3.2 T1 — Metro / ISP gateway
 
-**What it is.** A station with elevated capacity that aggregates within a city or ISP prefix. Typically a prosumer mini-rack, SMB server, or cooperatively-operated small rack. Runs `hecate_station` + opt-in `gateway_capability` record with `tier=1`.
+**What it is.** A station with elevated capacity that aggregates within a city or ISP prefix. Typically a prosumer mini-rack, SMB server, or cooperatively-operated small rack. Runs `macula_station` + opt-in `gateway_capability` record with `tier=1`.
 
 | Dimension | Range |
 |-----------|-------|

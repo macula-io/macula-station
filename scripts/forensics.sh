@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only forensics on a running hecate-station container.
+# Read-only forensics on a running macula-station container.
 # Usage: forensics.sh <hostname>
 set -eu
 
@@ -11,12 +11,12 @@ run_eval() {
   local label="$1"; shift
   local expr="$1"
   echo "=== $label ==="
-  $SSH "docker exec hecate-station bin/hecate_station eval '$expr'"
+  $SSH "docker exec macula-station bin/macula_station eval '$expr'"
   echo
 }
 
 echo "=== Container ==="
-$SSH "docker ps --filter name=hecate-station --format '{{.Names}}\t{{.Image}}\t{{.Status}}'"
+$SSH "docker ps --filter name=macula-station --format '{{.Names}}\t{{.Image}}\t{{.Status}}'"
 echo
 
 echo "=== Host top ==="

@@ -38,7 +38,7 @@ wrong_realm | wrong_member | not_yet_valid | endorsement_expired`.
 
 +10 station eunit (404 total).
 
-**Phase 5 CT suite** — `hecate_phase5_SUITE` + `phase5_helper`.
+**Phase 5 CT suite** — `macula_phase5_SUITE` + `phase5_helper`.
 The helper spawns in-VM stations, each holding `hecate_overlay_view`
 + `hecate_plumtree` + `hecate_pubsub` per realm, wired through a
 synchronous router. Dispatches HyParView / Plumtree / PubSub frames
@@ -335,7 +335,7 @@ supports.
 | 5.3 | Plumtree | eager + lazy push, IHAVE / GRAFT / PRUNE, tree repair | `hecate_plumtree` |
 | 5.4 | OR-Set CRDT | add/remove convergence + delta-state compaction | `hecate_or_set` |
 | 5.5 | Realm PubSub | PUBLISH / SUBSCRIBE / EVENT frames + realm-scoped dispatch | SDK frames + `hecate_pubsub` |
-| 5.6 | Realm-join + acceptance | join handshake using `realm_member_endorsement`; CT acceptance suite | `hecate_realm_join` + `hecate_phase5_SUITE.erl` |
+| 5.6 | Realm-join + acceptance | join handshake using `realm_member_endorsement`; CT acceptance suite | `hecate_realm_join` + `macula_phase5_SUITE.erl` |
 
 ## Phase 5 acceptance (from Part 7 §10.3)
 

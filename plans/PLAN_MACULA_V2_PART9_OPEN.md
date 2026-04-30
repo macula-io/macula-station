@@ -71,7 +71,7 @@ Consolidated from Parts 1–8. Each entry has: number, question, current leaning
 | # | Question | Resolution |
 |---|----------|-----------|
 | — | Single consolidated plan vs three overlapping plans? | Single plan; three legacy plans archived. |
-| — | Private repo for station implementation? | Yes — `hecate-social/hecate-station`. |
+| — | Private repo for station implementation? | Yes — `macula-io/macula-station`. |
 | — | Archive `macula-io/macula-relay`? | Yes; README redirect; V1 images continue until Phase 8 cutover. |
 | — | SDK home location? | `macula-io/macula` (V2.x on main). |
 | — | Naming the product unit? | **Station** (not relay, not hub, not router). |
@@ -328,12 +328,12 @@ Each fix landed. Each revealed the next rake. The pattern made clear V1 lacked a
 
 **2026-04-14 (this session):**
 - Consolidation to single V2 plan agreed.
-- New private repo `hecate-social/hecate-station` agreed.
+- New private repo `macula-io/macula-station` agreed.
 - Walking-skeleton Phase 1 definition agreed.
 - Async-checkpoint review rhythm agreed.
 - Legacy P3 SWIM-wire work absorbed into V2 Part 4.
 - SDK home = `macula-io/macula` (v2 on main).
-- Station home = `hecate-social/hecate-station`.
+- Station home = `macula-io/macula-station`.
 - Name **station** chosen over relay / router / node.
 - `_v2` suffix dropped; `_macula.*` topic namespace.
 - ROOT + Parts 1–9 authored end-to-end in one work session.
@@ -394,7 +394,7 @@ The design is ready to execute when every box below is checked.
 
 ### 9.3 Ready for Phase 0
 
-- [ ] Private repo `hecate-social/hecate-station` created via `gh repo create`.
+- [ ] Private repo `macula-io/macula-station` created via `gh repo create`.
 - [ ] All PLAN_MACULA_V2_* committed to `plans/` subdirectory of new repo.
 - [ ] `macula-io/macula-relay` archived with README redirect.
 - [ ] MEMORY.md references updated.

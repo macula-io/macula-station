@@ -18,14 +18,14 @@
 
 ## Overview
 
-`hecate-station` currently runs **one identity per BEAM process**. To replace
+`macula-station` currently runs **one identity per BEAM process**. To replace
 `macula-relay` V1 on the existing relay fleet (Hetzner Nuremberg / Helsinki,
 Linode Paris — 1-2 vCPU, 1.9-3.7 GB RAM each), it must run **N identities
 in one BEAM process**, the way V1 multiplexes 100 virtual relay identities
 per box. Spawning N BEAMs per box is not viable on this hardware.
 
 This plan introduces an in-process multi-identity layer so a single
-`hecate-station` instance can host arbitrarily many (identity, listener,
+`macula-station` instance can host arbitrarily many (identity, listener,
 DHT, SWIM) tuples, each bound to a distinct IPv6 address, while sharing
 frame parsing, peer-pool, content-store, and other identity-agnostic
 infrastructure.
@@ -58,18 +58,18 @@ not affordable.
 
 The lower half of the station is already pid-based and multi-instance-safe:
 
-- ✅ `hecate_swim` — anonymous `gen_server:start_link/3`
-- ✅ `hecate_dht_server` — anonymous `gen_server:start_link/3`
+- ✅ `macula_swim` — anonymous `gen_server:start_link/3`
+- ✅ `macula_dht_server` — anonymous `gen_server:start_link/3`
 - ✅ `hecate_peering_conn` — pid-based gen_statem
 
 The **singletons** that block multi-identity:
 
-- ❌ `hecate_station_server` — `{local, ?MODULE}`
+- ❌ `macula_station_server` — `{local, ?MODULE}`
 - ❌ `hecate_pubsub_registry` — `{local, ?MODULE}` (Step 2 commit)
 - ❌ `hecate_pubsub_server_sup` — `{local, ?MODULE}`
-- ❌ `hecate_content_store` — `{local, ?SERVER}`
-- ❌ `hecate_content_transfer` — `{local, ?SERVER}`
-- ❌ `hecate_content_announcer` — `{local, ?MODULE}`
+- ❌ `macula_content_store` — `{local, ?SERVER}`
+- ❌ `macula_content_transfer` — `{local, ?SERVER}`
+- ❌ `macula_content_announcer` — `{local, ?MODULE}`
 - ❌ All `*_sup` modules using `{local, ?MODULE}`
 
 **Per-identity vs shared decision matrix:**
@@ -96,19 +96,19 @@ The **singletons** that block multi-identity:
 Lay the OTP shape. No behavioural changes yet — existing single-identity
 flow keeps working.
 
-- New `hecate_station_identity_sup` (per-identity `one_for_all`).
-  Children (initially): `hecate_station_server`, `hecate_swim`,
-  `hecate_dht_server`, `hecate_overlay_sup` (per-identity instance).
-- New `hecate_station_identity_registry` — gen_server holding
+- New `macula_station_identity_sup` (per-identity `one_for_all`).
+  Children (initially): `macula_station_server`, `macula_swim`,
+  `macula_dht_server`, `hecate_overlay_sup` (per-identity instance).
+- New `macula_station_identity_registry` — gen_server holding
   `{IdentityKey => identity_sup_pid()}`. Public API: `register/2`,
   `lookup/1`, `list/0`, `terminate/1`.
-- `hecate_station_sup` becomes top-level: supervises the registry +
+- `macula_station_sup` becomes top-level: supervises the registry +
   shared infrastructure (content_store, content_transfer, admin API
   later) + dynamic identity_sup children (via the registry).
 
-**Files:** new `hecate_station_identity_sup.erl`,
-`hecate_station_identity_registry.erl`. Modify `hecate_station_sup.erl`,
-`hecate_station_app.erl`.
+**Files:** new `macula_station_identity_sup.erl`,
+`macula_station_identity_registry.erl`. Modify `macula_station_sup.erl`,
+`macula_station_app.erl`.
 
 **Tests:** identity_sup starts/stops cleanly under registry control;
 multiple identity_sup instances coexist.
@@ -119,15 +119,15 @@ Refactor each singleton-registered gen_server to take an identity
 parameter and register under a unique name (or stay anonymous and
 return pid).
 
-- `hecate_station_server` — `start_link(IdentityOpts) -> {ok, Pid}`,
+- `macula_station_server` — `start_link(IdentityOpts) -> {ok, Pid}`,
   no `{local, _}` registration. Callers acquire pid via the registry.
 - `hecate_pubsub_registry` — register as
   `{via, gproc, {n, l, {hecate_pubsub_registry, IdentityKey}}}`.
 - `hecate_pubsub_server_sup` — same gproc-keyed registration.
-- `hecate_content_announcer` — per-identity (each identity announces
+- `macula_content_announcer` — per-identity (each identity announces
   its own provider info).
 
-**Stays singleton:** `hecate_content_store`, `hecate_content_transfer`
+**Stays singleton:** `macula_content_store`, `macula_content_transfer`
 — shared across identities.
 
 **Files:** the six modules above + their supervisor parents +
@@ -141,8 +141,8 @@ publishes distinct provider_info maps.
 
 Make the listener identity-aware.
 
-- `hecate_station_server` (per-identity) opens its OWN
-  `hecate_transport:listen/1` on the identity's bind address +
+- `macula_station_server` (per-identity) opens its OWN
+  `macula_transport:listen/1` on the identity's bind address +
   shared cert. Each identity gets its own listener ref.
 - Inbound peer connections route to the identity that owns the
   bind address. (No SNI inspection needed if each identity has a
@@ -150,7 +150,7 @@ Make the listener identity-aware.
 - Station-to-station outbound dialing goes through the originating
   identity's keypair.
 
-**Files:** `hecate_station_server.erl`, `hecate_station_listener.erl`.
+**Files:** `macula_station_server.erl`, `macula_station_listener.erl`.
 
 **Tests:** two identities in one BEAM, two listeners on different
 loopback ports, cross-talk between them via QUIC.
@@ -159,18 +159,18 @@ loopback ports, cross-talk between them via QUIC.
 
 Wire identity definitions in.
 
-- `hecate_station_identity_config.erl` — parses
+- `macula_station_identity_config.erl` — parses
   `MACULA_RELAY_IDENTITIES` env var (V1 format: comma-separated
   `hostname:city:country:lat:lng:ipv6` records). Also supports a
   TOML / JSON config file path for cleaner ops.
 - Per-identity keypair: deterministic from box-secret + identity
   hostname (HKDF), or per-identity files in `~/.hecate/identities/`.
   V1 deterministic-from-hostname is the path of least friction.
-- `hecate_station_app:start/2` reads config at boot, calls
-  `hecate_station_identity_registry:register/2` for each identity.
+- `macula_station_app:start/2` reads config at boot, calls
+  `macula_station_identity_registry:register/2` for each identity.
 
-**Files:** new `hecate_station_identity_config.erl` +
-`hecate_station_identity_keys.erl`. Modify `hecate_station_app.erl`.
+**Files:** new `macula_station_identity_config.erl` +
+`macula_station_identity_keys.erl`. Modify `macula_station_app.erl`.
 
 **Tests:** parse the existing `relay-identities.txt` files from
 `macula-demo/infrastructure/`. Boot the station with all 100
@@ -180,7 +180,7 @@ Nuremberg identities and verify all 100 listeners come up.
 
 V1-compatible HTTP admin endpoints under bearer-token auth.
 
-- `hecate_station_admin` (already exists per filesystem survey;
+- `macula_station_admin` (already exists per filesystem survey;
   audit and extend rather than rewrite).
 - `GET  /admin/identities` — list current identities + status
 - `POST /admin/identities/:id/start` — instantiate a new identity
@@ -189,8 +189,8 @@ V1-compatible HTTP admin endpoints under bearer-token auth.
 - `POST /admin/identities/:id/reload` — restart with same config
 - Bearer auth via `MACULA_ADMIN_TOKEN` env var (same as V1).
 
-**Files:** extend `apps/hecate_station/src/hecate_station_admin.erl`,
-`hecate_station_admin_sup.erl`. Add Cowboy or similar HTTP layer
+**Files:** extend `apps/macula_station/src/macula_station_admin.erl`,
+`macula_station_admin_sup.erl`. Add Cowboy or similar HTTP layer
 if not present.
 
 **Tests:** end-to-end CT — start station, hit admin endpoints,
@@ -203,13 +203,13 @@ verify identities come and go.
 - Optional: Prometheus exporter with per-identity gauges
   (peer_count, dht_size, swim_alive, etc.).
 
-**Files:** logger filter, `hecate_station_admin.erl` extensions.
+**Files:** logger filter, `macula_station_admin.erl` extensions.
 
 ### Phase 7: Cutover ops — 0.5 session + ongoing
 
 - Adapt `macula-demo/infrastructure/relays-hetzner-nuremberg/`
   docker-compose.yml: new image
-  `ghcr.io/hecate-social/hecate-station:main`, same env vars,
+  `ghcr.io/macula-io/macula-station:main`, same env vars,
   same Caddy cert volume, same network_mode: host.
 - Canary one box (probably Linode Paris — smallest blast radius).
 - Compare metrics for a soak period; flip the other two on
@@ -221,30 +221,30 @@ verify identities come and go.
 ## Files inventory (rough)
 
 **New:**
-- `apps/hecate_station/src/hecate_station_identity_sup.erl`
-- `apps/hecate_station/src/hecate_station_identity_registry.erl`
-- `apps/hecate_station/src/hecate_station_identity_config.erl`
-- `apps/hecate_station/src/hecate_station_identity_keys.erl`
+- `apps/macula_station/src/macula_station_identity_sup.erl`
+- `apps/macula_station/src/macula_station_identity_registry.erl`
+- `apps/macula_station/src/macula_station_identity_config.erl`
+- `apps/macula_station/src/macula_station_identity_keys.erl`
 
 **Refactor (de-singleton + identity-aware):**
-- `apps/hecate_station/src/hecate_station_server.erl`
-- `apps/hecate_station/src/hecate_station_listener.erl`
-- `apps/hecate_station/src/hecate_station_sup.erl`
-- `apps/hecate_station/src/hecate_station_app.erl`
+- `apps/macula_station/src/macula_station_server.erl`
+- `apps/macula_station/src/macula_station_listener.erl`
+- `apps/macula_station/src/macula_station_sup.erl`
+- `apps/macula_station/src/macula_station_app.erl`
 - `apps/hecate_overlay/src/hecate_pubsub_registry.erl`
 - `apps/hecate_overlay/src/hecate_pubsub_server_sup.erl`
 - `apps/hecate_overlay/src/hecate_overlay_sup.erl`
-- `apps/hecate_content/src/hecate_content_announcer.erl`
-- `apps/hecate_content/src/hecate_content_sup.erl`
+- `apps/macula_content/src/macula_content_announcer.erl`
+- `apps/macula_content/src/macula_content_sup.erl`
 
 **Extend (admin):**
-- `apps/hecate_station/src/hecate_station_admin.erl`
-- `apps/hecate_station/src/hecate_station_admin_sup.erl`
+- `apps/macula_station/src/macula_station_admin.erl`
+- `apps/macula_station/src/macula_station_admin_sup.erl`
 
 **Touch (call-site renames in):**
-- All hecate_pubsub_*, hecate_content_* tests
-- `hecate_station_server` callers across the umbrella
-- The new `hecate_station_identity_sup` children's start_link sites
+- All hecate_pubsub_*, macula_content_* tests
+- `macula_station_server` callers across the umbrella
+- The new `macula_station_identity_sup` children's start_link sites
 
 **Adapt:**
 - `macula-demo/infrastructure/relays-hetzner-nuremberg/docker-compose.yml`
@@ -264,12 +264,12 @@ verify identities come and go.
 
 ## Success criteria
 
-- [ ] hecate-station boots N identities (N = 100) in one BEAM on a 3.7 GB
+- [ ] macula-station boots N identities (N = 100) in one BEAM on a 3.7 GB
       Hetzner box, peak RSS < 2 GB, idle RSS < 1.5 GB
 - [ ] Each identity has its own DHT routing table, SWIM membership,
       QUIC listener bound to its IPv6, peering pool, signed records
 - [ ] Admin API allows runtime add / remove / reload of identities
-- [ ] Existing macula-demo deployment scripts work with hecate-station
+- [ ] Existing macula-demo deployment scripts work with macula-station
       image swapped in (same `MACULA_RELAY_IDENTITIES` format,
       same Caddy mount, same env vars)
 - [ ] All 1132 existing eunit tests still pass; new tests cover
@@ -287,13 +287,13 @@ verify identities come and go.
    per-identity infrastructure further, (b) shed identities from that
    box, (c) upsize to a Linode 2GB shared CPU.
 
-2. **gproc dep.** Currently hecate-station has no gproc dep. Adding it
+2. **gproc dep.** Currently macula-station has no gproc dep. Adding it
    pulls in another transitive lib. Alternative: hand-rolled
    `{IdentityKey => Pid}` ETS table. Marginal win; gproc is mature
    and tiny.
 
 3. **Per-identity content store contention.** All identities share one
-   `hecate_content_store`. The gen_server becomes the bottleneck for
+   `macula_content_store`. The gen_server becomes the bottleneck for
    block writes. If it's slow, GC and integrity checks block everyone.
    **Mitigation:** measure before optimising. Filesystem I/O is the
    real bottleneck, not the gen_server — V1 has the same shape.
@@ -309,7 +309,7 @@ verify identities come and go.
 
 - DNS records are owned by Linode; revert
   `relays-{nuremberg,helsinki,paris}.macula.io` AAAA back to the
-  old box if hecate-station fails on the canary box.
+  old box if macula-station fails on the canary box.
 - Container image is on ghcr.io with semver tags; pin
   `macula-relay:v0.x` (the working V1 build) in docker-compose.yml
   to roll back.

@@ -2,7 +2,7 @@
 
 **Status:** ✅ **Design complete** — ROOT + Parts 1-9 authored 2026-04-14. Ready for Phase 0 execution (repo bootstrap).
 **Scope:** Architectural spec for V2 of the Macula mesh protocol and the Hecate Station product built on it.
-**Authoring home (for now):** `~/.claude/plans/`. Moves to `hecate-social/hecate-station/plans/` once the repo is created.
+**Authoring home (for now):** `~/.claude/plans/`. Moves to `macula-io/macula-station/plans/` once the repo is created.
 **Related:** `THREAT_MODEL_MACULA.md` (referenced from Part 1).
 
 ---
@@ -105,8 +105,8 @@ These map directly into V2 architecture — §4.10 presence binding (Pillar 1), 
 | Repo | Org | Status | Content |
 |------|-----|--------|---------|
 | `macula-io/macula` | macula-io | ACTIVE (V1 frozen at 1.4.23; V2 develops on new main/v2) | Mesh protocol SDK: identity, records, protocol, QUIC, client SDK. Published as hex pkg `macula`. V2 = `macula` 2.x. |
-| `hecate-social/hecate-station` | hecate-social | **NEW (PRIVATE)** | Reference station implementation. Consumes `macula` SDK + adds station-only apps (peering, DHT, SWIM, handler, /status, admin). Product: the Hecate Station. |
-| `macula-io/macula-relay` | macula-io | **ARCHIVED** | Superseded by `hecate-station`. Git-archive flag set; README pointers. V1 codebase preserved for reference + legacy fleet Docker images continue to run unchanged. |
+| `macula-io/macula-station` | hecate-social | **NEW (PRIVATE)** | Reference station implementation. Consumes `macula` SDK + adds station-only apps (peering, DHT, SWIM, handler, /status, admin). Product: the Hecate Station. |
+| `macula-io/macula-relay` | macula-io | **ARCHIVED** | Superseded by `macula-station`. Git-archive flag set; README pointers. V1 codebase preserved for reference + legacy fleet Docker images continue to run unchanged. |
 | `macula-io/macula-realm` | macula-io | ACTIVE | Realm server. Will consume Macula 2.x SDK when V2 matures. |
 | `macula-io/macula-architecture` | macula-io | ACTIVE | Existing architecture index. V2 plans may be mirrored or linked; the station repo is the canonical home. |
 | `hecate-social/hecate-daemon` | hecate-social | ACTIVE | User-facing runtime. Will consume Macula 2.x when ready. |
@@ -118,13 +118,13 @@ Module naming (decision 2026-04-14):
   Anything shared meaningfully between station, daemon, and stub.
   - `macula` (facade), `macula_identity`, `macula_record`, `macula_frame`,
     `macula_transport`, `macula_peering`, `macula_diagnostics`.
-- **`hecate_*`** = station-role implementations, live in **`hecate-social/hecate-station`**.
+- **`hecate_*`** = station-role implementations, live in **`macula-io/macula-station`**.
   Code only stations run.
-  - `hecate_station` (root + config + admin + health),
-    `hecate_dht`, `hecate_swim`, `hecate_routing`, `hecate_handler`,
-    `hecate_bootstrap`, `hecate_overlay`, `hecate_realm`.
+  - `macula_station` (root + config + admin + health),
+    `macula_dht`, `macula_swim`, `macula_routing`, `macula_handler`,
+    `macula_bootstrap`, `hecate_overlay`, `hecate_realm`.
 
-The earlier "all `macula_*` lives in hecate-station as YAGNI" framing was
+The earlier "all `macula_*` lives in macula-station as YAGNI" framing was
 revised: SDK-vs-station split is the cleaner separation. Algorithms (SWIM,
 S/Kademlia, Plumtree) are Macula's; *this Erlang implementation* of them
 is Hecate's. Other implementations (Rust station, Go station) would carry
@@ -180,7 +180,7 @@ High-level only. Per-phase detail in Part 7.
 
 | Phase | Sessions | Deliverable | Acceptance |
 |-------|----------|-------------|------------|
-| **0** | 1 | Repo created + bootstrapped | Private repo at `hecate-social/hecate-station` exists; CI green; rebar skeleton compiles; README + PLAN files committed |
+| **0** | 1 | Repo created + bootstrapped | Private repo at `macula-io/macula-station` exists; CI green; rebar skeleton compiles; README + PLAN files committed |
 | **1** | 5-6 | **Walking skeleton** — two stations exchange signed `node_record`s via QUIC | Integration test: 2 stations, both hold verified records, tombstone-on-stop works |
 | **2** | 4-6 | SWIM-Lifeguard liveness between stations | Chaos test: kill one station, peers detect within 10s |
 | **3** | 8-12 | S/Kademlia DHT with tier-diverse buckets + diversity replica placement | Lookup success >99.5% at N=100 simulated stations |
@@ -211,8 +211,8 @@ Wire topic discipline:
 Module naming:
 - `macula_*` — protocol primitives in the SDK (`macula-io/macula`)
 - `hecate_*` — Hecate product code: daemon, web, plugins, AND the station's
-  server-role apps (`hecate_dht`, `hecate_swim`, `hecate_routing`, `hecate_handler`,
-  `hecate_bootstrap`, `hecate_overlay`, `hecate_realm`, `hecate_station*`)
+  server-role apps (`macula_dht`, `macula_swim`, `macula_routing`, `macula_handler`,
+  `macula_bootstrap`, `hecate_overlay`, `hecate_realm`, `macula_station*`)
 - Nothing ever carries a `_v2` suffix — the repo and version numbers convey version
 
 ---
@@ -222,8 +222,8 @@ Module naming:
 Pre-user, no migration in the traditional sense. Three disciplines govern the transition:
 
 1. **Legacy freeze.** `macula-relay` receives no further code changes. V1 fleet continues running frozen Docker images until V2 cutover. Critical bugs ONLY if they block the lab (unlikely).
-2. **Fresh repo.** `hecate-station` starts empty. Code is cherry-picked from `macula-relay` (quicer bindings, peer_client pattern, frame encoder) but every module is reviewed and rewritten against V2 principles before committing. No copy-and-patch.
-3. **Phase 8 cutover.** When `hecate-station` reaches functional parity for the mesh_chat demo, the fleet's Docker image swaps from `ghcr.io/macula-io/macula-relay:main` to `ghcr.io/hecate-social/hecate-station:main`. The ecosystem already uses `macula-demo` for deployment orchestration — that's the coordination point.
+2. **Fresh repo.** `macula-station` starts empty. Code is cherry-picked from `macula-relay` (quicer bindings, peer_client pattern, frame encoder) but every module is reviewed and rewritten against V2 principles before committing. No copy-and-patch.
+3. **Phase 8 cutover.** When `macula-station` reaches functional parity for the mesh_chat demo, the fleet's Docker image swaps from `ghcr.io/macula-io/macula-relay:main` to `ghcr.io/macula-io/macula-station:main`. The ecosystem already uses `macula-demo` for deployment orchestration — that's the coordination point.
 
 Code reuse ratio expectation: **~40% cherry-picked from V1, ~60% new V2 code.** The cherry-picked portion is primarily quicer transport + frame encoding; everything identity-adjacent (handlers, DHT, routing) is new.
 
@@ -266,7 +266,7 @@ All moved to `~/.claude/plans/archive/`:
 ### Complementary active plans (not superseded)
 
 - `macula-relay/plans/PLAN_MACULA_RELAY_REFACTOR.md` — P0-P2 shipped; P3-P5 superseded by this plan's Part 4. Document retained as historical record of the P0-P2 work.
-- `THREAT_MODEL_MACULA.md` — threat-vector catalogue. Referenced throughout; may live alongside this plan in `hecate-station/plans/`.
+- `THREAT_MODEL_MACULA.md` — threat-vector catalogue. Referenced throughout; may live alongside this plan in `macula-station/plans/`.
 - `PLAN_MNS_AND_REALM_JOIN.md` — realm governance; application-level, rides on V2.
 - `PLAN_GIT_OVER_MESH.md` — future application.
 - `PLAN_LOCAL_FIRST_BOOT.md` — daemon-level, rides on V2.
@@ -318,20 +318,20 @@ Each fix landed. Each revealed the next rake. The pattern made clear: V1 lacks a
   - All three had overlapping content.
 - 2026-04-14 (planning session):
   - Consolidation to single V2 plan agreed.
-  - New private repo `hecate-social/hecate-station` agreed (Q1).
+  - New private repo `macula-io/macula-station` agreed (Q1).
   - Walking-skeleton Phase 1 definition agreed (Q2).
   - Async-checkpoint review rhythm agreed (Q3).
   - Legacy P3 SWIM-wire work absorbed into V2 Part 4 (Q4).
-  - SDK home = `macula-io/macula` (v2 on main); station home = `hecate-social/hecate-station` (Q5, revised).
+  - SDK home = `macula-io/macula` (v2 on main); station home = `macula-io/macula-station` (Q5, revised).
   - Name `station` chosen over `relay` / `router` / `node` (Q1.5).
   - `_v2` suffix dropped; `_macula.*` topic namespace for protocol-layer (Q2 follow-up).
 - 2026-04-14 (Phase 1 kickoff):
-  - **SDK / station naming split**: `macula_*` apps stay in macula-io/macula; station-role apps in hecate-station rename `macula_*` → `hecate_*`. Test: "shared meaningfully" between station + daemon + stub ⇒ SDK; otherwise station.
+  - **SDK / station naming split**: `macula_*` apps stay in macula-io/macula; station-role apps in macula-station rename `macula_*` → `hecate_*`. Test: "shared meaningfully" between station + daemon + stub ⇒ SDK; otherwise station.
   - **`macula` SDK = umbrella** with 7 sub-apps: `macula`, `macula_identity`, `macula_record`, `macula_frame`, `macula_transport`, `macula_peering`, `macula_diagnostics`.
   - **Quinn NIF** lives at `apps/macula_transport/native/macula_quic/` (was umbrella root); pre_hook moved to `macula_transport/rebar.config`. Enables `{git_subdir, ...}` consumption.
-  - **hecate-station deps** = 7 `git_subdir` entries to macula v2 branch until 2.0.0 ships on hex.
+  - **macula-station deps** = 7 `git_subdir` entries to macula v2 branch until 2.0.0 ships on hex.
   - **Diagnostics** SDK only — namespacing via event names (`_macula.*` vs `_hecate.*`).
-  - **macula_handler** folded into `macula` facade (client-side `advertise/3`); station owns `hecate_handler` (server-side dispatch registry).
+  - **macula_handler** folded into `macula` facade (client-side `advertise/3`); station owns `macula_handler` (server-side dispatch registry).
   - O10 (Quinn vs quicer) RESOLVED: Quinn.
   - macula v2 branch cut + pushed; macula_identity fully implemented (eunit 19/0); both repos compile + xref + dialyzer clean.
 
@@ -344,7 +344,7 @@ Each fix landed. Each revealed the next rake. The pattern made clear: V1 lacks a
 
 ## 13. Next concrete actions
 
-1. Create private repo: `hecate-social/hecate-station` via `gh repo create` + push this ROOT plan.
+1. Create private repo: `macula-io/macula-station` via `gh repo create` + push this ROOT plan.
 2. Archive `macula-io/macula-relay`: GitHub archive flag + README-replace pointing at station.
 3. Update `MEMORY.md` (auto-memory) to reflect the consolidated plan.
 4. Begin Part 1 authoring in the next session.

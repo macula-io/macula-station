@@ -1,5 +1,5 @@
--sname hecate_station
--setcookie hecate_station_dev_cookie
+-sname macula_station
+-setcookie macula_station_dev_cookie
 +K true
 +A 64
 +sbt db

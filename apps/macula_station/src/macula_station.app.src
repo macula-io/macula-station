@@ -1,0 +1,24 @@
+{application, macula_station, [
+    {description, "Hecate Station — Macula V2 reference station (root app)"},
+    {vsn, "0.1.0"},
+    {registered, [macula_station_sup, macula_station_identity_registry]},
+    {mod, {macula_station_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        macula,
+        macula_transport,
+        macula_dht,
+        macula_swim,
+        macula_routing,
+        macula_handler,
+        macula_bootstrap,
+        hecate_overlay,
+        hecate_realm,
+        macula_content
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.

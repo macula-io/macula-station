@@ -1,6 +1,8 @@
-# Hecate Station
+# Macula Station
 
 **Macula V2 reference station.** Private repository. Design phase — not yet usable.
+
+> **Renamed from `hecate-social/hecate-station`** on 2026-04-30. Repository transferred to `macula-io/macula-station`. Erlang application names follow the rename: `hecate_*` (eight in-scope sub-apps) became `macula_*`. Two transitional sub-apps (`hecate_overlay` and `hecate_realm`) keep the `hecate_` prefix until they migrate to the realm-service repository.
 
 ---
 
@@ -17,7 +19,7 @@
 
 ## What is this?
 
-Hecate Station is the reference implementation of a **Macula V2** node. Macula is a federated relay/mesh protocol for sovereign, end-to-end-encrypted application networks. A *station* is the unit of deployment — a single process that provides identity, peering, DHT participation, SWIM liveness, source-routing, bootstrap, and overlay services to consumers of the Macula SDK.
+Macula Station is the reference implementation of a **Macula V2** node. Macula is a federated relay/mesh protocol for sovereign, end-to-end-encrypted application networks. A *station* is the unit of deployment — a single process that provides identity, peering, DHT participation, SWIM liveness, source-routing, bootstrap, and overlay services to consumers of the Macula SDK.
 
 See the architecture plans for full context:
 
@@ -40,7 +42,7 @@ See the architecture plans for full context:
 | Repo | Role |
 |------|------|
 | `macula-io/macula` | SDK consumed by applications. V1 on `v1.x`; V2 develops on `main`. |
-| `hecate-social/hecate-station` (this) | Reference station server implementation. V2 only. |
+| `macula-io/macula-station` (this) | Reference station server implementation. V2 only. |
 | `macula-io/macula-relay` | **Archived.** V1 codebase. Superseded by this repo. |
 | `hecate-social/hecate-daemon` | User-facing Hecate runtime. Consumes Macula SDK. |
 | `macula-io/macula-realm` | Realm server. Will consume V2 from Phase 7+. |

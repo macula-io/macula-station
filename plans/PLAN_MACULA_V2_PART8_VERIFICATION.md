@@ -312,7 +312,7 @@ Chaos is where the 7 pillars face reality. Each scenario maps to one or more pil
 | Scenario | Tools | Pillars tested |
 |----------|-------|----------------|
 | **Process kill** (SIGKILL) | `erlang:halt/0` on victim node | 1, 3 |
-| **Graceful stop** | `hecate_station:stop/0` | 1, 5, 7 |
+| **Graceful stop** | `macula_station:stop/0` | 1, 5, 7 |
 | **Network partition** (symmetric) | toxiproxy `bandwidth=0` | 3, 5, 7 |
 | **Asymmetric partition** (A→B ok, B→A drop) | toxiproxy directional | 3, 5 |
 | **Packet loss 10/30/50%** | toxiproxy `packet_loss` | 3 |

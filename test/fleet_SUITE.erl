@@ -1,7 +1,7 @@
 %% @doc Fleet CT — Session 8.8.
 %%
 %% Spawns N independent BEAM VMs via `peer:start_link/1' and boots
-%% one `hecate_station' application inside each. Every peer runs the
+%% one `macula_station' application inside each. Every peer runs the
 %% full supervision tree (DHT, SWIM, observer, listener, realms,
 %% cache, rebootstrap) on an ephemeral loopback port, with a fresh
 %% data_dir and its own Ed25519 identity. Because each BEAM has its
@@ -148,7 +148,7 @@ start_one_peer(Case, Tag, Cert, Key, SwimOpts) ->
     %% distribution — requires net_kernel on the parent, which
     %% `rebar3 ct' sets up. Inherit our code path so the peer sees
     %% every app (including test-only modules like
-    %% `hecate_station_stub_tier').
+    %% `macula_station_stub_tier').
     {ok, Ctl, Node} = peer:start_link(#{
         name      => binary_to_atom(NodeName, utf8),
         args      => ["-pa" | code:get_path()],
@@ -166,7 +166,7 @@ boot_station(Node, Port, Cert, Key, DataDir, SwimOpts) ->
     ok = set_station_env(Node, Port, Cert, Key, DataDir, SwimOpts),
     set_stub_bootstrap_env(Node),
     {ok, _Started} = rpc_call(Node, application, ensure_all_started,
-                              [hecate_station]),
+                              [macula_station]),
     ok.
 
 set_station_env(Node, Port, Cert, Key, DataDir, _SwimOpts) ->
@@ -178,25 +178,25 @@ set_station_env(Node, Port, Cert, Key, DataDir, _SwimOpts) ->
         {keyfile,  Key}
     ],
     [ok = rpc_call(Node, application, set_env,
-                   [hecate_station, K, V]) || {K, V} <- Entries],
+                   [macula_station, K, V]) || {K, V} <- Entries],
     ok.
 
 set_stub_bootstrap_env(Node) ->
     %% Inject a stub tier via application env so the cascade
     %% completes with at least one synthetic peer. The test stub
     %% module needs to be loadable from the peer's code path.
-    Stub = hecate_station_stub_tier,
+    Stub = macula_station_stub_tier,
     _ = ensure_loaded_on_peer(Node, Stub),
     Peer = Stub:stub_peer(<<123:256>>),
     ok = rpc_call(Node, application, set_env,
-        [hecate_bootstrap, tiers, [{Stub, #{peers => [Peer]}}]]),
+        [macula_bootstrap, tiers, [{Stub, #{peers => [Peer]}}]]),
     ok = rpc_call(Node, application, set_env,
-        [hecate_bootstrap, cascade_opts,
+        [macula_bootstrap, cascade_opts,
          #{min_peers => 1, timeout_ms => 2_000}]).
 
 ensure_loaded_on_peer(Node, Mod) ->
     %% -pa inherits the test profile's code paths; the stub is in
-    %% apps/hecate_station/test, which rebar3 includes in the
+    %% apps/macula_station/test, which rebar3 includes in the
     %% test code path, so code:get_path() above covers it. Double
     %% check by forcing a load on the peer.
     rpc_call(Node, code, ensure_loaded, [Mod]).
@@ -213,26 +213,26 @@ stop_peers([#{ctl := Ctl, data_dir := Dir} | Rest]) ->
 %%==================================================================
 
 pub(#{node := Node}) ->
-    {ok, Kp} = rpc_call(Node, hecate_station, current_identity, []),
+    {ok, Kp} = rpc_call(Node, macula_station, current_identity, []),
     rpc_call(Node, macula_identity, public, [Kp]).
 
 connect_meshed(P1, #{node := N2, port := Port1_2}) ->
     %% N2 dials the ephemeral port learned above; the observer on
     %% each side handles the handshake and drives DHT+SWIM.
     #{port := Port1} = P1,
-    {ok, _Conn} = rpc_call(N2, hecate_station, connect_to,
+    {ok, _Conn} = rpc_call(N2, macula_station, connect_to,
         [#{host => "127.0.0.1", port => Port1, timeout_ms => 3_000}]),
     _ = Port1_2,
     ok.
 
 dht_contains(#{node := Node}, NodeId) ->
-    {ok, Dht} = rpc_call(Node, hecate_station, dht, []),
-    rpc_call(Node, hecate_dht, contains, [Dht, NodeId]).
+    {ok, Dht} = rpc_call(Node, macula_station, dht, []),
+    rpc_call(Node, macula_dht, contains, [Dht, NodeId]).
 
 dht_tier(#{node := Node}, NodeId) ->
-    {ok, Dht}  = rpc_call(Node, hecate_station, dht, []),
-    {ok, Entry} = rpc_call(Node, hecate_dht, find, [Dht, NodeId]),
-    rpc_call(Node, hecate_dht_entry, tier, [Entry]).
+    {ok, Dht}  = rpc_call(Node, macula_station, dht, []),
+    {ok, Entry} = rpc_call(Node, macula_dht, find, [Dht, NodeId]),
+    rpc_call(Node, macula_dht_entry, tier, [Entry]).
 
 swim_alive_remote(#{node := Node}, NodeId) ->
     remote_member_state(#{node => Node}, NodeId) =:= alive.
@@ -241,7 +241,7 @@ swim_alive_remote(#{node := Node}, NodeId) ->
 %% helper is a LOCAL call; fleet tests live across peer nodes so
 %% we wrap it in `rpc:call'.
 remote_member_state(#{node := Node}, NodeId) ->
-    {ok, Swim} = rpc_call(Node, hecate_station, swim, []),
+    {ok, Swim} = rpc_call(Node, macula_station, swim, []),
     rpc_call(Node, fleet_chaos, member_state, [Swim, NodeId]).
 
 %%==================================================================
@@ -258,7 +258,7 @@ free_port() ->
     P.
 
 ensure_data_dir(Name) ->
-    Dir = filename:join(["/tmp", "hecate-station-fleet",
+    Dir = filename:join(["/tmp", "macula-station-fleet",
                          binary_to_list(Name)]),
     ok = filelib:ensure_dir(filename:join(Dir, "placeholder")),
     Dir.

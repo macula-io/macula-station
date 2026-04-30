@@ -537,10 +537,10 @@ V1 `_relay.*` and `_chat.*` are retired. The former becomes `_macula.*`; the lat
 
 ### 10.4 Module namespaces (code)
 
-Inside `hecate-social/hecate-station`:
+Inside `macula-io/macula-station`:
 
 - `macula_*` — reusable Macula protocol implementation. (`macula_peering`, `macula_handler`, `macula_dht`, `macula_swim`, `macula_record`, `macula_identity`.)
-- `hecate_station_*` — station-as-product shell. (`hecate_station`, `hecate_station_sup`, `hecate_station_health`, `hecate_station_config`, `hecate_station_admin`.)
+- `macula_station_*` — station-as-product shell. (`macula_station`, `macula_station_sup`, `macula_station_health`, `macula_station_config`, `macula_station_admin`.)
 
 Inside `macula-io/macula` (SDK, v2.x on main):
 

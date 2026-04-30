@@ -1,0 +1,10 @@
+{application, macula_swim, [
+    {description, "Hecate Station — SWIM-Lifeguard member"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, macula]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.

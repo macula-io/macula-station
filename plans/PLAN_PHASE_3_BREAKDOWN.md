@@ -31,31 +31,31 @@ S/Kademlia DHT with tier-diverse buckets. NOT in scope: source routing (Part 4),
 | `REPLICA_COUNTRY_MIN` | 5 | per stored record |
 | `REPLICA_TIER_MIN` | 3 | per stored record |
 
-All centralised in `hecate_dht_const.hrl` when needed.
+All centralised in `macula_dht_const.hrl` when needed.
 
 ## Decisions taken at Phase 3 start
 
 - **O1 (crypto-puzzle difficulty):** hardcode `16` for now. `foundation_parameter` records accepted but not acted on. Adaptive bumping deferred post-V2.0.
-- **Simulation strategy:** Common Test harness — N synthetic `hecate_dht` instances in one BEAM VM, frame-delivery via `erlang:send/2`. QUIC path tested separately.
+- **Simulation strategy:** Common Test harness — N synthetic `macula_dht` instances in one BEAM VM, frame-delivery via `erlang:send/2`. QUIC path tested separately.
 - **Persistence:** routing table reconstructs from node-record DHT on boot; no local table snapshot in Phase 3.
-- **Storage backend:** ETS per-process (owner = `hecate_dht_server`). No DETS, no mnesia. Pillar 1 (process-resource binding).
+- **Storage backend:** ETS per-process (owner = `macula_dht_server`). No DETS, no mnesia. Pillar 1 (process-resource binding).
 
 ## Session breakdown (12 micro-sessions)
 
 | # | Session | Deliverable | Modules |
 |---|---------|-------------|---------|
-| 3.1 | **Pure foundation** | XOR metric, entry record, diversity scoring, bucket primitive | `hecate_dht_xor`, `hecate_dht_entry`, `hecate_dht_diversity`, `hecate_dht_bucket` |
-| 3.2 | Routing table | 256 buckets, admission + eviction, sibling list | `hecate_dht_routing_table`, `hecate_dht_siblings` |
-| 3.3 | Server + API | `hecate_dht_server` (gen_server), `hecate_dht` facade, supervisor | `hecate_dht_sup`, `hecate_dht_server`, `hecate_dht` |
+| 3.1 | **Pure foundation** | XOR metric, entry record, diversity scoring, bucket primitive | `macula_dht_xor`, `macula_dht_entry`, `macula_dht_diversity`, `macula_dht_bucket` |
+| 3.2 | Routing table | 256 buckets, admission + eviction, sibling list | `macula_dht_routing_table`, `macula_dht_siblings` |
+| 3.3 | Server + API | `macula_dht_server` (gen_server), `macula_dht` facade, supervisor | `macula_dht_sup`, `macula_dht_server`, `macula_dht` |
 | 3.4 | DHT frames in SDK | Extend `macula_frame` with `ping/pong/find_node/nodes/find_value/value/store/store_ack/replicate/replicate_ack` | (macula repo) |
-| 3.5 | PING/PONG + FIND_NODE request-response | First wire-level DHT op; uses SWIM-independent liveness | `hecate_dht_server`, `hecate_dht_protocol` |
-| 3.6 | Lookup — disjoint paths | d=3 disjoint peers per iteration, α=3 parallel, termination rule | `hecate_dht_lookup` |
-| 3.7 | FIND_VALUE + record types | Extend `macula_record` with realm_directory, realm_stations, procedure_advertisement | (macula repo) + `hecate_dht_server` |
-| 3.8 | STORE + quorum + placement | Diversity-constrained replica placement (k=20, ≥16 acks) | `hecate_dht_store`, `hecate_dht_placement` |
-| 3.9 | tReplicate custodian loop | 1h timer, re-STORE to current k-closest | `hecate_dht_replicate` |
-| 3.10 | tRepublish owner loop + tExpire reaper | 24h owner republish, 48h custodian expiry + tombstone | `hecate_dht_republish`, `hecate_dht_expire` |
-| 3.11 | Observability | Bucket-diversity + replica-diversity telemetry via `macula_diagnostics` | `hecate_dht_monitor` |
-| 3.12 | Acceptance suite | CT suite: N=100 synthetic stations, accelerated clock, convergence + diversity + republish cycles | `test/hecate_dht_SUITE.erl` |
+| 3.5 | PING/PONG + FIND_NODE request-response | First wire-level DHT op; uses SWIM-independent liveness | `macula_dht_server`, `macula_dht_protocol` |
+| 3.6 | Lookup — disjoint paths | d=3 disjoint peers per iteration, α=3 parallel, termination rule | `macula_dht_lookup` |
+| 3.7 | FIND_VALUE + record types | Extend `macula_record` with realm_directory, realm_stations, procedure_advertisement | (macula repo) + `macula_dht_server` |
+| 3.8 | STORE + quorum + placement | Diversity-constrained replica placement (k=20, ≥16 acks) | `macula_dht_store`, `macula_dht_placement` |
+| 3.9 | tReplicate custodian loop | 1h timer, re-STORE to current k-closest | `macula_dht_replicate` |
+| 3.10 | tRepublish owner loop + tExpire reaper | 24h owner republish, 48h custodian expiry + tombstone | `macula_dht_republish`, `macula_dht_expire` |
+| 3.11 | Observability | Bucket-diversity + replica-diversity telemetry via `macula_diagnostics` | `macula_dht_monitor` |
+| 3.12 | Acceptance suite | CT suite: N=100 synthetic stations, accelerated clock, convergence + diversity + republish cycles | `test/macula_dht_SUITE.erl` |
 
 Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commit pushed with audit-trail message.
 
@@ -72,10 +72,10 @@ Each session ends green: `rebar3 compile xref eunit ct dialyzer` all pass, commi
 
 **Scope:** four pure modules — no processes, no sockets. Everything testable by eunit alone.
 
-1. `hecate_dht_xor` — XOR distance, common-prefix-bits, bucket-index, closer comparator
-2. `hecate_dht_entry` — routing-table entry record + constructors/accessors/touch
-3. `hecate_dht_diversity` — ASN/country/tier counting, constraint checker, novelty scorer
-4. `hecate_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
+1. `macula_dht_xor` — XOR distance, common-prefix-bits, bucket-index, closer comparator
+2. `macula_dht_entry` — routing-table entry record + constructors/accessors/touch
+3. `macula_dht_diversity` — ASN/country/tier counting, constraint checker, novelty scorer
+4. `macula_dht_bucket` — ordered list of entries, admission with scoring eviction (k=20)
 
 Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable state.
 
@@ -84,7 +84,7 @@ Acceptance: 68 eunit green, xref + dialyzer clean, no module exposes mutable sta
 **Scope:** acceptance Common Test suite gating the Phase 3
 criteria.
 
-`apps/hecate_dht/test/hecate_dht_SUITE.erl` — single CT suite
+`apps/macula_dht/test/macula_dht_SUITE.erl` — single CT suite
 exercising the full DHT against an in-VM 50-station fleet wired
 through a synchronous dispatch router. Each test rebuilds the
 fleet from scratch in `init_per_testcase`.
@@ -136,13 +136,13 @@ metrics emitted via `macula_diagnostics` (Part 3 §13).
    (skipping empty/never-touched ones). Surfaced through server
    + facade.
 
-2. `hecate_dht_monitor` — gen_server. Default 1-min interval.
+2. `macula_dht_monitor` — gen_server. Default 1-min interval.
    - **bucket_report**: walks every populated bucket, runs
-     `hecate_dht_diversity:bucket_constraints_met/1`, tallies
+     `macula_dht_diversity:bucket_constraints_met/1`, tallies
      `populated / diverse / asn_violations / country_violations
      / tier_violations`.
    - **replica_report**: walks every owned record (envelope key
-     == self_id), runs `hecate_dht_placement:place/3` against
+     == self_id), runs `macula_dht_placement:place/3` against
      the current k-closest, reports `chosen / degraded / counts`
      per record.
    - On each tick: emits `_hecate.dht.metrics` event via
@@ -181,15 +181,15 @@ reaper (tExpire) — Part 3 §5.1, §5.5, §11.
 
 **Station side:**
 
-1. `hecate_dht_republish` — gen_server. Default interval 24h.
+1. `macula_dht_republish` — gen_server. Default interval 24h.
    - Each tick: `list_records/1`, filter to records where
      `envelope.key == self_id` (i.e. records we own), call
      `macula_record:refresh/2`, `put_record/2` locally, then
-     `hecate_dht:store/3` to fan out to k-closest custodians.
+     `macula_dht:store/3` to fan out to k-closest custodians.
    - Outcome: `records_seen / owned / republished / quorum_not_met
      / no_candidates`.
 
-2. `hecate_dht_expire` — gen_server. Default interval 1h reap
+2. `macula_dht_expire` — gen_server. Default interval 1h reap
    cadence (T_EXPIRE_MS = 48h is the TTL, not the reap interval —
    any cadence ≪ TTL works).
    - Each tick: `list_records/1`, for each record with
@@ -216,21 +216,21 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.1, §5.5, §11.
 
 **Scope:** tReplicate custodian loop (Part 3 §5.5, §11.1).
 
-1. `hecate_dht_replicate` — standalone `gen_server`. Default
+1. `macula_dht_replicate` — standalone `gen_server`. Default
    interval `T_REPLICATE_MS = 3_600_000` (1 h), configurable for
    tests. On each tick it:
-   - Calls `hecate_dht:list_records/1` to enumerate every record
+   - Calls `macula_dht:list_records/1` to enumerate every record
      held in the local store.
    - For each record, computes `k_closest/3` against the target's
      storage key, filters out self, and sends STORE (via
-     `hecate_dht:send_store/4`) to every remaining peer.
+     `macula_dht:send_store/4`) to every remaining peer.
    - Counts `records_seen / stores_sent / acks / nacks / timeouts`
      per tick and maintains cumulative stats.
 
 2. New server op: `list_records/1` — enumerates every record in
-   the ETS-bag store. Facade delegate on `hecate_dht`.
+   the ETS-bag store. Facade delegate on `macula_dht`.
 
-3. Tick can be driven manually (`hecate_dht_replicate:tick/1`
+3. Tick can be driven manually (`macula_dht_replicate:tick/1`
    returns the tick's outcome) or automatically on the interval
    timer. Tests use the manual path for determinism plus one
    interval-based test to exercise the timer.
@@ -249,7 +249,7 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.5, §11.1.
 
 **Scope:** STORE + quorum + diversity-constrained replica placement.
 
-1. `hecate_dht_placement` — pure algorithm (no SDK changes needed;
+1. `macula_dht_placement` — pure algorithm (no SDK changes needed;
    STORE/STORE_ACK frames were added in 3.4). Greedy closest-first
    with forward-looking diversity admission: a candidate is rejected
    only if accepting it would leave too few slots to cover the
@@ -259,18 +259,18 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.5, §11.1.
    returned with `degraded = true`. Default constraints match Part
    3 §5.2: K=20, ≥8 ASN / ≥5 country / ≥3 tier / ≤3 per operator.
 
-2. `hecate_dht_store` — blocking orchestrator running in the
+2. `macula_dht_store` — blocking orchestrator running in the
    caller's process. Resolves candidates (explicit `candidates'
    opt OR `k_closest/3` on the local routing table), calls
    placement, spawns one unlinked worker per chosen peer. Each
-   worker calls `hecate_dht:send_store/4` and reports back. Collect
+   worker calls `macula_dht:send_store/4` and reports back. Collect
    waits for all workers or the overall deadline — no early
    termination (a ref-tag on messages isolates calls so eunit's
    reused runner pid doesn't cross-contaminate tests). Returns
    `{ok, Outcome}` on quorum (≥16 acks by default) or
    `{error, quorum_not_met | no_candidates, Outcome}` otherwise.
 
-3. `hecate_dht_server` wire extensions:
+3. `macula_dht_server` wire extensions:
    - `send_store/3,4` RPC with `pending_stores` correlation
      (keyed on `{PeerId, StorageKey}`).
    - Incoming STORE → verify record signature, put on success,
@@ -278,15 +278,15 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.5, §11.1.
      atom reason on verify failure).
    - Incoming STORE_ACK → correlate, reply `{ok, #{stored, reason}}`.
 
-4. `hecate_dht_protocol`: `build_store/2`, `build_store_ack/4`.
+4. `macula_dht_protocol`: `build_store/2`, `build_store_ack/4`.
 
-5. `hecate_dht` facade: `send_store/3,4`, `store/2,3`.
+5. `macula_dht` facade: `send_store/3,4`, `store/2,3`.
 
 Acceptance: +15 eunit (total 209). Two new modules' tests:
-- `hecate_dht_placement_tests` — empty pool, K-cap, operator cap,
+- `macula_dht_placement_tests` — empty pool, K-cap, operator cap,
   diversity satisfied, forward-looking preference for diverse
   tail candidates, dedup, degraded when unreachable.
-- `hecate_dht_store_tests` — single-peer wire path (persist +
+- `macula_dht_store_tests` — single-peer wire path (persist +
   return `{ok, stored: true}`), no-transport error, timeout,
   orchestrated multi-custodian store with quorum met, quorum-not-met
   on silent custodian, degraded flag propagation, no-candidates
@@ -313,7 +313,7 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §5.2, §5.6, §10.4.
 
 **Station side:**
 1. ETS record store (`bag` keyed on storage_key, value = record())
-   owned by `hecate_dht_server`. `put` preserves records from other
+   owned by `macula_dht_server`. `put` preserves records from other
    envelope-owners at the same storage key (crucial for
    procedure_advertisement where many advertisers share one URI
    hash) and replaces the same-owner's prior record so versions
@@ -341,18 +341,18 @@ Refs: plans/PLAN_MACULA_V2_PART6_PROTOCOL.md §9.4/§9.5/§9.7, §7.3;
 **Scope:** S/Kademlia iterative FIND_NODE lookup with d=3 disjoint
 paths.
 
-1. `hecate_dht_lookup` — blocking orchestrator in the caller's
+1. `macula_dht_lookup` — blocking orchestrator in the caller's
    process. Maintains a `state()` map with `d` paths, each path a
    `#{id, shortlist, queried, in_flight}`. `claimed` set sits at the
    state level and enforces peer-level disjointness: a peer
    admitted to one path's shortlist cannot enter another's. Workers
-   are short-lived unlinked procs that block on `hecate_dht:find_node/4`
+   are short-lived unlinked procs that block on `macula_dht:find_node/4`
    and send `{lookup_result, PathId, PeerId, Result}' back to the
    orchestrator. Termination fires when every path has `in_flight = ∅`
    AND every shortlist member has been queried, or when the overall
    deadline expires. Final result is top-N across all shortlists,
    deduped by NodeId and sorted by ascending XOR distance.
-2. `hecate_dht` facade — `lookup_nodes/2,3` delegates.
+2. `macula_dht` facade — `lookup_nodes/2,3` delegates.
 
 Acceptance: +7 eunit (total 172). Tests include:
 - Empty-RT → `{ok, []}`.
@@ -375,14 +375,14 @@ Refs: plans/PLAN_MACULA_V2_PART3_DISCOVERY.md §4.5.
 **Scope:** first wire-level DHT op — PING/PONG + FIND_NODE/NODES
 request-response machinery inside the DHT server.
 
-1. `hecate_dht_protocol` — pure frame-builder module. `build_ping/1`
+1. `macula_dht_protocol` — pure frame-builder module. `build_ping/1`
    returns `{Frame, Nonce}`; `build_pong/2` echoes the nonce;
    `build_find_node/4` and `build_nodes_reply/3` wrap the
    Session-3.4 `macula_frame` constructors; `verify/2` is a thin
    `macula_frame:verify/2` delegate; `entry_to_station_ref/1,2`
    converts a routing-table entry to the wire payload (atom tier →
    int, monotonic last_seen → wall-clock ms).
-2. `hecate_dht_server` extended with:
+2. `macula_dht_server` extended with:
    - `identity` (key pair for signing outgoing) and pluggable
      `send_frame/2` callback — transport-agnostic, so the
      Session-3.12 CT harness wires one callback and production
@@ -399,7 +399,7 @@ request-response machinery inside the DHT server.
    - Successful PONG triggers `routing_table:touch/3` +
      `siblings:touch/3` on the sender in addition to replying to
      the caller with RTT in ms.
-3. `hecate_dht` facade — mirrors the new server API.
+3. `macula_dht` facade — mirrors the new server API.
 
 Acceptance: +15 eunit (total 165 across the app). Includes a
 two-server wire harness with a dispatch-router pid that routes
@@ -432,23 +432,23 @@ All frames use the existing `base/2` header (`capabilities => 0`),
 `sign/verify` and `encode/decode` paths unchanged. +29 eunit tests
 (total 57 for macula_frame, 155 repo-wide); xref + dialyzer clean.
 
-Downstream: `hecate-station` recompiles cleanly against the new SDK
+Downstream: `macula-station` recompiles cleanly against the new SDK
 commit; all 150 station eunit tests still green.
 
 ## Session 3.3 (shipped)
 
 **Scope:** first stateful session — pid-scoped DHT server + facade + supervisor.
 
-1. `hecate_dht_server` — `gen_server` owning a `hecate_dht_routing_table`
-   and a `hecate_dht_siblings` for a single station's `SelfId`. `observe/2`
+1. `macula_dht_server` — `gen_server` owning a `macula_dht_routing_table`
+   and a `macula_dht_siblings` for a single station's `SelfId`. `observe/2`
    offers the peer to both containers (RT admission is scored, sibling
    admission is pure distance). Reports RT outcome as `admitted | touched |
    {replaced, Evicted} | rejected`. `touch/2` and `forget/2` are cast-based
    and hit both containers. `stats/1` aggregates sizes.
-2. `hecate_dht` — thin public facade delegating every call to the server.
+2. `macula_dht` — thin public facade delegating every call to the server.
    Only module external callers should use. Supports multiple instances
    per BEAM VM (pid-scoped, no registered name).
-3. `hecate_dht_sup` — supervisor with `hecate_dht_server` as its single
+3. `macula_dht_sup` — supervisor with `macula_dht_server` as its single
    child. `start_link/1` takes the opts map and forwards it to the child;
    `get_server/1` returns the running server pid. Room for ETS record
    store (3.7), custodian timers (3.9/3.10), observability (3.11).
@@ -460,11 +460,11 @@ One supervisor-restart test exercises the child's permanent restart policy.
 
 **Scope:** two pure modules on top of 3.1 — still no processes, no sockets.
 
-1. `hecate_dht_routing_table` — 256-slot sparse map of buckets addressed by
+1. `macula_dht_routing_table` — 256-slot sparse map of buckets addressed by
    `bucket_index/2`. Dispatches insert/touch/remove/find to the right bucket,
    collapses buckets when they drain to zero entries. Self-insert rejected
    (bucket_index = -1). `k_closest/3` flattens + keysort over all entries.
-2. `hecate_dht_siblings` — S=16 bounded sorted set of peers by ascending
+2. `macula_dht_siblings` — S=16 bounded sorted set of peers by ascending
    XOR distance to self. Pure-distance admission (not scored). Self-insert
    rejected. Closer-than-farthest replaces; farther-than-farthest rejects.
 

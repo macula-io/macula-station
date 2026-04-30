@@ -1,0 +1,12 @@
+{application, macula_bootstrap, [
+    {description, "Hecate Station — 5-tier bootstrap cascade orchestrator"},
+    {vsn, "0.1.0"},
+    {registered, [macula_bootstrap_sup]},
+    {mod, {macula_bootstrap_app, []}},
+    {applications, [kernel, stdlib, crypto, inets, ssl,
+                    macula]},
+    {env, [{responder, disabled}]},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.

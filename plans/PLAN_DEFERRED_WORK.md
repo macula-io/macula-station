@@ -36,11 +36,11 @@ we can ship when convenient.
 
 | # | Item | Files | Blocker | Owner | Trigger |
 |---|------|-------|---------|-------|---------|
-| 6.3.5 | IPv6 anycast Tier-A probe (Part 5 §4.4) — parallel QUIC handshake against the foundation's `/48' anycast prefix; reachable endpoints feed Tier A as extra resolver targets | new `hecate_bootstrap_anycast` | Foundation must allocate + RPKI-sign a `/48' and announce from ≥2 custodians' ASNs | Foundation ops | "Start 6.3.5 — anycast probe" (after foundation confirms prefix) |
-| 6.3.6 | Gated DoH CT against real resolvers (Cloudflare / Quad9 / Mullvad) | `hecate_bootstrap_doh_SUITE` | Foundation must publish signed PKARR records under `_pkarr.<b32>.macula.io' zone | Foundation ops | "Start 6.3.6 — gated DoH" (after PKARR zone live) |
+| 6.3.5 | IPv6 anycast Tier-A probe (Part 5 §4.4) — parallel QUIC handshake against the foundation's `/48' anycast prefix; reachable endpoints feed Tier A as extra resolver targets | new `macula_bootstrap_anycast` | Foundation must allocate + RPKI-sign a `/48' and announce from ≥2 custodians' ASNs | Foundation ops | "Start 6.3.5 — anycast probe" (after foundation confirms prefix) |
+| 6.3.6 | Gated DoH CT against real resolvers (Cloudflare / Quad9 / Mullvad) | `macula_bootstrap_doh_SUITE` | Foundation must publish signed PKARR records under `_pkarr.<b32>.macula.io' zone | Foundation ops | "Start 6.3.6 — gated DoH" (after PKARR zone live) |
 | 6.4.y | Link-local scope-id + multi-interface mDNS fan-out (Part 5 §5) | Probe fan-out + interface enumeration shipped 2026-04-15 (Sprint C). Remaining: per-interface responder sup + real-network validation against a multi-NIC host. | None (unblocked) | Us | "Finish 6.4.y — responder fan-out" |
-| 6.5.x | Real Mainline DHT UDP client (BEP 5 + BEP 44 `get`) | new `hecate_bootstrap_dht_udp` | None (unblocked) — 500-1000 LOC sub-project; choose Erlang-native or Rust NIF | Us | "Start 6.5.x — BT-DHT UDP client" |
-| 6.6.y | Gated CT against real Electrum/Esplora + Infura/Ankr | `hecate_bootstrap_chain_SUITE` | Foundation must publish Bitcoin OP_RETURN + Ethereum `AnchorPublished' events on testnet | Foundation ops | "Start 6.6.y — gated chain CT" (after testnet anchors published) |
+| 6.5.x | Real Mainline DHT UDP client (BEP 5 + BEP 44 `get`) | new `macula_bootstrap_dht_udp` | None (unblocked) — 500-1000 LOC sub-project; choose Erlang-native or Rust NIF | Us | "Start 6.5.x — BT-DHT UDP client" |
+| 6.6.y | Gated CT against real Electrum/Esplora + Infura/Ankr | `macula_bootstrap_chain_SUITE` | Foundation must publish Bitcoin OP_RETURN + Ethereum `AnchorPublished' events on testnet | Foundation ops | "Start 6.6.y — gated chain CT" (after testnet anchors published) |
 
 **Sub-project sizing:**
 - 6.5.x is big — minimal Mainline DHT client needs routing table
@@ -186,7 +186,7 @@ sprints once prerequisites land.
 |------|-------|---------------|---------|
 | `PLAN_HECATE_REALM_SERVICE.md` (new) | Realm identity service — per-realm HyParView + Plumtree + pubsub + admission (endorsement records), admin key rotation. Separate application (possibly separate repo: `hecate-social/hecate-realm' white-label + `macula-io/macula-realm' branded). Consumes `apps/hecate_overlay/' as library. Dials stations via `macula_peering' like any other peer. | Station integration sprint (done, 8.1-8.8) + `hecate_overlay' pure modules (done) | "Start realm service plan" |
 | `PLAN_MNS_AND_REALM_JOIN.md` | Realm admission flow: OAuth-style join, invitation codes, admin key rotation, cross-realm federation. Runs on the realm service above; daemon side handles UI. | Realm service skeleton + V2 walking skeleton (done) + realm_directory + realm_member_endorsement records (done) | "Start realm-join plan" |
-| `PLAN_GIT_OVER_MESH.md` | **ACTIVE (2026-04-21)** — git server pattern riding on V2 `macula:advertise/call/subscribe`. Core daemon capability replacing GitHub for all Hecate repos (gitops, plugin source, Martha handles). Umbrella apps: `guide_repo_lifecycle` (CMD) / `project_repos` (PRJ) / `query_repos` (QRY) / `serve_git_over_mesh` (infra) / `announce_ref_updates` (infra). Rust `git-remote-mesh` binary bridges native git to mesh procedures. Svelte browser in hecate-web (RepoList, RepoBrowser, CommitLog, DiffViewer, RefSubscription). Plan lives at `hecate-social/hecate-station/plans/PLAN_GIT_OVER_MESH.md'. | None — all prerequisites shipped | Picked up 2026-04-21 (companion to macula-realm Hanko migration) |
+| `PLAN_GIT_OVER_MESH.md` | **ACTIVE (2026-04-21)** — git server pattern riding on V2 `macula:advertise/call/subscribe`. Core daemon capability replacing GitHub for all Hecate repos (gitops, plugin source, Martha handles). Umbrella apps: `guide_repo_lifecycle` (CMD) / `project_repos` (PRJ) / `query_repos` (QRY) / `serve_git_over_mesh` (infra) / `announce_ref_updates` (infra). Rust `git-remote-mesh` binary bridges native git to mesh procedures. Svelte browser in hecate-web (RepoList, RepoBrowser, CommitLog, DiffViewer, RefSubscription). Plan lives at `macula-io/macula-station/plans/PLAN_GIT_OVER_MESH.md'. | None — all prerequisites shipped | Picked up 2026-04-21 (companion to macula-realm Hanko migration) |
 | `PLAN_LOCAL_FIRST_BOOT.md` | **Daemon** (user-machine, `hecate-daemon' repo) boots offline, mesh activates on demand via `POST /api/mesh/activate'. NOT a station concern — stations are always-on servers. | Daemon repo + Tauri bridge | "Start local-first boot" |
 
 ---
@@ -217,10 +217,10 @@ is the authoritative detail.
 **Shipped in Sprint B (2026-04-15):**
 
 - ✅ **Exponential back-off on repeated rebootstrap failures** —
-  `hecate_station_rebootstrap' now widens its partition window as
+  `macula_station_rebootstrap' now widens its partition window as
   `base × 2^min(N, 4)' per consecutive trigger, capping at 16×
   base. On DHT recovery, `consecutive' resets to 0 and a
-  `{hecate_station_rebootstrap, recovered, N}' notification
+  `{macula_station_rebootstrap, recovered, N}' notification
   surfaces the number of skipped retries. Status map gains
   `consecutive' + `current_window_ms' keys.
 
@@ -228,7 +228,7 @@ is the authoritative detail.
 
 - **`geo_check` + rich DHT observe spec** — replace `asn => 0,
   country => <<"??">>' defaults in
-  `hecate_station_peer_observer' with live geolocation lookup.
+  `macula_station_peer_observer' with live geolocation lookup.
   Needs a GeoIP database (MaxMind GeoLite2 — free but account +
   mmdb download) OR a free HTTP-API lookup with local cache.
   License + operational choice is the blocker, not code.
@@ -241,7 +241,7 @@ is the authoritative detail.
   shutdown can advertise departure explicitly instead of
   relying on SWIM suspicion + timeout. Needs a commit to the
   SDK repo + a dep-SHA bump here. Small (~20 LOC in the SDK,
-  wire-up in `hecate_station:shutdown/1' + observer dispatch).
+  wire-up in `macula_station:shutdown/1' + observer dispatch).
   `REALM_LEAVE' is NOT included — realm concerns live in the
   future realm service post-§8.4 reversal. Trigger: "Add SWIM
   leave frame".

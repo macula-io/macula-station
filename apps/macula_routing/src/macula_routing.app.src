@@ -1,0 +1,11 @@
+{application, macula_routing, [
+    {description, "Hecate Station — path computation + source-route forwarding"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib]},
+    {env, []},
+    {modules, [macula_routing, macula_routing_cache, macula_call,
+               macula_relay, macula_call_retry]},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.

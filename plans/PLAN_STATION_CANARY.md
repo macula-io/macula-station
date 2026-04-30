@@ -1,4 +1,4 @@
-# Plan: hecate-station Canary Deploy
+# Plan: macula-station Canary Deploy
 
 **Status:** Awaiting operator approval
 **Created:** 2026-04-25
@@ -7,7 +7,7 @@
 ## Overview
 
 The multi-identity refactor (`PLAN_MULTI_IDENTITY_RELAY` Phases 1–6)
-is complete. Phase 7 cuts `hecate-station` over to the existing
+is complete. Phase 7 cuts `macula-station` over to the existing
 `macula-relay` V1 fleet (3 boxes, 100 virtual identities each).
 This document is the operator-driven step list. **No live boxes
 are touched without explicit approval.**
@@ -16,9 +16,9 @@ are touched without explicit approval.**
 
 Before the canary:
 
-- [ ] CI on `hecate-social/hecate-station@main` is green for the
+- [ ] CI on `macula-io/macula-station@main` is green for the
       latest commit.
-- [ ] `ghcr.io/hecate-social/hecate-station:main` exists and was
+- [ ] `ghcr.io/macula-io/macula-station:main` exists and was
       built from the green commit.
 - [ ] Smoke test the image locally:
       ```
@@ -29,11 +29,11 @@ Before the canary:
         -e MACULA_TLS_KEYFILE=/path/to/key.pem \
         -e MACULA_ADMIN_TOKEN=test-token \
         -v /path/to/certs:/certs:ro \
-        ghcr.io/hecate-social/hecate-station:main
+        ghcr.io/macula-io/macula-station:main
       ```
       Verify `/status` returns 200 and `/admin/identities` (with
       bearer token) lists `t.macula.io`.
-- [ ] hecate-station's `MACULA_RELAY_IDENTITIES` parser accepts the
+- [ ] macula-station's `MACULA_RELAY_IDENTITIES` parser accepts the
       production format. Verify against
       `macula-demo/infrastructure/relays-linode-paris/relay-identities.txt`.
 
@@ -62,8 +62,8 @@ up V1 again".
 ```yaml
 services:
   relay:
-    image: ghcr.io/hecate-social/hecate-station:${STATION_VERSION:-main}
-    container_name: hecate-station
+    image: ghcr.io/macula-io/macula-station:${STATION_VERSION:-main}
+    container_name: macula-station
     user: "0"
     restart: unless-stopped
     network_mode: host
@@ -184,8 +184,8 @@ is just a compose swap.
 
 ## Paris cutover — initial readings (2026-04-25 14:10 UTC)
 
-- Image: `ghcr.io/hecate-social/hecate-station@sha256:73e76755…` (built from `2dda7e4`)
-- Container: `hecate-station Up (healthy)` per Docker healthcheck
+- Image: `ghcr.io/macula-io/macula-station@sha256:73e76755…` (built from `2dda7e4`)
+- Container: `macula-station Up (healthy)` per Docker healthcheck
 - All 5 T1 identities registered:
   - `relay-t1-london.macula.io` → `2600:3c1a:e001:19::100:4433`
   - `relay-t1-brussels.macula.io` → `2600:3c1a:e001:19::101:4433`
@@ -206,7 +206,7 @@ is just a compose swap.
 
 `GET /status` (legacy single-identity route) returns
 `healthy: false` because the multi-identity boot path does not
-populate the legacy singletons (`hecate_station:dht/0` etc).
+populate the legacy singletons (`macula_station:dht/0` etc).
 Docker healthcheck only checks the HTTP status code (200) so it
 is not affected. Operators inspecting the body should use
 `GET /admin/identities` and `/admin/identities/:id/health`

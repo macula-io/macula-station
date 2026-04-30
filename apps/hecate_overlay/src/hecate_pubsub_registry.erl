@@ -103,7 +103,7 @@ lookup(RegistryPid, <<_:256>> = Realm) ->
 %%
 %% **Auto-registration**: when `default_identity' is set on the
 %% registry (the production path under
-%% `hecate_station_identity_sup'), an unknown realm is materialised
+%% `macula_station_identity_sup'), an unknown realm is materialised
 %% on demand using that identity and the frame is dispatched against
 %% the freshly-spawned server. Tests that omit `default_identity'
 %% retain the strict `{error, not_found}' semantics.

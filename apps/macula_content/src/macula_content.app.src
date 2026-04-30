@@ -1,0 +1,11 @@
+{application, macula_content, [
+    {description, "Hecate Station — content-addressed storage + bitswap transfer"},
+    {vsn, "0.1.0"},
+    {registered, [macula_content_sup, macula_content_store, macula_content_transfer]},
+    {mod, {macula_content_app, []}},
+    {applications, [kernel, stdlib, crypto, macula_dht, macula]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.

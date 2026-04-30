@@ -18,7 +18,7 @@
 #          `hecate-social/hecate-gitops' and wait for podman
 #          auto-update to pick it up.
 #       2. SSH into each beam node, run the station's self-test
-#          binary (`hecate-station self-test`).
+#          binary (`macula-station self-test`).
 #       3. Collect the CT report from `/bulk0/.hecate/reports/`.
 #
 # Exit 0 on success; non-zero on any failure.

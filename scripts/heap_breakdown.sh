@@ -17,4 +17,4 @@ EXPR='
 '
 
 echo "=== Heap breakdown of top 3 memory hogs on $HOST ==="
-$SSH "docker exec hecate-station bin/hecate_station eval '$EXPR'"
+$SSH "docker exec macula-station bin/macula_station eval '$EXPR'"

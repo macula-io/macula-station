@@ -1,0 +1,28 @@
+{application, macula_dht, [
+    {description, "Hecate Station — S/Kademlia node"},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {applications, [kernel, stdlib, crypto]},
+    {env, []},
+    {modules, [
+        macula_dht,
+        macula_dht_xor,
+        macula_dht_entry,
+        macula_dht_diversity,
+        macula_dht_bucket,
+        macula_dht_routing_table,
+        macula_dht_siblings,
+        macula_dht_protocol,
+        macula_dht_lookup,
+        macula_dht_placement,
+        macula_dht_store,
+        macula_dht_replicate,
+        macula_dht_republish,
+        macula_dht_expire,
+        macula_dht_monitor,
+        macula_dht_server,
+        macula_dht_sup
+    ]},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/macula-io/macula-station"}]}
+]}.
