@@ -42,13 +42,26 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--export_type([opts/0, listen_addr/0, stats/0]).
+-export_type([opts/0, listen_addr/0, stats/0, cert_source/0]).
 
+-type cert_source() ::
+        {pem, CertFile :: file:name_all(), KeyFile :: file:name_all()}
+      | {self_signed_pubkey, macula_identity:key_pair()}.
+
+%% Opts may carry either:
+%% - `cert_source' (preferred, since Tier 3 of the sovereign-overlay
+%%   rollout — supports both file-anchored and pubkey-anchored
+%%   listeners), OR
+%% - the legacy `certfile' + `keyfile' pair (V1 path).
+%%
+%% Exactly one shape must be present. The init/1 callback resolves
+%% `cert_source = {self_signed_pubkey, ...}' to a temp file pair.
 -type opts() :: #{
     bind         := inet:ip_address() | string(),
     port         := inet:port_number(),
-    certfile     := file:name_all(),
-    keyfile      := file:name_all(),
+    cert_source  => cert_source(),
+    certfile     => file:name_all(),
+    keyfile      => file:name_all(),
     identity     := macula_identity:key_pair(),
     realms       := [macula_identity:pubkey()],
     capabilities := non_neg_integer(),
@@ -98,9 +111,14 @@ stats(Pid) ->
 %% gen_server
 %%==================================================================
 
-init(Opts) ->
+init(Opts0) ->
     process_flag(trap_exit, true),
-    on_listen(macula_transport:listen(listen_opts(Opts)), Opts).
+    case resolve_cert_source(Opts0) of
+        {ok, Opts} ->
+            on_listen(macula_transport:listen(listen_opts(Opts)), Opts);
+        {error, Reason} ->
+            {stop, {cert_source_failed, Reason}}
+    end.
 
 on_listen({ok, Listener}, Opts) ->
     ok = macula_transport:accept(Listener),
@@ -145,6 +163,67 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 
 listen_opts(#{bind := Bind, port := Port, certfile := C, keyfile := K}) ->
     #{bind => Bind, port => Port, certfile => C, keyfile => K}.
+
+%% Materialize the cert/key file pair from `cert_source', if
+%% present. Existing legacy callers pass `certfile'/`keyfile'
+%% directly — those are accepted unchanged.
+-spec resolve_cert_source(opts()) ->
+    {ok, opts()} | {error, term()}.
+resolve_cert_source(#{certfile := _, keyfile := _} = Opts) ->
+    {ok, Opts};
+resolve_cert_source(#{cert_source := {pem, CertFile, KeyFile}} = Opts) ->
+    {ok, Opts#{certfile => CertFile, keyfile => KeyFile}};
+resolve_cert_source(#{cert_source := {self_signed_pubkey, KeyPair},
+                      identity := _} = Opts) ->
+    %% KeyPair is `{Pubkey, Privkey}' — typically the same identity
+    %% keypair the listener already carries. Generate a self-signed
+    %% cert wrapping that pubkey (with the derived Yggdrasil IPv6
+    %% as IP SAN), write to a per-pid temp dir, hand the paths off.
+    case macula_yggdrasil:cert_for(KeyPair) of
+        {ok, {CertPem, KeyPem}} ->
+            write_temp_cert_pair(CertPem, KeyPem, Opts);
+        {error, _} = E ->
+            E
+    end;
+resolve_cert_source(_Opts) ->
+    {error, missing_cert_source}.
+
+write_temp_cert_pair(CertPem, KeyPem, Opts) ->
+    %% Per-process temp dir so concurrent listeners on the same box
+    %% don't trample each other's files. The dir is left in place
+    %% across listener restarts (file path is stable for the
+    %% lifetime of this BEAM node, recreated on each boot).
+    Dir = filename:join([temp_root(), "macula_station_listener",
+                         pid_to_dir(self())]),
+    case filelib:ensure_dir(filename:join(Dir, "x")) of
+        ok ->
+            CertFile = filename:join(Dir, "cert.pem"),
+            KeyFile  = filename:join(Dir, "key.pem"),
+            ok = file:write_file(CertFile, CertPem),
+            ok = file:write_file(KeyFile, KeyPem),
+            ok = file:change_mode(KeyFile, 8#600),
+            {ok, Opts#{certfile => CertFile, keyfile => KeyFile}};
+        {error, _} = E ->
+            E
+    end.
+
+temp_root() ->
+    case os:getenv("TMPDIR") of
+        false -> "/tmp";
+        ""    -> "/tmp";
+        T     -> T
+    end.
+
+pid_to_dir(Pid) ->
+    %% Erlang-pid syntax `<0.123.0>' has angle brackets that aren't
+    %% safe in paths. Replace with underscores.
+    P = pid_to_list(Pid),
+    [case C of
+         $< -> $_;
+         $> -> $_;
+         $. -> $_;
+         _  -> C
+     end || C <- P].
 
 derive_addr(#{bind := Bind, port := Port}) -> {Bind, Port}.
 

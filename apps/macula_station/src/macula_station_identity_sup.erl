@@ -555,10 +555,93 @@ install_dht_callback(DhtPid, IdentityKey) ->
            end).
 
 seed_listener(Sup, Opts, ObsPid) ->
-    on_listener(supervisor:start_child(Sup, listener_spec(Opts, ObsPid))).
+    on_listener(Sup, Opts, ObsPid,
+                supervisor:start_child(Sup, listener_spec(Opts, ObsPid))).
 
-on_listener({error, R}) -> {error, {listener_start_failed, R}};
-on_listener({ok, _Pid}) -> ok.
+on_listener(_Sup, _Opts, _ObsPid, {error, R}) ->
+    {error, {listener_start_failed, R}};
+on_listener(Sup, Opts, ObsPid, {ok, _Pid}) ->
+    %% Tier 3 of the sovereign-overlay rollout — additionally seed
+    %% an Yggdrasil-bound listener for this identity, gated on the
+    %% presence of a `200::/7' interface on the box. Failures here
+    %% do NOT fail boot: the public-IP listener already running is
+    %% the production path; the ygg listener is additive.
+    seed_yggdrasil_listener(Sup, Opts, ObsPid).
+
+%% Ygg-bound listener seeding. Per identity, when the box has an
+%% Yggdrasil tun interface (heuristic: any iface with a `200::/7'
+%% address), start a SECOND listener:
+%%
+%%   bind        = address_for(identity pubkey)
+%%   port        = same as public listener
+%%   cert_source = {self_signed_pubkey, identity keypair}
+%%
+%% The cert is generated on the fly from the identity's existing
+%% Ed25519 keypair; the leaf cert SPKI matches what daemons pin
+%% against on the dial side.
+seed_yggdrasil_listener(Sup, Opts, ObsPid) ->
+    case application:get_env(macula_station, yggdrasil_enabled, true) of
+        true  -> on_ygg_iface(Sup, Opts, ObsPid, detect_yggdrasil_iface());
+        false -> ok
+    end.
+
+on_ygg_iface(_Sup, _Opts, _ObsPid, none) ->
+    %% No ygg interface present — silent skip. Boxes without a
+    %% yggdrasil sidecar continue to run as before.
+    ok;
+on_ygg_iface(Sup, Opts, ObsPid, {ok, _IfaceName}) ->
+    on_ygg_listener(
+      supervisor:start_child(Sup, yggdrasil_listener_spec(Opts, ObsPid))).
+
+on_ygg_listener({ok, _Pid}) -> ok;
+on_ygg_listener({error, R}) ->
+    %% Don't fail boot — public path is the production path.
+    logger:warning("[identity_sup] yggdrasil listener start failed: ~p "
+                   "(public listener still up)", [R]),
+    ok.
+
+detect_yggdrasil_iface() ->
+    case inet:getifaddrs() of
+        {ok, Ifs} ->
+            case [I || {I, IOpts} <- Ifs, has_ygg_addr(IOpts)] of
+                []      -> none;
+                [I | _] -> {ok, I}
+            end;
+        {error, _} -> none
+    end.
+
+has_ygg_addr(IOpts) ->
+    lists:any(fun({addr, A})  -> is_ygg_addr(A);
+                 (_)          -> false
+              end, IOpts).
+
+%% IPv6 200::/7 — first 7 bits = `0000001'. Equivalent to:
+%% first byte is 0x02 or 0x03.
+is_ygg_addr({A1, _, _, _, _, _, _, _}) when (A1 bsr 8) band 16#fe =:= 16#02 ->
+    true;
+is_ygg_addr(_) ->
+    false.
+
+yggdrasil_listener_spec(#{port := Port, identity := Kp} = O, ObsPid) ->
+    Pub = macula_identity:public(Kp),
+    Priv = macula_identity:private(Kp),
+    YggAddr = macula_yggdrasil:address_for(Pub),
+    YggHost = binary_to_list(macula_yggdrasil:format_address(YggAddr)),
+    Opts = #{
+        bind         => YggHost,
+        port         => Port,
+        cert_source  => {self_signed_pubkey, {Pub, Priv}},
+        identity     => Kp,
+        realms       => maps:get(realms, O, []),
+        capabilities => maps:get(capabilities, O, 0),
+        observer     => ObsPid
+    },
+    #{id       => macula_station_listener_yggdrasil,
+      start    => {macula_station_listener, start_link, [Opts]},
+      restart  => permanent,
+      shutdown => 5_000,
+      type     => worker,
+      modules  => [macula_station_listener]}.
 
 %%==================================================================
 %% Phase-3 child specs.
