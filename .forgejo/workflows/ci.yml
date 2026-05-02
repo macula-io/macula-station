@@ -23,6 +23,13 @@ jobs:
       image: docker.io/library/erlang:27.0
 
     steps:
+      # erlang:27.0 is distroless of node; checkout@v4 is a JS action and
+      # needs node in $PATH. Install once at the top.
+      - name: Bootstrap node + git
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends nodejs git ca-certificates curl
+
       - uses: https://code.forgejo.org/actions/checkout@v4
 
       - name: Install Rust toolchain
