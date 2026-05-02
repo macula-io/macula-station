@@ -8,8 +8,8 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/hecate-social/hecate-station
+  REGISTRY: registry.macula.io
+  IMAGE_NAME: registry.macula.io/macula-station
 
 jobs:
   build:
@@ -76,7 +76,6 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v4
@@ -84,12 +83,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      # Push target is registry.macula.io (self-hosted zot in Falkenstein),
+      # not ghcr. Two repo secrets required:
+      #   MACULA_REGISTRY_USER  = ci-pusher
+      #   MACULA_REGISTRY_TOKEN = the bcrypt-hashed password's cleartext
+      - name: Log in to registry.macula.io
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.MACULA_REGISTRY_USER }}
+          password: ${{ secrets.MACULA_REGISTRY_TOKEN }}
 
       - name: Extract metadata
         id: meta

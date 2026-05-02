@@ -17,8 +17,8 @@
 
 ARG OTP_VERSION=27.1.2
 ARG DEBIAN_VERSION=bookworm-20241016-slim
-ARG BUILDER_IMAGE="erlang:${OTP_VERSION}-slim"
-ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
+ARG BUILDER_IMAGE="docker.io/library/erlang:${OTP_VERSION}-slim"
+ARG RUNNER_IMAGE="docker.io/library/debian:${DEBIAN_VERSION}"
 
 # =============================================================================
 # BUILD STAGE
