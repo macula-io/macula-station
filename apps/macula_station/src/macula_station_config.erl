@@ -99,23 +99,28 @@ load_or_create_identity(Path) ->
 %% Application-env API — supervision tree.
 %%==================================================================
 
-%% @doc True when the application env, an `HECATE_STATION_BIND'
-%% override, or `MACULA_RELAY_IDENTITIES' (multi-identity boot path)
-%% is set. The supervisor tolerates unconfigured environments so
-%% the walking-skeleton CT suites (which drive
-%% `macula_station_server' directly) still run under `rebar3 ct'.
+%% @doc True when the application env or an `HECATE_STATION_BIND'
+%% override is set. Fails loudly if the legacy `MACULA_RELAY_IDENTITIES'
+%% var is present (multi-identity removed 2026-05-04). The supervisor
+%% tolerates unconfigured environments so the walking-skeleton CT
+%% suites (which drive `macula_station_server' directly) still run
+%% under `rebar3 ct'.
 -spec enabled() -> boolean().
 enabled() ->
+    refuse_legacy_relay_identities(),
     application:get_env(macula_station, bind) =/= undefined orelse
-    os:getenv("HECATE_STATION_BIND") =/= false orelse
-    has_identity_env().
+    os:getenv("HECATE_STATION_BIND") =/= false.
 
-has_identity_env() ->
-    case os:getenv("MACULA_RELAY_IDENTITIES") of
-        false -> false;
-        ""    -> false;
-        _     -> true
-    end.
+refuse_legacy_relay_identities() ->
+    refuse_legacy_var(os:getenv("MACULA_RELAY_IDENTITIES")).
+
+refuse_legacy_var(false) -> ok;
+refuse_legacy_var("")    -> ok;
+refuse_legacy_var(_) ->
+    error({legacy_multi_identity_env,
+           <<"MACULA_RELAY_IDENTITIES is no longer supported. "
+             "Each macula-station container hosts exactly one "
+             "station-keypair. Configure with HECATE_STATION_* env vars.">>}).
 
 %% @doc Read `sys.config' + `HECATE_STATION_*' env-var overrides into a
 %% typed station cfg. Loads or generates the identity from disk.

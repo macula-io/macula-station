@@ -1,44 +1,26 @@
 %% @doc Application callback — orchestrates boot order.
 %%
-%% Two boot paths:
+%% Single-station boot path (multi-identity removed 2026-05-04). One
+%% macula-station container = one station-keypair = one DHT / SWIM /
+%% observer / listener chain. Stations are realm-agnostic infrastructure;
+%% the CONNECT handshake advertises no realm memberships. Realm-scoped
+%% identities belong to daemons that may attach later, not to the
+%% station itself.
 %%
-%% <ul>
-%%   <li><b>Legacy single-identity</b> (`MACULA_RELAY_IDENTITIES'
-%%       unset/empty): the original Session 8.2 sequence. Loads
-%%       single identity from `macula_station' app env, builds
-%%       DHT/SWIM/observer/listener as fixed-name children of
-%%       `macula_station_sup'. Used by every existing test +
-%%       single-tenant deployment.</li>
+%% Boot sequence:
 %%
-%%   <li><b>Multi-identity</b>
-%%       (PLAN_MULTI_IDENTITY_RELAY §Phase 4): when the env var is
-%%       set, parses it via `macula_station_identity_config', loads
-%%       the box-secret, derives a deterministic Ed25519 keypair
-%%       per identity, and registers each via
-%%       `macula_station_identity_registry:register/2'. Each
-%%       registration spawns its own
-%%       `macula_station_identity_sup' which runs the per-identity
-%%       DHT → cascade → SWIM → observer → listener chain in
-%%       isolation.</li>
-%% </ul>
-%%
-%% Legacy single-identity sequence (still in effect for path 1):
-%%
-%% 1. Start `macula_station_sup' (registry as the only static child).
-%% 2. If `macula_station' application env is empty, stop here —
-%%    programmatic callers (walking-skeleton / chaos CT) drive
-%%    `macula_station_server' directly.
+%% 1. Start `macula_station_sup'.
+%% 2. If neither `macula_station' application env nor `HECATE_STATION_*'
+%%    env vars are set, stop here — programmatic callers (walking-skeleton
+%%    / chaos CT) drive `macula_station_server' directly.
 %% 3. Load + validate station config via `macula_station_config:from_env/0'.
 %%    A parse error (`{error, {bad_config, Reason}}') shuts the sup
 %%    back down and returns the reason to the application framework.
 %% 4. Start the DHT child with `self_id' = station NodeId.
 %% 5. Run the bootstrap cascade + ingest verified peers into the
-%%    DHT's routing table
-%%    (`macula_station_bootstrap_runner:run/1'). A `no_tiers' or any
-%%    other cascade error refuses to bring SWIM up — the sup is shut
-%%    down with a clear reason (PLAN_STATION_INTEGRATION §8.2
-%%    acceptance).
-%% 6. Start the SWIM child with the loaded identity.
+%%    DHT's routing table (`macula_station_bootstrap_runner:run/1').
+%%    A `no_tiers' or any other cascade error refuses to bring SWIM up.
+%% 6. Start SWIM, observer, listener, cache, rebootstrap, admin in turn.
 %%
 %% The supervisor owns the children; this module owns the ordering.
 %% Doing the cascade in the application callback (rather than in a
@@ -79,99 +61,11 @@ boot({ok, SupPid}) ->
 boot_enabled(SupPid, false) ->
     {ok, SupPid};
 boot_enabled(SupPid, true) ->
-    boot_dispatch(SupPid, macula_station_identity_config:from_env()).
+    boot_cfg(SupPid, macula_station_config:from_env()).
 
 %%==================================================================
-%% Path selection — multi-identity vs legacy single-identity.
+%% Single-station boot — DHT → cascade → SWIM → observer → listener.
 %%==================================================================
-
-boot_dispatch(SupPid, {error, Reason}) ->
-    halt_sup(SupPid, {identity_config_failed, Reason});
-boot_dispatch(SupPid, {ok, []}) ->
-    boot_cfg(SupPid, macula_station_config:from_env());
-boot_dispatch(SupPid, {ok, Specs}) ->
-    boot_multi(SupPid, Specs).
-
-%%==================================================================
-%% Multi-identity branch — Phase 4.
-%%==================================================================
-
-boot_multi(SupPid, Specs) ->
-    on_box_secret(SupPid, Specs, macula_station_identity_config:load_box_secret()).
-
-on_box_secret(SupPid, _Specs, {error, Reason}) ->
-    halt_sup(SupPid, {box_secret_failed, Reason});
-on_box_secret(SupPid, Specs, {ok, BoxSecret}) ->
-    on_shared_opts(SupPid, Specs, BoxSecret,
-                   macula_station_identity_config:shared_listener_opts()).
-
-on_shared_opts(SupPid, _Specs, _BoxSecret, {error, Reason}) ->
-    halt_sup(SupPid, Reason);
-on_shared_opts(SupPid, Specs, BoxSecret, {ok, Shared}) ->
-    register_each(SupPid, Specs, BoxSecret, Shared).
-
-register_each(SupPid, [], _BoxSecret, _Shared) ->
-    boot_multi_box_peering(SupPid),
-    boot_multi_admin(SupPid);
-register_each(SupPid, [Spec | Rest], BoxSecret, Shared) ->
-    Opts = macula_station_identity_config:spec_to_opts(Spec, BoxSecret, Shared),
-    Key  = maps:get(identity_key, Opts),
-    on_register(SupPid, Rest, BoxSecret, Shared,
-                macula_station_identity_registry:register(Key, Opts)).
-
-on_register(SupPid, _Rest, _BoxSecret, _Shared, {error, Reason}) ->
-    halt_sup(SupPid, {identity_register_failed, Reason});
-on_register(SupPid, Rest, BoxSecret, Shared, {ok, _IdSup}) ->
-    register_each(SupPid, Rest, BoxSecret, Shared).
-
-%% Multi-identity boot mirrors the legacy path's final step: if an
-%% `admin' app env entry is present, spin up the admin HTTP listener
-%% under the shared station_sup. The legacy `/status', `/dht/stats'
-%% etc. routes still query the LEGACY singletons (which the
-%% multi-identity path does NOT populate); they will therefore
-%% return 503. The Phase-5 `/admin/identities' routes work fully
-%% under multi-identity since they query the registry directly.
-boot_multi_admin(SupPid) ->
-    case admin_cfg_from_env() of
-        undefined ->
-            {ok, SupPid};
-        AdminCfg ->
-            Spec = admin_sup_child(AdminCfg),
-            on_admin_started(SupPid, supervisor:start_child(SupPid, Spec))
-    end.
-
-%% Box-level peering — singleton coordinator that connects this BOX to
-%% peer boxes (via station_link), subscribes to the four mesh presence
-%% topics, and bridges inbound events into the local pg gossip group
-%% so identities running on this box (and the realm subscribed to one
-%% of them) see identities running on OTHER boxes. Without this, V2 was
-%% box-scoped: each box was an isolated pg island.
-boot_multi_box_peering(SupPid) ->
-    Spec = #{id       => macula_station_box_peering,
-             start    => {macula_station_box_peering, start_link, []},
-             restart  => permanent,
-             shutdown => 5_000,
-             type     => worker,
-             modules  => [macula_station_box_peering]},
-    case supervisor:start_child(SupPid, Spec) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _}} -> ok;
-        {error, Reason} ->
-            logger:warning(
-              "[macula_station_app] box_peering start failed: ~p — "
-              "cross-box mesh disabled", [Reason]),
-            ok
-    end.
-
-admin_cfg_from_env() ->
-    classify_admin_env(application:get_env(macula_station, admin)).
-
-classify_admin_env(undefined)   -> undefined;
-classify_admin_env({ok, Map}) when is_map(Map) ->
-    #admin_cfg{
-        bind = maps:get(bind, Map, "127.0.0.1"),
-        port = maps:get(port, Map, 8443)
-    }.
 
 boot_cfg(SupPid, {error, Reason}) ->
     halt_sup(SupPid, Reason);
