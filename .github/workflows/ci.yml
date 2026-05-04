@@ -1,5 +1,12 @@
 name: CI
 
+# Push to main → :main + :<sha> (amd64 only, fast)
+# Push to tag  → :vX.Y.Z + :vX.Y + :latest (multi-arch amd64+arm64)
+#
+# Container target: codeberg.org/macula-internal/macula-station
+# (Codeberg-native registry; replaced the self-hosted zot at
+# registry.macula.io). Auth: CODEBERG_PUBLISHER_USER + CODEBERG_PACKAGE_TOKEN.
+
 on:
   push:
     branches: [main]
@@ -8,8 +15,8 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: registry.macula.io
-  IMAGE_NAME: registry.macula.io/macula-station
+  REGISTRY: codeberg.org
+  IMAGE_NAME: codeberg.org/macula-internal/macula-station
 
 jobs:
   build:
@@ -48,11 +55,6 @@ jobs:
             _build
             ~/.cache/rebar3
           key: ${{ runner.os }}-otp${{ matrix.otp }}-${{ hashFiles('**/rebar.config', '**/rebar.lock', '**/*.app.src') }}
-          # No `restore-keys' — partial fallback restores stale
-          # `_build/default/lib/macula' from before a rebar.lock bump
-          # (rebar3 doesn't re-fetch deps when source is already
-          # present, so a stale dep silently sticks around). Only
-          # exact key matches; cold-cache on miss is the cost.
 
       - name: Compile
         run: rebar3 compile
@@ -61,24 +63,21 @@ jobs:
         run: rebar3 xref
 
       - name: EUnit
-        # TEMPORARY non-blocking: 3 known failing tests on slower hardware
-        # (J4105, beam02-builder). Tracked in plans/PLAN_DEFERRED_WORK.md.
+        # TEMPORARY non-blocking: 3 known failing tests on slower hardware.
         # Restore strict mode once timing-sensitive assertions are fixed.
         run: rebar3 eunit || true
 
       - name: Common Test
-        run: rebar3 ct || true   # no CT suites yet — Phase 1 adds first suite
+        run: rebar3 ct || true   # no CT suites yet
 
       - name: Dialyzer
         run: rebar3 dialyzer
 
-  docker:
-    name: Build + push Docker image
-    runs-on: ubuntu-22.04
+  build-amd64:
+    name: Build + push image (amd64)
+    runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push'
-    permissions:
-      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -86,16 +85,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Push target is registry.macula.io (self-hosted zot in Falkenstein),
-      # not ghcr. Two repo secrets required:
-      #   MACULA_REGISTRY_USER  = ci-pusher
-      #   MACULA_REGISTRY_TOKEN = the bcrypt-hashed password's cleartext
-      - name: Log in to registry.macula.io
+      - name: Log in to Codeberg Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.MACULA_REGISTRY_USER }}
-          password: ${{ secrets.MACULA_REGISTRY_TOKEN }}
+          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
+          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -103,17 +98,99 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},suffix=-amd64,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,scope=amd64,mode=max
+          provenance: false
+
+  build-arm64:
+    name: Build + push image (arm64)
+    runs-on: ubuntu-22.04-arm
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Codeberg Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
+          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},suffix=-arm64
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,scope=arm64,mode=max
+          provenance: false
+
+  manifest:
+    name: Create multi-arch manifest (tag only)
+    runs-on: ubuntu-latest
+    needs: [build-amd64, build-arm64]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build-amd64.result == 'success' && needs.build-arm64.result == 'success'
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Codeberg Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
+          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create and push manifests
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IMAGE="${{ env.IMAGE_NAME }}"
+
+          docker manifest create "${IMAGE}:${VERSION}" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker manifest push "${IMAGE}:${VERSION}"
+
+          docker manifest create "${IMAGE}:latest" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker manifest push "${IMAGE}:latest"
+
+          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+          docker manifest create "${IMAGE}:${MAJOR_MINOR}" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker manifest push "${IMAGE}:${MAJOR_MINOR}"
