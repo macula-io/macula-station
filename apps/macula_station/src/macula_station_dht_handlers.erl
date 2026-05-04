@@ -1,6 +1,6 @@
-%% @doc Per-identity DHT procedure handlers.
+%% @doc Station-level DHT procedure handlers.
 %%
-%% On init, advertises three procedures against the per-identity
+%% On init, advertises three procedures against the station's
 %% `macula_handler_registry':
 %%
 %% <ul>
@@ -19,12 +19,11 @@
 %%
 %% == Lifecycle ==
 %%
-%% Started by `macula_station_identity_sup' as a procedural child
-%% AFTER both `macula_handler_registry' and `macula_dht' are up.
-%% On any one_for_all restart of the identity sup the registry +
-%% DHT come back fresh and this gen_server's `init/1' re-advertises
-%% the three procedures against the new registry pid — no manual
-%% re-wiring required.
+%% Started under the station's supervision tree AFTER both
+%% `macula_handler_registry' and `macula_dht' are up. On any
+%% one_for_all restart the registry + DHT come back fresh and this
+%% gen_server's `init/1' re-advertises the three procedures against
+%% the new registry pid — no manual re-wiring required.
 %%
 %% No state beyond the references; the gen_server is otherwise idle.
 -module(macula_station_dht_handlers).

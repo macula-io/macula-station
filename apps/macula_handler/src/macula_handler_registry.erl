@@ -1,18 +1,16 @@
-%% @doc Per-identity procedure registry.
+%% @doc Station-level procedure registry.
 %%
 %% Stations advertise RPC procedures (e.g. `_dht.put_record',
 %% `_dht.find_record', `_dht.find_records_by_type') via a
-%% per-identity registry. When a CALL frame arrives at the station,
+%% station-level registry. When a CALL frame arrives at the station,
 %% `macula_handler_dispatch' looks the procedure up here and
 %% invokes the registered handler.
 %%
 %% == Lifecycle ==
 %%
-%% Started by `macula_station_identity_sup' as a per-identity
-%% child. Lives alongside the identity's DHT, SWIM, observer, and
-%% listener. No `{local, _}' name registration — N identities share
-%% one BEAM, each with its own registry pid resolved through the
-%% identity registry.
+%% Started under the station's supervision tree alongside DHT, SWIM,
+%% observer, and listener. Resolved via macula_station singleton
+%% accessors.
 %%
 %% == Single-provider invariant ==
 %%

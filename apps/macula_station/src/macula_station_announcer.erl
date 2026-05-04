@@ -11,14 +11,13 @@
 %% `tombstone' (`type=0x0C') so peers learn the identity is gone
 %% without waiting for the TTL.
 %%
-%% == Lifecycle (per identity_sup) ==
+%% == Lifecycle ==
 %%
-%% Started by `macula_station_identity_sup' as a procedural child
-%% AFTER both `macula_handler_registry' (Track 2) and
-%% `macula_station_dht_handlers' (Track 2.5) are up. On any
-%% one_for_all restart the announcer is recreated and re-publishes
-%% the node_record on init — peers see a fresh record with a new
-%% UUIDv7 version.
+%% Started under the station's supervision tree as a procedural child
+%% AFTER `macula_handler_registry' and `macula_station_dht_handlers'
+%% are up. On any one_for_all restart the announcer is recreated and
+%% re-publishes the node_record on init — peers see a fresh record
+%% with a new UUIDv7 version.
 %%
 %% == Why not "heartbeat" pubsub? ==
 %%

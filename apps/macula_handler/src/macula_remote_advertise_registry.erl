@@ -1,4 +1,4 @@
-%% @doc Per-identity registry of procedures advertised by connected
+%% @doc Station-level registry of procedures advertised by connected
 %% peers (clients of this station).
 %%
 %% Whereas `macula_handler_registry' tracks procedures the station
@@ -10,8 +10,8 @@
 %%
 %% == Lifecycle ==
 %%
-%% Started by `macula_station_identity_sup' as a per-identity child
-%% alongside `macula_handler_registry'. The peer_observer registers
+%% Started under the station's supervision tree alongside
+%% `macula_handler_registry'. The peer_observer registers
 %% entries when it observes an ADVERTISE frame and purges them when
 %% the originating QUIC connection drops or an UNADVERTISE arrives.
 %%
