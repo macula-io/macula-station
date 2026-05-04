@@ -392,11 +392,12 @@ parse_int(Bin) ->
     catch error:badarg -> undefined
     end.
 
-seeder_hostnames(undefined) -> [];
-seeder_hostnames(SeedPid)   ->
-    try macula_station_overlay_seeder:connected_hostnames(SeedPid)
-    catch _:_ -> []
-    end.
+%% Connected-peer hostnames are sourced from the yggdrasil overlay
+%% seeder pre-cutover. Post-cutover (single-station, no yggdrasil) the
+%% seeder is gone; this returns [] until the announcer is rewired to
+%% query peer_observer directly (deferred to the identity_sup
+%% promotion step in the multi-identity rip-out).
+seeder_hostnames(_) -> [].
 
 %% Returns `{ok, Hostname}' iff the peer's local DHT record exists,
 %% has `kind=station', and carries a non-empty hostname. Anything

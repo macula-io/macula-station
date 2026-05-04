@@ -177,10 +177,12 @@ strip_port(Bin) ->
         [H | _] -> H
     end.
 
-peer_links(SeedPid) ->
-    try macula_station_overlay_seeder:connections(SeedPid)
-    catch _:_ -> []
-    end.
+%% Pre-cutover this called the yggdrasil overlay seeder. Post-cutover
+%% (single-station, no yggdrasil) the seeder is gone; this returns []
+%% until relay_ping is rewired to query peer_observer directly
+%% (deferred to the identity_sup promotion step in the multi-identity
+%% rip-out).
+peer_links(_) -> [].
 
 to_number(N) when is_number(N) -> N;
 to_number(_)                    -> undefined.

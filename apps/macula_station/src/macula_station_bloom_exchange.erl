@@ -215,12 +215,12 @@ broadcast_filter(SeedPid, BloomBin) ->
       Conns),
     ok.
 
-%% Hidden API on the seeder — see `connections/1' below. Kept here as
-%% a `safe_*' wrapper so a hung seeder doesn't take the exchange down.
-safe_seeder_conns(SeedPid) ->
-    try macula_station_overlay_seeder:connections(SeedPid)
-    catch _:_ -> []
-    end.
+%% Pre-cutover this called the yggdrasil overlay seeder. Post-cutover
+%% (single-station, no yggdrasil) the seeder is gone; this returns []
+%% until bloom_exchange is rewired to query peer_observer directly
+%% (deferred to the identity_sup promotion step in the multi-identity
+%% rip-out).
+safe_seeder_conns(_) -> [].
 
 empty_bloom_bin() ->
     macula_station_bloom:to_binary(macula_station_bloom:new()).
