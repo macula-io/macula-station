@@ -408,12 +408,9 @@ send_response(Sock, #{status := Status, body := Body,
     gen_tcp:send(Sock, [Head, Body]).
 
 status_text(200) -> <<"OK">>;
-status_text(201) -> <<"Created">>;
 status_text(400) -> <<"Bad Request">>;
-status_text(401) -> <<"Unauthorized">>;
 status_text(404) -> <<"Not Found">>;
 status_text(409) -> <<"Conflict">>;
-status_text(500) -> <<"Internal Server Error">>;
 status_text(503) -> <<"Service Unavailable">>.
 
 %%==================================================================
