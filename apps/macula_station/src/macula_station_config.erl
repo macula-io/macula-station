@@ -214,25 +214,46 @@ require_keys([Key | Rest], M, Path, K) ->
     end.
 
 build_record_from_json(M) ->
-    DataDir = to_str(maps:get(<<"data_dir">>, M)),
-    Geo     = maps:get(<<"geo">>, M, #{}),
+    DataDir   = to_str(maps:get(<<"data_dir">>, M)),
+    Geo       = maps:get(<<"geo">>,       M, #{}),
+    Bootstrap = maps:get(<<"bootstrap">>, M, #{}),
     #station_cfg{
-        data_dir        = DataDir,
-        identity_file   = identity_file_or_default(M, DataDir),
-        bind            = to_str(maps:get(<<"bind">>, M)),
-        port            = maps:get(<<"port">>, M),
-        certfile        = to_str(maps:get(<<"certfile">>, M)),
-        keyfile         = to_str(maps:get(<<"keyfile">>, M)),
-        capabilities    = maps:get(<<"capabilities">>, M, 0),
-        cache_cfg       = decode_cache_json(maps:get(<<"cache">>, M, undefined)),
-        rebootstrap_cfg = decode_rebootstrap_json(maps:get(<<"rebootstrap">>, M, undefined)),
-        admin_cfg       = decode_admin_json(maps:get(<<"admin">>, M, undefined)),
-        hostname        = to_bin_or_undef(maps:get(<<"hostname">>, Geo, undefined)),
-        city            = to_bin_or_undef(maps:get(<<"city">>,     Geo, undefined)),
-        country         = to_bin_or_undef(maps:get(<<"country">>,  Geo, undefined)),
-        lat             = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
-        lng             = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined))
+        data_dir               = DataDir,
+        identity_file          = identity_file_or_default(M, DataDir),
+        bind                   = to_str(maps:get(<<"bind">>, M)),
+        port                   = maps:get(<<"port">>, M),
+        certfile               = to_str(maps:get(<<"certfile">>, M)),
+        keyfile                = to_str(maps:get(<<"keyfile">>, M)),
+        capabilities           = maps:get(<<"capabilities">>, M, 0),
+        cache_cfg              = decode_cache_json(maps:get(<<"cache">>, M, undefined)),
+        rebootstrap_cfg        = decode_rebootstrap_json(maps:get(<<"rebootstrap">>, M, undefined)),
+        admin_cfg              = decode_admin_json(maps:get(<<"admin">>, M, undefined)),
+        hostname               = to_bin_or_undef(maps:get(<<"hostname">>, Geo, undefined)),
+        city                   = to_bin_or_undef(maps:get(<<"city">>,     Geo, undefined)),
+        country                = to_bin_or_undef(maps:get(<<"country">>,  Geo, undefined)),
+        lat                    = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
+        lng                    = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined)),
+        bootstrap_tiers        = decode_tiers_json(maps:get(<<"tiers">>,        Bootstrap, [])),
+        bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{}))
     }.
+
+%% JSON tier shape: [{"module": "macula_bootstrap_tier_e",
+%%                    "opts":   {"peer_urls": ["quic://...", ...]}}, ...]
+decode_tiers_json(L) when is_list(L) ->
+    [decode_tier_json(T) || T <- L].
+
+decode_tier_json(#{<<"module">> := ModBin} = T) ->
+    Mod  = binary_to_existing_atom(ModBin, utf8),
+    Opts = decode_atom_keyed(maps:get(<<"opts">>, T, #{})),
+    {Mod, Opts}.
+
+%% Convert binary-keyed JSON map to atom-keyed map (existing atoms
+%% only — refuses to mint new ones). Tier opts and cascade opts are
+%% read by Erlang code that expects atom keys; values are left
+%% untouched.
+decode_atom_keyed(M) when is_map(M) ->
+    maps:fold(fun(K, V, Acc) -> Acc#{binary_to_existing_atom(K, utf8) => V} end,
+              #{}, M).
 
 identity_file_or_default(#{<<"identity_file">> := Path}, _DataDir) ->
     to_str(Path);

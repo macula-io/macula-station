@@ -54,7 +54,13 @@
     city            = undefined :: binary() | undefined,
     country         = undefined :: binary() | undefined,
     lat             = undefined :: number() | undefined,
-    lng             = undefined :: number() | undefined
+    lng             = undefined :: number() | undefined,
+    %% Optional bootstrap block — translated into `macula_bootstrap'
+    %% application env (`tiers' + `cascade_opts') by the app callback
+    %% before the boot pipeline runs. Without this, the cascade has no
+    %% sources and the station refuses to boot with `{error, no_tiers}'.
+    bootstrap_tiers        = [] :: [{atom(), map()}],
+    bootstrap_cascade_opts = #{} :: map()
 }).
 
 %% Matches the shape of `application:get_env(macula_station, realms_cfg, [])'

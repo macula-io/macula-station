@@ -69,7 +69,23 @@ boot_enabled(SupPid, true) ->
 boot_cfg(SupPid, {error, Reason}) ->
     halt_sup(SupPid, Reason);
 boot_cfg(SupPid, {ok, Cfg}) ->
+    apply_bootstrap_env(Cfg),
     boot_handler_registry(SupPid, Cfg).
+
+%% Push the JSON-supplied bootstrap config into `macula_bootstrap'
+%% application env so `macula_bootstrap:run/0' picks it up. Skipped
+%% when the JSON omits the `bootstrap' block (e.g. CT path with tiers
+%% set in sys.config or `application:set_env/3' elsewhere).
+apply_bootstrap_env(#station_cfg{bootstrap_tiers = []}) ->
+    ok;
+apply_bootstrap_env(#station_cfg{bootstrap_tiers = Tiers,
+                                 bootstrap_cascade_opts = Opts}) ->
+    application:set_env(macula_bootstrap, tiers, Tiers),
+    case map_size(Opts) of
+        0 -> ok;
+        _ -> application:set_env(macula_bootstrap, cascade_opts, Opts)
+    end,
+    ok.
 
 %%==================================================================
 %% Registries — no inter-deps, started first so the DHT / observer
