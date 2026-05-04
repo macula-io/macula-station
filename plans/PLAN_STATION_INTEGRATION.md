@@ -66,9 +66,10 @@ record.
   `macula_identity:save/2`.
 - `apps/macula_station/include/macula_station_cfg.hrl` — the
   `#station_cfg{}` record.
-- `macula_station_config:from_env/0` — reads `sys.config` under the
-  `macula_station` app, applies `HECATE_STATION_*` env-var
-  overrides, loads/generates identity, returns
+- `macula_station_config:from_env/0` — reads the JSON file pointed
+  to by `MACULA_STATION_CONFIG`; falls back to the `macula_station`
+  application env (sys.config) when the env var is unset (CT path);
+  loads/generates identity, returns
   `{ok, #station_cfg{}} | {error, {bad_config, Reason}}`.
 - `macula_station_config:to_opts/1` — projects the typed record to
   the legacy `station_opts()` map the walking-skeleton server

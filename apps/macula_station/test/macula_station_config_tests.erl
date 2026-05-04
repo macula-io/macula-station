@@ -40,13 +40,21 @@ load_with_identity_file_generates_on_demand_test_() ->
     end}.
 
 %%==================================================================
-%% from_env/0 — supervisor path
+%% from_env/0 — JSON-config path (production)
 %%==================================================================
 
 enabled_false_when_no_config_test_() ->
     {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             ?assertNot(macula_station_config:enabled())
+        end
+    end}.
+
+enabled_true_when_json_config_set_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            os:putenv("MACULA_STATION_CONFIG", "/tmp/whatever.json"),
+            ?assert(macula_station_config:enabled())
         end
     end}.
 
@@ -58,21 +66,21 @@ enabled_true_when_sys_config_has_bind_test_() ->
         end
     end}.
 
-from_env_happy_path_test_() ->
+from_env_json_happy_path_test_() ->
     {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             Dir = make_tmpdir(),
             try
-                set_all(Dir, "127.0.0.1", 9000),
+                Path = write_json(Dir, base_config(Dir, <<"127.0.0.1">>, 9000)),
+                os:putenv("MACULA_STATION_CONFIG", Path),
                 {ok, Cfg} = macula_station_config:from_env(),
                 ?assertEqual("127.0.0.1",  Cfg#station_cfg.bind),
-                ?assertEqual(9000,          Cfg#station_cfg.port),
-                ?assertEqual(Dir,           Cfg#station_cfg.data_dir),
-                ?assertEqual(0,             Cfg#station_cfg.capabilities),
+                ?assertEqual(9000,         Cfg#station_cfg.port),
+                ?assertEqual(Dir,          Cfg#station_cfg.data_dir),
+                ?assertEqual(0,            Cfg#station_cfg.capabilities),
                 ?assert(is_map(Cfg#station_cfg.identity)),
                 Expected = macula_station_identity:path_for(Dir),
                 ?assertEqual(Expected, Cfg#station_cfg.identity_file),
-                %% to_opts projects cleanly for the server.
                 Opts = macula_station_config:to_opts(Cfg),
                 ?assertEqual(9000, maps:get(port, Opts))
             after
@@ -81,7 +89,113 @@ from_env_happy_path_test_() ->
         end
     end}.
 
-from_env_missing_port_is_bad_config_test_() ->
+from_env_json_geo_block_populates_record_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg0 = base_config(Dir, <<"127.0.0.1">>, 9000),
+                WithGeo = Cfg0#{<<"geo">> => #{
+                    <<"hostname">> => <<"station-be-brussels.macula.io">>,
+                    <<"city">>     => <<"Brussels">>,
+                    <<"country">>  => <<"BE">>,
+                    <<"lat">>      => 50.8503,
+                    <<"lng">>      => 4.3517
+                }},
+                Path = write_json(Dir, WithGeo),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual(<<"station-be-brussels.macula.io">>,
+                             Cfg#station_cfg.hostname),
+                ?assertEqual(<<"Brussels">>, Cfg#station_cfg.city),
+                ?assertEqual(<<"BE">>,       Cfg#station_cfg.country),
+                ?assertEqual(50.8503,        Cfg#station_cfg.lat),
+                ?assertEqual(4.3517,         Cfg#station_cfg.lng)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_missing_bind_is_bad_config_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg = maps:remove(<<"bind">>, base_config(Dir, <<"x">>, 9000)),
+                Path = write_json(Dir, Cfg),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                ?assertEqual({error, {bad_config, {missing, bind}}},
+                             macula_station_config:from_env())
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_unreadable_file_is_bad_config_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            os:putenv("MACULA_STATION_CONFIG", "/nonexistent/path.json"),
+            ?assertMatch({error, {bad_config, {read, _, enoent}}},
+                         macula_station_config:from_env())
+        end
+    end}.
+
+from_env_json_malformed_is_bad_config_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Path = filename:join(Dir, "bad.json"),
+                ok = file:write_file(Path, <<"{not valid json">>),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                ?assertMatch({error, {bad_config, {parse, _, _}}},
+                             macula_station_config:from_env())
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_preserves_identity_across_warm_boots_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Path = write_json(Dir, base_config(Dir, <<"127.0.0.1">>, 9000)),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg1} = macula_station_config:from_env(),
+                {ok, Cfg2} = macula_station_config:from_env(),
+                Pub1 = macula_identity:public(Cfg1#station_cfg.identity),
+                Pub2 = macula_identity:public(Cfg2#station_cfg.identity),
+                ?assertEqual(Pub1, Pub2)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+%%==================================================================
+%% from_env/0 — sys.config fallback path (CT)
+%%==================================================================
+
+from_env_app_env_happy_path_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                set_app_env(Dir, "127.0.0.1", 9000),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual("127.0.0.1", Cfg#station_cfg.bind),
+                ?assertEqual(9000,        Cfg#station_cfg.port)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_app_env_missing_port_is_bad_config_test_() ->
     {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             Dir = make_tmpdir(),
@@ -98,49 +212,19 @@ from_env_missing_port_is_bad_config_test_() ->
         end
     end}.
 
-from_env_non_integer_port_is_bad_config_test_() ->
-    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
-        fun() ->
-            Dir = make_tmpdir(),
-            try
-                set_all(Dir, "127.0.0.1", "nope"),
-                ?assertMatch({error, {bad_config, {parse, _, integer, _}}},
-                             macula_station_config:from_env())
-            after
-                rm_rf(Dir)
-            end
-        end
-    end}.
+%%==================================================================
+%% Legacy multi-identity guard
+%%==================================================================
 
-from_env_env_var_overrides_app_env_test_() ->
+refuses_legacy_multi_identity_env_test_() ->
     {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
         fun() ->
-            Dir = make_tmpdir(),
+            os:putenv("MACULA_RELAY_IDENTITIES", "anything"),
             try
-                set_all(Dir, "127.0.0.1", 9000),
-                os:putenv("HECATE_STATION_PORT", "9999"),
-                {ok, Cfg} = macula_station_config:from_env(),
-                ?assertEqual(9999, Cfg#station_cfg.port)
+                ?assertError({legacy_multi_identity_env, _},
+                             macula_station_config:enabled())
             after
-                os:unsetenv("HECATE_STATION_PORT"),
-                rm_rf(Dir)
-            end
-        end
-    end}.
-
-from_env_preserves_identity_across_warm_boots_test_() ->
-    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
-        fun() ->
-            Dir = make_tmpdir(),
-            try
-                set_all(Dir, "127.0.0.1", 9000),
-                {ok, Cfg1} = macula_station_config:from_env(),
-                {ok, Cfg2} = macula_station_config:from_env(),
-                Pub1 = macula_identity:public(Cfg1#station_cfg.identity),
-                Pub2 = macula_identity:public(Cfg2#station_cfg.identity),
-                ?assertEqual(Pub1, Pub2)
-            after
-                rm_rf(Dir)
+                os:unsetenv("MACULA_RELAY_IDENTITIES")
             end
         end
     end}.
@@ -149,7 +233,21 @@ from_env_preserves_identity_across_warm_boots_test_() ->
 %% Helpers
 %%==================================================================
 
-set_all(Dir, Bind, Port) ->
+base_config(Dir, Bind, Port) ->
+    #{
+        <<"data_dir">> => list_to_binary(Dir),
+        <<"bind">>     => Bind,
+        <<"port">>     => Port,
+        <<"certfile">> => <<"/tmp/c.pem">>,
+        <<"keyfile">>  => <<"/tmp/k.pem">>
+    }.
+
+write_json(Dir, Map) ->
+    Path = filename:join(Dir, "station.json"),
+    ok = file:write_file(Path, iolist_to_binary(json:encode(Map))),
+    Path.
+
+set_app_env(Dir, Bind, Port) ->
     application:set_env(macula_station, data_dir, Dir),
     application:set_env(macula_station, bind,     Bind),
     application:set_env(macula_station, port,     Port),
@@ -161,17 +259,14 @@ clear_env() ->
             capabilities, cache, rebootstrap, admin],
     Saved = [{K, application:get_env(macula_station, K)} || K <- Keys],
     [application:unset_env(macula_station, K) || K <- Keys],
-    [os:unsetenv(V) || V <- ["HECATE_STATION_DATA_DIR",
-                             "HECATE_STATION_IDENTITY_FILE",
-                             "HECATE_STATION_BIND",
-                             "HECATE_STATION_PORT",
-                             "HECATE_STATION_CERTFILE",
-                             "HECATE_STATION_KEYFILE",
-                             "HECATE_STATION_CAPABILITIES"]],
+    os:unsetenv("MACULA_STATION_CONFIG"),
+    os:unsetenv("MACULA_RELAY_IDENTITIES"),
     Saved.
 
 restore_env(Saved) ->
     [restore_one(K, V) || {K, V} <- Saved],
+    os:unsetenv("MACULA_STATION_CONFIG"),
+    os:unsetenv("MACULA_RELAY_IDENTITIES"),
     ok.
 
 restore_one(K, undefined)  -> application:unset_env(macula_station, K);

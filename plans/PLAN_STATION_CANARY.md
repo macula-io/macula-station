@@ -100,17 +100,17 @@ volumes:
 Notes:
 
 - `network_mode: host` so the listener can bind directly to the
-  box's per-identity IPv6 addresses without Docker's NAT.
-- `hecate_data` volume holds the box-secret across container
-  restarts (`HECATE_STATION_BOX_SECRET_PATH=/var/lib/hecate/box-secret`
-  inside the image).
+  box's IPv6 address without Docker's NAT.
+- The `data_dir` volume (default `/var/lib/macula/station`) holds
+  the station-keypair (`identity.erl.bin`) across container
+  restarts. Each station container needs its own volume.
 - Healthcheck uses `/status` on the admin port (8443). It is
   unauthenticated per V1's loopback-only model.
-- DROPPED env vars (V1-only, station ignores): `MACULA_REALM`,
-  `MACULA_HEALTH_PORT`, `MACULA_TLS_MODE`, `RELAY_ENABLED`,
-  `MACULA_HOSTNAME`, `MACULA_MODE`, `MACULA_RELAYS`, `NODE_NAME`,
-  `MACULA_GEO_*`, `MACULA_PROVIDER`. Identity geography moves into
-  `MACULA_RELAY_IDENTITIES` per-entry fields.
+- Single env var: `MACULA_STATION_CONFIG=/etc/macula-station/config.json`.
+  All other tunables (bind, port, certfile, keyfile, geo, cache,
+  rebootstrap, admin) live inside the JSON file. Multi-identity
+  (`MACULA_RELAY_IDENTITIES`) was removed 2026-05-04 and the loader
+  hard-rejects it at boot.
 
 ## Cutover sequence (per box)
 

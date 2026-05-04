@@ -5,14 +5,39 @@
 %%   <li>`load/1' — in-VM use (walking skeleton + chaos CT). Takes a
 %%       partial opts map, fills in identity, returns the legacy
 %%       `station_opts()' map that `macula_station_server' consumes.</li>
-%%   <li>`from_env/0' — application-boot use. Reads `sys.config'
-%%       under the `macula_station' app, applies `HECATE_STATION_*'
-%%       env-var overrides, loads or generates the identity, and
+%%   <li>`from_env/0' — application-boot use. Reads a JSON config file
+%%       pointed to by the `MACULA_STATION_CONFIG' env var, falling back
+%%       to the application environment (sys.config) when the env var
+%%       is unset (CT path), loads or generates the identity, and
 %%       returns a typed `#station_cfg{}' record.</li>
 %% </ul>
 %%
 %% Supervised stations call `from_env/0' then project to the legacy
 %% map via `to_opts/1'. Programmatic callers keep using `load/1'.
+%%
+%% JSON config shape:
+%% ```
+%%   {
+%%     "data_dir":     "/var/lib/macula/station",
+%%     "identity_file": "/var/lib/macula/station/identity.erl.bin",
+%%     "bind":         "2600:3c1a:e001:19::be:01",
+%%     "port":         4433,
+%%     "certfile":     "/certs/.../wildcard_.macula.io.crt",
+%%     "keyfile":      "/certs/.../wildcard_.macula.io.key",
+%%     "capabilities": 0,
+%%     "cache":        { "path": "/var/lib/macula/station/cache",
+%%                       "flush_period_ms": 30000 },
+%%     "rebootstrap":  { ... },
+%%     "admin":        { "bind": "127.0.0.1", "port": 8443 },
+%%     "geo":          { "hostname": "station-be-brussels.macula.io",
+%%                       "city":     "Brussels",
+%%                       "country":  "BE",
+%%                       "lat":      50.8503,
+%%                       "lng":      4.3517 }
+%%   }
+%% '''
+%% Required: `data_dir', `bind', `port', `certfile', `keyfile'.
+%% Everything else is optional.
 -module(macula_station_config).
 
 -include("macula_station_cfg.hrl").
@@ -27,6 +52,8 @@
 
 -export_type([opts/0, station_opts/0, station_cfg/0,
               cache_cfg/0, rebootstrap_cfg/0, admin_cfg/0]).
+
+-define(CONFIG_ENV_VAR, "MACULA_STATION_CONFIG").
 
 -type opts() :: #{
     bind          => inet:ip_address() | string(),
@@ -99,17 +126,26 @@ load_or_create_identity(Path) ->
 %% Application-env API — supervision tree.
 %%==================================================================
 
-%% @doc True when the application env or an `HECATE_STATION_BIND'
-%% override is set. Fails loudly if the legacy `MACULA_RELAY_IDENTITIES'
-%% var is present (multi-identity removed 2026-05-04). The supervisor
-%% tolerates unconfigured environments so the walking-skeleton CT
-%% suites (which drive `macula_station_server' directly) still run
-%% under `rebar3 ct'.
+%% @doc True when either the JSON config env var is set, or the
+%% application env carries a `bind'. The supervisor tolerates
+%% unconfigured environments so the walking-skeleton CT suites
+%% (which drive `macula_station_server' directly) still run under
+%% `rebar3 ct'.
+%%
+%% Fails loudly if the legacy `MACULA_RELAY_IDENTITIES' var is
+%% present (multi-identity removed 2026-05-04).
 -spec enabled() -> boolean().
 enabled() ->
     refuse_legacy_relay_identities(),
-    application:get_env(macula_station, bind) =/= undefined orelse
-    os:getenv("HECATE_STATION_BIND") =/= false.
+    has_json_config() orelse
+    application:get_env(macula_station, bind) =/= undefined.
+
+has_json_config() ->
+    case os:getenv(?CONFIG_ENV_VAR) of
+        false -> false;
+        ""    -> false;
+        _     -> true
+    end.
 
 refuse_legacy_relay_identities() ->
     refuse_legacy_var(os:getenv("MACULA_RELAY_IDENTITIES")).
@@ -120,10 +156,11 @@ refuse_legacy_var(_) ->
     error({legacy_multi_identity_env,
            <<"MACULA_RELAY_IDENTITIES is no longer supported. "
              "Each macula-station container hosts exactly one "
-             "station-keypair. Configure with HECATE_STATION_* env vars.">>}).
+             "station-keypair. Configure with MACULA_STATION_CONFIG "
+             "pointing to a JSON config file.">>}).
 
-%% @doc Read `sys.config' + `HECATE_STATION_*' env-var overrides into a
-%% typed station cfg. Loads or generates the identity from disk.
+%% @doc Read JSON config + load identity. JSON path wins; otherwise
+%% falls back to `application:get_env/2' on `macula_station' (CT path).
 %%
 %% Errors surface as `{error, {bad_config, Reason}}' (exact shape per
 %% PLAN_STATION_INTEGRATION 8.1) so the supervisor can translate into
@@ -139,122 +176,208 @@ continue_with_identity({error, _} = E) ->
 
 -spec build_cfg() -> {ok, station_cfg()} | {error, {bad_config, term()}}.
 build_cfg() ->
-    promote(read_many([
-        {data_dir,      "HECATE_STATION_DATA_DIR",      str,               required},
-        {identity_file, "HECATE_STATION_IDENTITY_FILE", str,               optional},
-        {bind,          "HECATE_STATION_BIND",          str,               required},
-        {port,          "HECATE_STATION_PORT",          integer,           required},
-        {certfile,      "HECATE_STATION_CERTFILE",      str,               required},
-        {keyfile,       "HECATE_STATION_KEYFILE",       str,               required},
-        {capabilities,  "HECATE_STATION_CAPABILITIES",  integer,           {optional, 0}},
-        {cache,         undefined,                      cache_spec,        optional},
-        {rebootstrap,   undefined,                      rebootstrap_spec,  optional},
-        {admin,         undefined,                      admin_spec,        optional}
+    case os:getenv(?CONFIG_ENV_VAR) of
+        false -> from_app_env();
+        ""    -> from_app_env();
+        Path  -> from_json_file(Path)
+    end.
+
+%%==================================================================
+%% JSON-file path (production).
+%%==================================================================
+
+from_json_file(Path) ->
+    decode_or_err(file:read_file(Path), Path).
+
+decode_or_err({ok, Bin}, Path) ->
+    try json:decode(Bin) of
+        M when is_map(M) -> assemble_from_json(M, Path);
+        _Other           -> {error, {bad_config, {parse, Path, not_an_object}}}
+    catch
+        error:Reason -> {error, {bad_config, {parse, Path, Reason}}}
+    end;
+decode_or_err({error, Reason}, Path) ->
+    {error, {bad_config, {read, Path, Reason}}}.
+
+assemble_from_json(M, Path) ->
+    require_keys([<<"data_dir">>, <<"bind">>, <<"port">>,
+                  <<"certfile">>, <<"keyfile">>],
+                 M, Path,
+                 fun() -> {ok, build_record_from_json(M)} end).
+
+require_keys([], _M, _Path, K) ->
+    K();
+require_keys([Key | Rest], M, Path, K) ->
+    case maps:is_key(Key, M) of
+        true  -> require_keys(Rest, M, Path, K);
+        false -> {error, {bad_config, {missing, key_to_atom(Key)}}}
+    end.
+
+build_record_from_json(M) ->
+    DataDir = to_str(maps:get(<<"data_dir">>, M)),
+    Geo     = maps:get(<<"geo">>, M, #{}),
+    #station_cfg{
+        data_dir        = DataDir,
+        identity_file   = identity_file_or_default(M, DataDir),
+        bind            = to_str(maps:get(<<"bind">>, M)),
+        port            = maps:get(<<"port">>, M),
+        certfile        = to_str(maps:get(<<"certfile">>, M)),
+        keyfile         = to_str(maps:get(<<"keyfile">>, M)),
+        capabilities    = maps:get(<<"capabilities">>, M, 0),
+        cache_cfg       = decode_cache_json(maps:get(<<"cache">>, M, undefined)),
+        rebootstrap_cfg = decode_rebootstrap_json(maps:get(<<"rebootstrap">>, M, undefined)),
+        admin_cfg       = decode_admin_json(maps:get(<<"admin">>, M, undefined)),
+        hostname        = to_bin_or_undef(maps:get(<<"hostname">>, Geo, undefined)),
+        city            = to_bin_or_undef(maps:get(<<"city">>,     Geo, undefined)),
+        country         = to_bin_or_undef(maps:get(<<"country">>,  Geo, undefined)),
+        lat             = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
+        lng             = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined))
+    }.
+
+identity_file_or_default(#{<<"identity_file">> := Path}, _DataDir) ->
+    to_str(Path);
+identity_file_or_default(_M, DataDir) ->
+    macula_station_identity:path_for(DataDir).
+
+decode_cache_json(undefined) -> undefined;
+decode_cache_json(M) when is_map(M) ->
+    #cache_cfg{
+        path            = to_str(maps:get(<<"path">>, M)),
+        flush_period_ms = maps:get(<<"flush_period_ms">>, M, 30_000)
+    }.
+
+decode_rebootstrap_json(undefined) -> undefined;
+decode_rebootstrap_json(M) when is_map(M) ->
+    #rebootstrap_cfg{
+        min_viable_peers    = maps:get(<<"min_viable_peers">>,    M, 8),
+        check_period_ms     = maps:get(<<"check_period_ms">>,     M, 5_000),
+        partition_window_ms = maps:get(<<"partition_window_ms">>, M, 60_000)
+    }.
+
+decode_admin_json(undefined) -> undefined;
+decode_admin_json(M) when is_map(M) ->
+    #admin_cfg{
+        bind = to_str(maps:get(<<"bind">>, M, "127.0.0.1")),
+        port = maps:get(<<"port">>, M, 8443)
+    }.
+
+to_str(B) when is_binary(B) -> binary_to_list(B);
+to_str(L) when is_list(L)   -> L.
+
+to_bin_or_undef(undefined) -> undefined;
+to_bin_or_undef(B) when is_binary(B) -> B;
+to_bin_or_undef(L) when is_list(L)   -> list_to_binary(L).
+
+to_number_or_undef(undefined) -> undefined;
+to_number_or_undef(N) when is_number(N) -> N.
+
+key_to_atom(<<"data_dir">>) -> data_dir;
+key_to_atom(<<"bind">>)     -> bind;
+key_to_atom(<<"port">>)     -> port;
+key_to_atom(<<"certfile">>) -> certfile;
+key_to_atom(<<"keyfile">>)  -> keyfile;
+key_to_atom(B)              -> binary_to_atom(B, utf8).
+
+%%==================================================================
+%% sys.config / app-env path (CT fallback).
+%%==================================================================
+
+from_app_env() ->
+    promote(read_many_app_env([
+        {data_dir,      required},
+        {identity_file, optional},
+        {bind,          required},
+        {port,          required},
+        {certfile,      required},
+        {keyfile,       required},
+        {capabilities,  {optional, 0}},
+        {cache,         optional},
+        {rebootstrap,   optional},
+        {admin,         optional}
     ])).
 
-promote({ok, Map})          -> {ok, finalise_cfg_map(Map)};
+promote({ok, Map})          -> {ok, finalise_app_env(Map)};
 promote({error, _} = E)     -> E.
 
-%% Thread a list of field specs, collecting values into a map.
--spec read_many([_]) -> {ok, map()} | {error, {bad_config, term()}}.
-read_many(Specs) ->
-    read_many(Specs, #{}).
+read_many_app_env(Specs) ->
+    read_many_app_env(Specs, #{}).
 
-read_many([], Acc) ->
+read_many_app_env([], Acc) ->
     {ok, Acc};
-read_many([Spec | Rest], Acc) ->
-    read_many_step(read_spec(Spec), Spec, Rest, Acc).
+read_many_app_env([Spec | Rest], Acc) ->
+    read_many_app_env_step(read_app_env(Spec), Spec, Rest, Acc).
 
-read_many_step({ok, V},         {Key, _, _, _}, Rest, Acc) ->
-    read_many(Rest, Acc#{Key => V});
-read_many_step(absent,          _Spec,          Rest, Acc) ->
-    read_many(Rest, Acc);
-read_many_step({error, _} = E,  _Spec,          _Rest, _Acc) ->
+read_many_app_env_step({ok, V},        {Key, _Req}, Rest, Acc) ->
+    read_many_app_env(Rest, Acc#{Key => V});
+read_many_app_env_step(absent,         _Spec,       Rest, Acc) ->
+    read_many_app_env(Rest, Acc);
+read_many_app_env_step({error, _} = E, _Spec,       _Rest, _Acc) ->
     E.
 
-read_spec({Key, EnvVar, Parse, Req}) ->
-    materialise_spec(raw_value(Key, EnvVar), Key, Parse, Req).
+read_app_env({Key, Req}) ->
+    materialise_app_env(application:get_env(macula_station, Key), Key, Req).
 
-materialise_spec({ok, {Src, Raw}}, Key, Parse, _Req) ->
-    parse_value(Raw, Parse, {Src, Key});
-materialise_spec(absent,            Key, _Parse, required) ->
+materialise_app_env({ok, V}, _Key, _Req) ->
+    {ok, V};
+materialise_app_env(undefined, Key, required) ->
     {error, {bad_config, {missing, Key}}};
-materialise_spec(absent,           _Key, _Parse, optional) ->
+materialise_app_env(undefined, _Key, optional) ->
     absent;
-materialise_spec(absent,           _Key, _Parse, {optional, Default}) ->
+materialise_app_env(undefined, _Key, {optional, Default}) ->
     {ok, Default}.
 
-%% Env var wins; otherwise application env. Tags the source for errors.
-%% Some config fields have no `HECATE_STATION_*' override — the env-var
-%% name is `undefined' for those; we skip the `os:getenv/1' path.
-raw_value(Key, EnvVar) ->
-    choose_raw(env_value(EnvVar), application:get_env(macula_station, Key),
-               EnvVar, Key).
-
-env_value(undefined) -> false;
-env_value(Name)      -> os:getenv(Name).
-
-choose_raw(V,     _AppVal, EnvVar, _Key) when is_list(V) -> {ok, {{env, EnvVar}, V}};
-choose_raw(false, {ok, V},  _EnvVar, Key) -> {ok, {{app_env, Key}, V}};
-choose_raw(false, undefined, _EnvVar, _Key) -> absent.
-
-%% Parse by declared type. Keep each clause total.
-parse_value(V, str,     _Src) when is_list(V);  is_binary(V)  -> {ok, V};
-parse_value(V, integer, _Src) when is_integer(V)              -> {ok, V};
-parse_value(V, integer, Src)  when is_list(V)                 -> parse_int(V, Src);
-parse_value(V, integer, Src)  when is_binary(V)               -> parse_int(binary_to_list(V), Src);
-parse_value(V, cache_spec,  Src) when is_map(V)               -> decode_cache_spec(V, Src);
-parse_value(V, rebootstrap_spec, Src) when is_map(V)          -> decode_rebootstrap_spec(V, Src);
-parse_value(V, admin_spec,  Src) when is_map(V)               -> decode_admin_spec(V, Src);
-parse_value(V, T,       Src)                                  -> {error, {bad_config, {parse, Src, T, V}}}.
-
-parse_int(Str, Src) ->
-    parse_int_result(string:to_integer(Str), Src).
-
-parse_int_result({N, ""},       _Src) when is_integer(N) -> {ok, N};
-parse_int_result({N, Rest},      Src) when is_integer(N)  -> {error, {bad_config, {parse, Src, integer, Rest}}};
-parse_int_result({error, R},     Src)                     -> {error, {bad_config, {parse, Src, integer, R}}}.
-
-decode_cache_spec(#{path := Path} = M, _Src) ->
-    {ok, #cache_cfg{
-        path            = Path,
-        flush_period_ms = maps:get(flush_period_ms, M, 30_000)
-     }};
-decode_cache_spec(M, Src) ->
-    {error, {bad_config, {parse, Src, cache_spec, M}}}.
-
-decode_rebootstrap_spec(M, _Src) when is_map(M) ->
-    {ok, #rebootstrap_cfg{
-        min_viable_peers    = maps:get(min_viable_peers,    M, 8),
-        check_period_ms     = maps:get(check_period_ms,     M, 5_000),
-        partition_window_ms = maps:get(partition_window_ms, M, 60_000)
-     }}.
-
-decode_admin_spec(M, _Src) when is_map(M) ->
-    {ok, #admin_cfg{
-        bind = maps:get(bind, M, "127.0.0.1"),
-        port = maps:get(port, M, 8443)
-     }}.
-
-finalise_cfg_map(Map0) ->
+finalise_app_env(Map0) ->
     DataDir = maps:get(data_dir, Map0),
     Map     = ensure_identity_file(Map0, DataDir),
     #station_cfg{
         data_dir         = DataDir,
         identity_file    = maps:get(identity_file, Map),
         bind             = maps:get(bind, Map),
-        port             = maps:get(port, Map),
+        port             = ensure_int(maps:get(port, Map)),
         certfile         = maps:get(certfile, Map),
         keyfile          = maps:get(keyfile, Map),
         capabilities     = maps:get(capabilities, Map, 0),
-        cache_cfg        = maps:get(cache, Map, undefined),
-        rebootstrap_cfg  = maps:get(rebootstrap, Map, undefined),
-        admin_cfg        = maps:get(admin, Map, undefined)
+        cache_cfg        = decode_cache_app_env(maps:get(cache, Map, undefined)),
+        rebootstrap_cfg  = decode_rebootstrap_app_env(maps:get(rebootstrap, Map, undefined)),
+        admin_cfg        = decode_admin_app_env(maps:get(admin, Map, undefined))
+    }.
+
+decode_cache_app_env(undefined)            -> undefined;
+decode_cache_app_env(#cache_cfg{} = R)     -> R;
+decode_cache_app_env(#{path := Path} = M)  ->
+    #cache_cfg{
+        path            = Path,
+        flush_period_ms = maps:get(flush_period_ms, M, 30_000)
+    }.
+
+decode_rebootstrap_app_env(undefined)              -> undefined;
+decode_rebootstrap_app_env(#rebootstrap_cfg{} = R) -> R;
+decode_rebootstrap_app_env(M) when is_map(M) ->
+    #rebootstrap_cfg{
+        min_viable_peers    = maps:get(min_viable_peers,    M, 8),
+        check_period_ms     = maps:get(check_period_ms,     M, 5_000),
+        partition_window_ms = maps:get(partition_window_ms, M, 60_000)
+    }.
+
+decode_admin_app_env(undefined)         -> undefined;
+decode_admin_app_env(#admin_cfg{} = R)  -> R;
+decode_admin_app_env(M) when is_map(M)  ->
+    #admin_cfg{
+        bind = maps:get(bind, M, "127.0.0.1"),
+        port = maps:get(port, M, 8443)
     }.
 
 ensure_identity_file(#{identity_file := _} = Map, _DataDir) -> Map;
 ensure_identity_file(Map, DataDir) ->
     Map#{identity_file => macula_station_identity:path_for(DataDir)}.
+
+ensure_int(N) when is_integer(N) -> N;
+ensure_int(L) when is_list(L)    -> list_to_integer(L);
+ensure_int(B) when is_binary(B)  -> binary_to_integer(B).
+
+%%==================================================================
+%% Identity load / project.
+%%==================================================================
 
 on_identity({ok, Kp}, Cfg)          -> {ok, Cfg#station_cfg{identity = Kp}};
 on_identity({error, Reason}, _Cfg)  -> {error, {bad_config, {identity, Reason}}}.

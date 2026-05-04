@@ -11,9 +11,10 @@
 %%
 %% 1. Start `macula_station_sup' (brings up `macula_station_peer_links'
 %%    + `macula_station_record_fanout' as static children).
-%% 2. If neither `macula_station' application env nor `HECATE_STATION_*'
-%%    env vars are set, stop here — programmatic callers (walking-skeleton
-%%    / chaos CT) drive `macula_station_server' directly.
+%% 2. If neither `macula_station' application env nor the
+%%    `MACULA_STATION_CONFIG' env var is set, stop here —
+%%    programmatic callers (walking-skeleton / chaos CT) drive
+%%    `macula_station_server' directly.
 %% 3. Load + validate station config via `macula_station_config:from_env/0'.
 %% 4. Procedural-boot the runtime children in dependency order:
 %%
@@ -470,16 +471,23 @@ listener_child(#station_cfg{bind = Bind, port = Port,
     }.
 
 announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
-                             bind = Bind} = _Cfg, DhtPid, ObserverPid) ->
-    Opts = #{
+                             bind = Bind, hostname = Host,
+                             city = City, country = Country,
+                             lat = Lat, lng = Lng} = _Cfg,
+                DhtPid, ObserverPid) ->
+    Base = #{
         dht           => DhtPid,
         identity      => Kp,
         realms        => [],
         capabilities  => Caps,
         peer_observer => ObserverPid,
-        hostname      => station_hostname(),
+        hostname      => hostname_or_default(Host),
         bind          => bind_to_binary(Bind)
     },
+    Opts = add_optional_geo(Base, #{city    => City,
+                                    country => Country,
+                                    lat     => Lat,
+                                    lng     => Lng}),
     #{
         id       => macula_station_announcer,
         start    => {macula_station_sup, start_announcer, [Opts]},
@@ -488,6 +496,16 @@ announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
         type     => worker,
         modules  => [macula_station_announcer]
     }.
+
+hostname_or_default(undefined)               -> station_hostname();
+hostname_or_default(B) when is_binary(B)     -> B.
+
+%% Drop `undefined' geo fields so the announcer only stamps
+%% known-good values onto the node_record.
+add_optional_geo(Opts, Geo) ->
+    maps:fold(fun(_K, undefined, Acc) -> Acc;
+                 (K,  V,         Acc) -> Acc#{K => V}
+              end, Opts, Geo).
 
 content_announcer_child(#station_cfg{identity = Kp, bind = Bind, port = Port},
                         DhtPid) ->

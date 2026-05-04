@@ -1,14 +1,18 @@
 %% -*- erlang -*-
 %% Typed station configuration record.
 %%
-%% Populated by `macula_station_config:from_env/0' from the application
-%% environment (sys.config) with HECATE_STATION_* env-var overrides.
+%% Populated by `macula_station_config:from_env/0' from a single
+%% JSON file pointed to by the `MACULA_STATION_CONFIG' env var.
+%% Falls back to the application environment (sys.config) when no
+%% config path is set, so the walking-skeleton / chaos CT suites
+%% that drive the station programmatically still work.
+%%
 %% The record is the canonical shape; for back-compat with the
 %% walking-skeleton API, `macula_station_config:to_opts/1' projects it
 %% to the legacy `station_opts()' map.
 
--ifndef(HECATE_STATION_CFG_HRL).
--define(HECATE_STATION_CFG_HRL, true).
+-ifndef(MACULA_STATION_CFG_HRL).
+-define(MACULA_STATION_CFG_HRL, true).
 
 -record(station_cfg, {
     %% Data root — identity file, cache, tombstone log live under here.
@@ -40,7 +44,17 @@
     %% Admin HTTP API binding. When present, the boot pipeline
     %% starts a loopback-only httpd exposing `/status', `/dht/stats',
     %% `/swim/members', `/bootstrap/rerun'.
-    admin_cfg       = undefined :: admin_cfg() | undefined
+    admin_cfg       = undefined :: admin_cfg() | undefined,
+    %% Optional geo block — surfaced into announce records so the
+    %% realm topology can render station markers without a
+    %% side-channel topology poll. All fields are optional; an
+    %% unset value flows through as `undefined' and is dropped before
+    %% the announcer constructs the node_record.
+    hostname        = undefined :: binary() | undefined,
+    city            = undefined :: binary() | undefined,
+    country         = undefined :: binary() | undefined,
+    lat             = undefined :: number() | undefined,
+    lng             = undefined :: number() | undefined
 }).
 
 %% Matches the shape of `application:get_env(macula_station, realms_cfg, [])'

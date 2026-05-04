@@ -218,9 +218,12 @@ Each Sup child:
 
 ### 4.2 Minimum `sys.config` (as shipped)
 
-Keys are the exact names `macula_station_config:from_env/0' parses.
-`HECATE_STATION_*' env-var overrides are available for a subset
-(see `macula_station_config' source for the list).
+Keys are the exact names `macula_station_config:from_env/0' parses
+when no JSON config is supplied (CT / dev). Production deployments
+set `MACULA_STATION_CONFIG=/path/to/config.json'; the JSON shape
+mirrors the sys.config keys 1:1 (binary keys instead of atoms,
+`geo' added). See `macula_station_config' module-doc for the
+JSON schema.
 
 ```erlang
 [
@@ -302,13 +305,32 @@ Keys are the exact names `macula_station_config:from_env/0' parses.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `HECATE_STATION_CONFIG' | absolute path to sys.config | `/etc/hecate/sys.config' |
-| `HECATE_STATION_DATA' | data root | `/fast/.hecate/station' |
-| `HECATE_STATION_IDENTITY' | private key path | `$DATA/identity.erl.bin' |
+| `MACULA_STATION_CONFIG' | absolute path to JSON config file | `/etc/macula-station/config.json' |
 | `MACULA_FOUNDATION_PUBKEYS' | comma-sep hex pubkeys, override firmware | unset (use embedded placeholders) |
 | `MACULA_DOH_ENABLE' | gated-suite switch | `0' |
 | `MACULA_ETH_ENABLE' | gated-suite switch | `0' |
 | `MACULA_BTC_ENABLE' | gated-suite switch | `0' |
+
+`data_dir', `bind', `port', `certfile', `keyfile', `capabilities',
+`cache', `rebootstrap', `admin', and `geo' all live inside the
+JSON file pointed to by `MACULA_STATION_CONFIG'. Sample config:
+
+```json
+{
+  "data_dir": "/var/lib/macula/station",
+  "bind":     "2600:3c1a:e001:19::be:01",
+  "port":     4433,
+  "certfile": "/certs/.../wildcard_.macula.io.crt",
+  "keyfile":  "/certs/.../wildcard_.macula.io.key",
+  "geo": {
+    "hostname": "station-be-brussels.macula.io",
+    "city":     "Brussels",
+    "country":  "BE",
+    "lat":      50.8503,
+    "lng":      4.3517
+  }
+}
+```
 
 ---
 

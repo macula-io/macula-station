@@ -7,13 +7,24 @@
 #
 # Build: docker build -t ghcr.io/macula-io/macula-station:latest .
 # Run:   docker run --network=host \
-#          -e MACULA_RELAY_IDENTITIES="..." \
-#          -e MACULA_QUIC_PORT=4433 \
-#          -e MACULA_TLS_CERTFILE=/certs/cert.pem \
-#          -e MACULA_TLS_KEYFILE=/certs/key.pem \
-#          -e MACULA_ADMIN_TOKEN=... \
+#          -e MACULA_STATION_CONFIG=/etc/macula-station/config.json \
+#          -v /path/to/config.json:/etc/macula-station/config.json:ro \
 #          -v /path/to/certs:/certs:ro \
+#          -v station_data:/var/lib/macula/station \
 #          ghcr.io/macula-io/macula-station:latest
+#
+# config.json shape (data_dir, bind, port, certfile, keyfile required;
+# everything else optional — see macula_station_config.erl):
+#   {
+#     "data_dir": "/var/lib/macula/station",
+#     "bind":     "2600:3c1a:e001:19::be:01",
+#     "port":     4433,
+#     "certfile": "/certs/.../wildcard_.macula.io.crt",
+#     "keyfile":  "/certs/.../wildcard_.macula.io.key",
+#     "geo": { "hostname": "station-be-brussels.macula.io",
+#              "city": "Brussels", "country": "BE",
+#              "lat": 50.8503, "lng": 4.3517 }
+#   }
 
 ARG OTP_VERSION=27.1.2
 ARG DEBIAN_VERSION=bookworm-20241016-slim
@@ -74,22 +85,18 @@ ENV LC_ALL=en_US.UTF-8
 WORKDIR /opt/macula_station
 
 RUN useradd --create-home --shell /bin/bash app && \
-    mkdir -p /var/lib/hecate && chown app:app /var/lib/hecate
+    mkdir -p /var/lib/macula/station /etc/macula-station && \
+    chown -R app:app /var/lib/macula /etc/macula-station
 
 COPY --from=builder --chown=app:app \
      /build/_build/prod/rel/macula_station ./
 
 USER app
 
-# Box-secret (per-identity keypair derivation) lives in /var/lib/hecate
-# by default; operators can override via the `box_secret_path' env
-# var pair (`HECATE_STATION_BOX_SECRET_PATH' if exposed).
-ENV HECATE_STATION_BOX_SECRET_PATH=/var/lib/hecate/box-secret
-
-# Multi-identity boot is opt-in: operators set MACULA_RELAY_IDENTITIES
-# in their docker-compose env. Single-identity legacy boot still works
-# but is unconfigured at the image level — sys.config provides only
-# the supervision-tree skeleton.
+# Single-identity boot. Operators mount a JSON config file and point
+# MACULA_STATION_CONFIG at it. Multi-identity (MACULA_RELAY_IDENTITIES)
+# was removed 2026-05-04 and the loader hard-rejects it at boot.
+ENV MACULA_STATION_CONFIG=/etc/macula-station/config.json
 
 # Expose QUIC port (UDP) + admin/health port (TCP).
 EXPOSE 4433/udp
