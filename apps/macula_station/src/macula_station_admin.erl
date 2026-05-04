@@ -6,21 +6,20 @@
 %%
 %% <table>
 %%   <tr><th>Method</th><th>Path</th><th>Auth</th><th>Body</th></tr>
+%%   <tr><td>GET</td>  <td>/health</td>                       <td>none</td>   <td>process-up sanity check</td></tr>
+%%   <tr><td>GET</td>  <td>/ready</td>                        <td>none</td>   <td>200 once the listener is alive</td></tr>
 %%   <tr><td>GET</td>  <td>/status</td>                       <td>none</td>   <td>overall health snapshot</td></tr>
 %%   <tr><td>GET</td>  <td>/dht/stats</td>                    <td>none</td>   <td>routing-table size + self_id</td></tr>
 %%   <tr><td>GET</td>  <td>/swim/members</td>                 <td>none</td>   <td>current SWIM member list</td></tr>
 %%   <tr><td>POST</td> <td>/bootstrap/rerun</td>              <td>none</td>   <td>trigger a re-cascade</td></tr>
-%%   <tr><td>GET</td>  <td>/admin/identities</td>             <td>bearer</td> <td>list registered identities</td></tr>
-%%   <tr><td>GET</td>  <td>/admin/identities/:id/health</td>  <td>bearer</td> <td>per-identity DHT/SWIM/listener snapshot</td></tr>
-%%   <tr><td>POST</td> <td>/admin/identities/:id/start</td>   <td>bearer</td> <td>spawn a new identity from a JSON spec</td></tr>
-%%   <tr><td>POST</td> <td>/admin/identities/:id/stop</td>    <td>bearer</td> <td>terminate an identity</td></tr>
-%%   <tr><td>POST</td> <td>/admin/identities/:id/reload</td>  <td>bearer</td> <td>stop + re-register with the same opts</td></tr>
 %% </table>
 %%
-%% Bearer auth on `/admin/*' uses the `MACULA_ADMIN_TOKEN' env var.
-%% A missing or empty token returns 503 (admin disabled); a wrong
-%% Bearer header returns 401. The unauthenticated routes above stay
-%% open per V1's loopback-only model (front with `ssh -L' for
+%% The `/admin/identities*' routes were removed 2026-05-04 alongside
+%% the multi-identity machinery. Each macula-station container hosts
+%% exactly one station-keypair; identity management at the box level
+%% is config + container-restart, not a runtime API.
+%%
+%% Routes are loopback-only per V1's model (front with `ssh -L' for
 %% remote access).
 %%
 %% TLS + client-cert auth are deferred to Phase 7; plan §8.6 scopes
@@ -235,16 +234,6 @@ dispatch(<<"GET">>,  [<<"status">>],                  _Req) -> status();
 dispatch(<<"GET">>,  [<<"dht">>, <<"stats">>],        _Req) -> dht_stats();
 dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
 dispatch(<<"POST">>, [<<"bootstrap">>, <<"rerun">>],  _Req) -> bootstrap_rerun();
-dispatch(<<"GET">>,  [<<"admin">>, <<"identities">>],  Req) ->
-    with_auth(Req, fun() -> list_identities() end);
-dispatch(<<"GET">>,  [<<"admin">>, <<"identities">>, Id, <<"health">>], Req) ->
-    with_auth(Req, fun() -> identity_health(Id) end);
-dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"start">>], Req) ->
-    with_auth(Req, fun() -> start_identity(Id, Req) end);
-dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"stop">>], Req) ->
-    with_auth(Req, fun() -> stop_identity(Id) end);
-dispatch(<<"POST">>, [<<"admin">>, <<"identities">>, Id, <<"reload">>], Req) ->
-    with_auth(Req, fun() -> reload_identity(Id) end);
 dispatch(_Method, _Segments, _Req) ->
     not_found().
 
@@ -258,24 +247,20 @@ dispatch(_Method, _Segments, _Req) ->
 health() ->
     {200, <<"application/json">>, <<"{\"status\":\"healthy\"}">>}.
 
-%% `/ready' — at least one identity supervisor has booted past
-%% the listener stage. Fits the K8s readiness-probe contract:
-%% return 503 while the station is still wiring identities, 200
-%% once any identity is accepting traffic.
+%% `/ready' — the station's listener has booted. Fits the K8s
+%% readiness-probe contract: return 503 while the station is still
+%% wiring its boot chain, 200 once the listener is accepting traffic.
 ready() ->
-    case any_identity_listening() of
+    case listener_alive() of
         true  -> {200, <<"application/json">>, <<"{\"status\":\"ready\"}">>};
         false -> {503, <<"application/json">>,
                   <<"{\"status\":\"not_ready\"}">>}
     end.
 
-any_identity_listening() ->
-    try
-        Ids = macula_station_identity_registry:list(),
-        lists:any(fun(#{listener_pid := P}) when is_pid(P) -> is_process_alive(P);
-                     (_)                                    -> false
-                  end, Ids)
-    catch _:_ -> false
+listener_alive() ->
+    case macula_station:listener() of
+        {ok, Pid} -> is_process_alive(Pid);
+        _         -> false
     end.
 
 %% Split a `/foo/bar/baz' binary path into `[<<"foo">>, <<"bar">>,
@@ -285,36 +270,6 @@ path_segments(<<"/", Rest/binary>>) ->
     binary:split(Rest, <<"/">>, [global, trim_all]);
 path_segments(_) ->
     [].
-
-%%==================================================================
-%% Bearer-token auth — `MACULA_ADMIN_TOKEN'.
-%%==================================================================
-
-with_auth(Req, Handler) ->
-    on_auth(check_auth(Req), Handler).
-
-on_auth(ok, Handler)            -> Handler();
-on_auth({error, Reason}, _H)    -> auth_error(Reason).
-
-check_auth(#{headers := Headers}) ->
-    on_token(os:getenv("MACULA_ADMIN_TOKEN"), Headers).
-
-on_token(false, _Headers)             -> {error, not_configured};
-on_token("",    _Headers)             -> {error, not_configured};
-on_token(Token, Headers)              -> match_bearer(list_to_binary(Token), Headers).
-
-match_bearer(Expected, Headers) ->
-    classify_bearer(maps:get(<<"authorization">>, Headers, undefined), Expected).
-
-classify_bearer(<<"Bearer ", Got/binary>>, Expected) when Got =:= Expected -> ok;
-classify_bearer(_Other, _Expected) -> {error, unauthorized}.
-
-auth_error(not_configured) ->
-    json_response(503, #{result => <<"error">>,
-                         reason => <<"admin_token_not_configured">>});
-auth_error(unauthorized) ->
-    json_response(401, #{result => <<"error">>,
-                         reason => <<"unauthorized">>}).
 
 %%------------------------------------------------------------------
 %% Handlers
@@ -380,290 +335,6 @@ member_json(#{node_id := N, state := S, last_seen := LS, since := Since}) ->
       state     => atom_to_binary(S, utf8),
       last_seen => LS,
       since     => Since}.
-
-%%==================================================================
-%% /admin/identities — Phase 5
-%%==================================================================
-
-list_identities() ->
-    Entries = [identity_status_json(K, P)
-               || {K, P} <- macula_station_identity_registry:list()],
-    json_response(200, #{identities => Entries}).
-
-identity_status_json(Key, Pid) ->
-    Children = supervisor:which_children(Pid),
-    Listener = listener_status(Children),
-    #{
-        identity_key => to_bin(Key),
-        sup_pid      => list_to_binary(pid_to_list(Pid)),
-        children     => [child_id_bin(Id) || {Id, _, _, _} <- Children],
-        listener     => Listener
-    }.
-
-listener_status(Children) ->
-    Listeners = [P || {macula_station_listener, P, _, _} <- Children],
-    listener_status_step(Listeners).
-
-listener_status_step([])    -> #{state => <<"absent">>};
-listener_status_step([Pid]) -> listener_addr_json(Pid).
-
-listener_addr_json(Pid) ->
-    classify_listener(catch macula_station_listener:listen_addr(Pid)).
-
-classify_listener({Bind, Port}) when is_integer(Port) ->
-    #{state => <<"alive">>,
-      addr  => iolist_to_binary(io_lib:format("~s:~B", [Bind, Port]))};
-classify_listener(_) ->
-    #{state => <<"unreachable">>}.
-
-child_id_bin(A) when is_atom(A)   -> atom_to_binary(A, utf8);
-child_id_bin(B) when is_binary(B) -> B.
-
-%%------------------------------------------------------------------
-%% GET /admin/identities/:id/health — Phase 6
-%%
-%% Per-identity status snapshot. Composes the live state of every
-%% per-identity child the identity_sup supervises into a single
-%% JSON document. 404 if the identity is not registered.
-%%------------------------------------------------------------------
-
-identity_health(Id) ->
-    on_health_lookup(Id, macula_station_identity_registry:lookup(Id)).
-
-on_health_lookup(_Id, {error, not_found}) ->
-    json_response(404, #{result => <<"error">>, reason => <<"not_found">>});
-on_health_lookup(Id, {ok, Sup}) ->
-    Children = supervisor:which_children(Sup),
-    Body = #{
-        identity_key      => to_bin(Id),
-        sup_pid           => list_to_binary(pid_to_list(Sup)),
-        listener          => listener_status(Children),
-        dht               => dht_health(Children),
-        swim              => swim_health(Children),
-        peer_observer     => process_health(Children, macula_station_peer_observer),
-        content_announcer => process_health(Children, macula_content_announcer),
-        pubsub_registry   => pubsub_health(Children),
-        healthy           => sup_healthy(Children)
-    },
-    json_response(200, Body).
-
-%% Sup is healthy when every child has a live pid (a `restarting'
-%% or `undefined' child means the supervisor is mid-recovery and
-%% the identity is degraded — operators should be able to see that).
-sup_healthy(Children) ->
-    lists:all(fun({_Id, Pid, _Type, _Mods}) ->
-                  is_pid(Pid) andalso is_process_alive(Pid)
-              end, Children).
-
-dht_health(Children) ->
-    classify_dht(child_pid_for(Children, macula_dht)).
-
-classify_dht(undefined) ->
-    #{state => <<"absent">>};
-classify_dht(Pid) ->
-    classify_dht_alive(Pid, is_process_alive(Pid)).
-
-classify_dht_alive(_Pid, false) ->
-    #{state => <<"down">>};
-classify_dht_alive(Pid, true) ->
-    #{state   => <<"alive">>,
-      size    => macula_dht:size(Pid),
-      self_id => hex(macula_dht:self_id(Pid))}.
-
-swim_health(Children) ->
-    classify_swim(child_pid_for(Children, macula_swim)).
-
-classify_swim(undefined) ->
-    #{state => <<"absent">>};
-classify_swim(Pid) ->
-    classify_swim_alive(Pid, is_process_alive(Pid)).
-
-classify_swim_alive(_Pid, false) ->
-    #{state => <<"down">>};
-classify_swim_alive(Pid, true) ->
-    #{state   => <<"alive">>,
-      members => length(macula_swim:members(Pid))}.
-
-pubsub_health(Children) ->
-    classify_pubsub(child_pid_for(Children, hecate_pubsub_registry)).
-
-classify_pubsub(undefined) ->
-    #{state => <<"absent">>};
-classify_pubsub(Pid) ->
-    classify_pubsub_alive(Pid, is_process_alive(Pid)).
-
-classify_pubsub_alive(_Pid, false) ->
-    #{state => <<"down">>};
-classify_pubsub_alive(Pid, true) ->
-    #{state  => <<"alive">>,
-      realms => length(hecate_pubsub_registry:list_realms(Pid))}.
-
-%% Generic alive/down status for children where there is no extra
-%% per-process data worth surfacing.
-process_health(Children, ChildId) ->
-    classify_process(child_pid_for(Children, ChildId)).
-
-classify_process(undefined)  -> #{state => <<"absent">>};
-classify_process(Pid)        -> classify_process_alive(is_process_alive(Pid)).
-
-classify_process_alive(true)  -> #{state => <<"alive">>};
-classify_process_alive(false) -> #{state => <<"down">>}.
-
-child_pid_for(Children, ChildId) ->
-    case [P || {Id, P, _, _} <- Children, Id =:= ChildId, is_pid(P)] of
-        [Pid] -> Pid;
-        _     -> undefined
-    end.
-
-%%------------------------------------------------------------------
-%% POST /admin/identities/:id/start
-%%------------------------------------------------------------------
-
-start_identity(Id, #{body := Body}) ->
-    on_decoded(Id, decode_spec(Body)).
-
-on_decoded(_Id, {error, Reason}) ->
-    json_response(400, #{result => <<"error">>, reason => Reason});
-on_decoded(Id, {ok, Spec}) ->
-    %% Plumbing: identity_key in the URL is authoritative — the
-    %% body's `hostname' must agree (otherwise admin would let an
-    %% operator desync the URL from the identity).
-    on_id_match(Id, maps:get(hostname, Spec, undefined), Spec).
-
-on_id_match(Id, Hostname, Spec) when Id =:= Hostname ->
-    do_start(Spec);
-on_id_match(_Id, _Hostname, _Spec) ->
-    json_response(400, #{result => <<"error">>,
-                         reason => <<"id_hostname_mismatch">>}).
-
-do_start(Spec) ->
-    on_box_secret(Spec, macula_station_identity_config:load_box_secret()).
-
-on_box_secret(_Spec, {error, R}) ->
-    json_response(503, #{result => <<"error">>,
-                         reason => to_bin_reason({box_secret_failed, R})});
-on_box_secret(Spec, {ok, BoxSecret}) ->
-    on_shared(Spec, BoxSecret,
-              macula_station_identity_config:shared_listener_opts()).
-
-on_shared(_Spec, _Secret, {error, R}) ->
-    json_response(503, #{result => <<"error">>,
-                         reason => to_bin_reason(R)});
-on_shared(Spec, BoxSecret, {ok, Shared}) ->
-    Opts = macula_station_identity_config:spec_to_opts(
-             Spec, BoxSecret, Shared),
-    Key  = maps:get(identity_key, Opts),
-    on_register(Key, macula_station_identity_registry:register(Key, Opts)).
-
-on_register(Key, {ok, Pid}) ->
-    json_response(201, #{result => <<"ok">>,
-                         identity_key => to_bin(Key),
-                         sup_pid      => list_to_binary(pid_to_list(Pid))});
-on_register(_Key, {error, already_registered}) ->
-    json_response(409, #{result => <<"error">>,
-                         reason => <<"already_registered">>});
-on_register(_Key, {error, Reason}) ->
-    json_response(500, #{result => <<"error">>,
-                         reason => to_bin_reason(Reason)}).
-
-%%------------------------------------------------------------------
-%% POST /admin/identities/:id/stop
-%%------------------------------------------------------------------
-
-stop_identity(Id) ->
-    on_terminate(Id, macula_station_identity_registry:terminate(Id)).
-
-on_terminate(Id, ok) ->
-    json_response(200, #{result => <<"ok">>, identity_key => Id});
-on_terminate(_Id, {error, not_found}) ->
-    json_response(404, #{result => <<"error">>, reason => <<"not_found">>}).
-
-%%------------------------------------------------------------------
-%% POST /admin/identities/:id/reload
-%%------------------------------------------------------------------
-
-reload_identity(Id) ->
-    on_lookup_for_reload(Id, macula_station_identity_registry:lookup_opts(Id)).
-
-on_lookup_for_reload(_Id, {error, not_found}) ->
-    json_response(404, #{result => <<"error">>, reason => <<"not_found">>});
-on_lookup_for_reload(Id, {ok, Opts}) ->
-    ok = macula_station_identity_registry:terminate(Id),
-    on_reregister(Id, macula_station_identity_registry:register(Id, Opts)).
-
-on_reregister(Id, {ok, Pid}) ->
-    json_response(200, #{result => <<"ok">>,
-                         identity_key => to_bin(Id),
-                         sup_pid      => list_to_binary(pid_to_list(Pid))});
-on_reregister(_Id, {error, Reason}) ->
-    json_response(500, #{result => <<"error">>,
-                         reason => to_bin_reason(Reason)}).
-
-%%------------------------------------------------------------------
-%% Body parsing — JSON ⇒ identity_spec()
-%%------------------------------------------------------------------
-
-decode_spec(<<>>) ->
-    {error, <<"empty_body">>};
-decode_spec(Body) ->
-    on_decoded_json(catch json:decode(Body)).
-
-on_decoded_json({'EXIT', _}) ->
-    {error, <<"invalid_json">>};
-on_decoded_json(Map) when is_map(Map) ->
-    classify_spec_map(Map);
-on_decoded_json(_) ->
-    {error, <<"json_must_be_object">>}.
-
-classify_spec_map(Map) ->
-    Required = [<<"hostname">>, <<"city">>, <<"country">>,
-                <<"lat">>, <<"lng">>],
-    classify_spec_step(check_required(Required, Map), Map).
-
-check_required([], _Map)            -> ok;
-check_required([K | R], Map) ->
-    case maps:is_key(K, Map) of
-        true  -> check_required(R, Map);
-        false -> {missing, K}
-    end.
-
-classify_spec_step({missing, K}, _Map) ->
-    {error, iolist_to_binary([<<"missing field: ">>, K])};
-classify_spec_step(ok, Map) ->
-    finalise_spec(Map).
-
-finalise_spec(Map) ->
-    Hostname = to_bin(maps:get(<<"hostname">>, Map)),
-    City     = to_bin(maps:get(<<"city">>, Map)),
-    Country  = to_bin(maps:get(<<"country">>, Map)),
-    Bind     = to_bind(maps:get(<<"bind">>, Map, undefined)),
-    classify_lat_lng(maps:get(<<"lat">>, Map),
-                     maps:get(<<"lng">>, Map),
-                     Hostname, City, Country, Bind).
-
-to_bind(undefined) -> undefined;
-to_bind(Bin) when is_binary(Bin) -> Bin;
-to_bind(L)   when is_list(L)     -> iolist_to_binary(L).
-
-classify_lat_lng(Lat, Lng, Host, City, Country, Bind)
-  when is_number(Lat), is_number(Lng) ->
-    {ok, #{
-        hostname => Host,
-        city     => City,
-        country  => Country,
-        lat      => to_float(Lat),
-        lng      => to_float(Lng),
-        bind     => Bind
-    }};
-classify_lat_lng(_Lat, _Lng, _Host, _City, _Country, _Bind) ->
-    {error, <<"lat/lng must be numeric">>}.
-
-to_float(N) when is_float(N)   -> N;
-to_float(N) when is_integer(N) -> float(N).
-
-to_bin_reason(A) when is_atom(A)   -> atom_to_binary(A, utf8);
-to_bin_reason(T) ->
-    iolist_to_binary(io_lib:format("~p", [T])).
 
 not_found() ->
     json_response(404, #{result => <<"error">>, reason => <<"not_found">>}).

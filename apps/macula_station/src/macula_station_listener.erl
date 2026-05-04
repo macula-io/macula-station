@@ -173,13 +173,15 @@ resolve_cert_source(#{certfile := _, keyfile := _} = Opts) ->
     {ok, Opts};
 resolve_cert_source(#{cert_source := {pem, CertFile, KeyFile}} = Opts) ->
     {ok, Opts#{certfile => CertFile, keyfile => KeyFile}};
-resolve_cert_source(#{cert_source := {self_signed_pubkey, KeyPair},
+resolve_cert_source(#{cert_source := {self_signed_pubkey, {Pubkey, Privkey}},
                       identity := _} = Opts) ->
-    %% KeyPair is `{Pubkey, Privkey}' — typically the same identity
-    %% keypair the listener already carries. Generate a self-signed
-    %% cert wrapping that pubkey (with the derived Yggdrasil IPv6
-    %% as IP SAN), write to a per-pid temp dir, hand the paths off.
-    case macula_yggdrasil:cert_for(KeyPair) of
+    %% Generate a self-signed cert wrapping the station-keypair pubkey,
+    %% write to a per-pid temp dir, hand the paths off. Stations are
+    %% realm-agnostic infrastructure — no realm-derived SANs are added
+    %% (the yggdrasil-derived SAN that lived here predated the
+    %% sovereign-substrate cutover; macula-net replaces yggdrasil and
+    %% does not bind realm-scoped addresses to station listeners).
+    case macula_quic:generate_self_signed_cert(Pubkey, Privkey, []) of
         {ok, {CertPem, KeyPem}} ->
             write_temp_cert_pair(CertPem, KeyPem, Opts);
         {error, _} = E ->
