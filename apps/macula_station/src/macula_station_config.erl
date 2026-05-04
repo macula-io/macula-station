@@ -243,16 +243,18 @@ decode_tiers_json(L) when is_list(L) ->
     [decode_tier_json(T) || T <- L].
 
 decode_tier_json(#{<<"module">> := ModBin} = T) ->
-    Mod  = binary_to_existing_atom(ModBin, utf8),
+    Mod  = binary_to_atom(ModBin, utf8),
     Opts = decode_atom_keyed(maps:get(<<"opts">>, T, #{})),
     {Mod, Opts}.
 
-%% Convert binary-keyed JSON map to atom-keyed map (existing atoms
-%% only — refuses to mint new ones). Tier opts and cascade opts are
-%% read by Erlang code that expects atom keys; values are left
-%% untouched.
+%% Convert binary-keyed JSON map to atom-keyed map. Tier opts +
+%% cascade opts are read by Erlang code that expects atom keys
+%% (`peer_urls', `min_peers', `timeout_ms', etc). The source modules
+%% may not be loaded yet at boot time, so we cannot use
+%% `binary_to_existing_atom/2'. Atom-flood risk is low: the JSON
+%% file is operator-controlled, not user input.
 decode_atom_keyed(M) when is_map(M) ->
-    maps:fold(fun(K, V, Acc) -> Acc#{binary_to_existing_atom(K, utf8) => V} end,
+    maps:fold(fun(K, V, Acc) -> Acc#{binary_to_atom(K, utf8) => V} end,
               #{}, M).
 
 identity_file_or_default(#{<<"identity_file">> := Path}, _DataDir) ->
