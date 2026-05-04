@@ -37,8 +37,7 @@
 
 -type opts() :: #{
     handler_registry := pid(),
-    dht              := pid(),
-    identity_key     => term()
+    dht              := pid()
 }.
 
 -record(state, {
@@ -58,15 +57,9 @@ start_link(#{handler_registry := _, dht := _} = Opts) ->
 %% gen_server
 %%====================================================================
 
-init(#{handler_registry := Registry, dht := Dht} = Opts) ->
-    set_logger_identity(Opts),
+init(#{handler_registry := Registry, dht := Dht}) ->
     advertise_all(Registry, Dht),
     {ok, #state{handler_registry = Registry, dht = Dht}}.
-
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) ->
-    ok.
 
 handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
 handle_cast(_Msg, S)        -> {noreply, S}.

@@ -19,27 +19,25 @@
 %% but no boot-pipeline children.
 %%==================================================================
 
-disabled_env_yields_registry_only_sup_test_() ->
+disabled_env_yields_static_children_only_test_() ->
     {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             process_flag(trap_exit, true),
             {ok, Sup} = macula_station_app:start(normal, []),
             ?assert(is_pid(Sup)),
             %% Two always-on infrastructure children:
-            %% identity_registry (yellow pages) +
-            %% record_fanout (singleton DHT-record fan-out).
+            %% record_fanout (singleton DHT-record fan-out) +
+            %% peer_links (outbound station_link registry).
             %% supervisor:which_children/1 returns them in
             %% reverse-start order, so fanout comes first.
             Children = supervisor:which_children(Sup),
             ?assertMatch([{macula_station_record_fanout,
                            _, worker,
                            [macula_station_record_fanout]},
-                          {macula_station_identity_registry,
+                          {macula_station_peer_links,
                            _, worker,
-                           [macula_station_identity_registry]}],
+                           [macula_station_peer_links]}],
                          Children),
-            %% Empty registry — disabled env never registers an identity.
-            ?assertEqual([], macula_station_identity_registry:list()),
             ok = cleanup_sup(Sup)
         end
     end}.

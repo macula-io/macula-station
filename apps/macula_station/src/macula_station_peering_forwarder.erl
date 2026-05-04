@@ -1,10 +1,11 @@
 %%% @doc Outbound peering forwarder for one (Topic, Peer station-link)
-%%% pair. Per-identity slice — there is one forwarder process per
-%%% (Identity, Topic, PeerLinkPid) triple.
+%%% pair. Singleton-station slice — there is one forwarder process per
+%%% (Topic, PeerLinkPid) tuple.
 %%%
 %%% Ported from V1 `macula_relay_peering_forwarder' (which was rooted
-%%% in pg group `pg' / `relay_topic'). V2 uses a per-identity pg group
-%%% so identities running in the same BEAM don't cross-pollinate.
+%%% in pg group `pg' / `relay_topic'). The pg scope is the constant
+%%% `?PG_SCOPE' below — multi-identity-era per-identity scoping was
+%%% removed when the relay collapsed to one identity per BEAM.
 %%%
 %%% On `{relay_publish, Topic, Payload}' messages received from the
 %%% local pg group, this forwarder hands the payload off to a single
@@ -14,22 +15,24 @@
 -module(macula_station_peering_forwarder).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, publish/2]).
+-export([start_link/1, stop/1, publish/1, pg_scope/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+%% pg scopes are global per VM. Single-identity per BEAM means a
+%% single constant scope is sufficient — multi-identity-era per-pubkey
+%% scoping was removed in the rip-out.
+-define(PG_SCOPE, macula_station_relay_default).
+
 -type opts() :: #{
-    pg_scope     := atom(),
-    topic        := binary(),
-    peer_link    := pid(),
-    realm        := <<_:256>>,
-    identity_key => term()
+    topic     := binary(),
+    peer_link := pid(),
+    realm     := <<_:256>>
 }.
 
 -export_type([opts/0]).
 
 -record(state, {
-    pg_scope    :: atom(),
     topic       :: binary(),
     peer_link   :: pid(),
     peer_ref    :: reference(),
@@ -41,22 +44,25 @@
 %%====================================================================
 
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
-start_link(#{pg_scope := _, topic := _, peer_link := _, realm := _} = Opts) ->
+start_link(#{topic := _, peer_link := _, realm := _} = Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 -spec stop(pid()) -> ok.
 stop(Pid) ->
     gen_server:stop(Pid, shutdown, 5_000).
 
+-spec pg_scope() -> atom().
+pg_scope() -> ?PG_SCOPE.
+
 %% @doc Push a `{relay_publish, Topic, Payload}' message into the
-%% per-identity pg group. Every alive forwarder for `Topic' on this
-%% identity receives it and forwards to its peer link.
+%% station's pg group. Every alive forwarder for `Topic' receives it
+%% and forwards to its peer link.
 %%
 %% This is the entry point the `hecate_pubsub_server' integration
 %% layer calls when a local publish should fan out to peer stations.
--spec publish(atom(), {Topic :: binary(), Payload :: binary()}) -> ok.
-publish(PgScope, {Topic, Payload}) ->
-    Members = pg_members(PgScope, {relay_topic, Topic}),
+-spec publish({Topic :: binary(), Payload :: binary()}) -> ok.
+publish({Topic, Payload}) ->
+    Members = pg_members({relay_topic, Topic}),
     [Pid ! {relay_publish, Topic, Payload} || Pid <- Members],
     ok.
 
@@ -64,24 +70,17 @@ publish(PgScope, {Topic, Payload}) ->
 %% gen_server
 %%====================================================================
 
-init(#{pg_scope := PgScope, topic := Topic, peer_link := LinkPid,
-       realm := Realm} = Opts) ->
+init(#{topic := Topic, peer_link := LinkPid, realm := Realm}) ->
     process_flag(trap_exit, true),
-    set_logger_identity(Opts),
     Ref = erlang:monitor(process, LinkPid),
-    ok  = ensure_pg(PgScope),
-    ok  = pg:join(PgScope, {relay_topic, Topic}, self()),
+    ok  = ensure_pg(),
+    ok  = pg:join(?PG_SCOPE, {relay_topic, Topic}, self()),
     logger:debug(
       "[peering_fwd] joined ~p for peer ~p", [{relay_topic, Topic}, LinkPid]),
-    {ok, #state{pg_scope  = PgScope,
-                topic     = Topic,
+    {ok, #state{topic     = Topic,
                 peer_link = LinkPid,
                 peer_ref  = Ref,
                 realm     = Realm}}.
-
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) -> ok.
 
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -106,8 +105,8 @@ handle_info({'DOWN', Ref, process, Pid, Reason},
 handle_info(_Msg, S) ->
     {noreply, S}.
 
-terminate(Reason, #state{pg_scope = Scope, topic = Topic}) ->
-    catch pg:leave(Scope, {relay_topic, Topic}, self()),
+terminate(Reason, #state{topic = Topic}) ->
+    catch pg:leave(?PG_SCOPE, {relay_topic, Topic}, self()),
     case Reason of
         normal        -> ok;
         shutdown      -> ok;
@@ -125,10 +124,6 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% Forward + helpers
 %%====================================================================
 
-%% Forward a local publish to the peer link. Surfaces both `{error, _}'
-%% returns AND process crashes so failures aren't silent. The bare
-%% `catch' that V1 had pre-2026-04 lost diagnostic data — we keep the
-%% explicit try/catch with a WARNING log per failure.
 forward(#state{peer_link = LinkPid, realm = Realm, topic = Topic}, Payload) ->
     try macula_station_link:publish(LinkPid, Realm, Topic, Payload) of
         ok ->
@@ -146,17 +141,14 @@ forward(#state{peer_link = LinkPid, realm = Realm, topic = Topic}, Payload) ->
             ok
     end.
 
-%% pg scopes are global per VM but we want a per-identity scope so
-%% identities sharing a BEAM don't cross-pollinate. The scope is
-%% started on demand by the first forwarder/publisher on this
-%% identity's tree.
-ensure_pg(Scope) ->
-    case pg:start_link(Scope) of
+%% pg scope is started on demand by the first forwarder/publisher.
+ensure_pg() ->
+    case pg:start_link(?PG_SCOPE) of
         {ok, _Pid}                       -> ok;
         {error, {already_started, _Pid}} -> ok
     end.
 
-pg_members(Scope, Group) ->
-    try pg:get_members(Scope, Group)
+pg_members(Group) ->
+    try pg:get_members(?PG_SCOPE, Group)
     catch _:_ -> []
     end.

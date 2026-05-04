@@ -1,15 +1,15 @@
-%%% @doc Per-identity Bloom filter exchange.
+%%% @doc Singleton Bloom filter exchange.
 %%%
 %%% Ported from V1 `macula_relay_bloom_exchange'. Owns the local
-%%% Bloom filter (rebuilt from this identity's pubsub_server topics)
+%%% Bloom filter (rebuilt from the station's pubsub_server topics)
 %%% and tracks peer filters received via gossip on the
 %%% `_mesh.bloom' topic.
 %%%
 %%% On a 30s tick the manager rebuilds its local filter from
 %%% `hecate_pubsub_server:topics/1' and broadcasts the 1KB binary to
-%%% every connected peer station via the overlay seeder's outbound
-%%% station_links. Peers' inbound Bloom-event handler calls
-%%% `receive_peer_bloom/3' which we cache.
+%%% every connected peer station via `macula_station_peer_links'.
+%%% Peers' inbound Bloom-event handler calls `receive_peer_bloom/3'
+%%% which we cache.
 %%%
 %%% The peering forwarder consults `peer_blooms/1' to skip publishes
 %%% to peers whose filter doesn't match — preventing the cross-relay
@@ -31,9 +31,7 @@
 
 -type opts() :: #{
     pubsub_registry := pid(),
-    identity        := macula_identity:key_pair(),
-    overlay_seeder  => pid(),
-    identity_key    => term()
+    identity        := macula_identity:key_pair()
 }.
 
 -export_type([opts/0]).
@@ -41,12 +39,11 @@
 -record(state, {
     pubsub_registry :: pid(),
     identity        :: macula_identity:key_pair(),
-    overlay_seeder  :: pid() | undefined,
     local_bloom     :: binary(),
     peer_blooms     :: #{binary() => binary()},
     %% Active subscriptions on each peer's station_link for inbound
     %% `_mesh.bloom' events. Keyed by peer hostname so we don't
-    %% double-subscribe when seeder reports the same connection
+    %% double-subscribe when peer_links reports the same connection
     %% twice across resync ticks.
     subs            :: #{binary() => {pid(), reference()}},
     timer_ref       :: reference() | undefined
@@ -103,22 +100,16 @@ peer_matches(Pid, Topic) when is_binary(Topic) ->
 %% gen_server
 %%====================================================================
 
-init(#{pubsub_registry := Reg, identity := Kp} = Opts) ->
+init(#{pubsub_registry := Reg, identity := Kp}) ->
     process_flag(trap_exit, true),
-    set_logger_identity(Opts),
     State = #state{
         pubsub_registry = Reg,
         identity        = Kp,
-        overlay_seeder  = maps:get(overlay_seeder, Opts, undefined),
         local_bloom     = empty_bloom_bin(),
         peer_blooms     = #{},
         subs            = #{}
     },
     {ok, schedule_rebuild(State)}.
-
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) -> ok.
 
 handle_call(get_local_bloom, _From, #state{local_bloom = LB} = S) ->
     {reply, LB, S};
@@ -178,19 +169,17 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% Rebuild + broadcast
 %%====================================================================
 
-do_rebuild(#state{pubsub_registry = Reg, identity = Kp,
-                  overlay_seeder = SeedPid} = S) ->
+do_rebuild(#state{pubsub_registry = Reg, identity = Kp} = S) ->
     Topics = safe_topics(Reg, Kp),
     BF = lists:foldl(fun macula_station_bloom:add/2,
                      macula_station_bloom:new(), Topics),
     BloomBin = macula_station_bloom:to_binary(BF),
-    broadcast_filter(SeedPid, BloomBin),
+    broadcast_filter(BloomBin),
     S#state{local_bloom = BloomBin}.
 
-%% Resolve the per-identity mesh-realm pubsub_server through the
-%% registry — fact_publisher already eagerly registers it on init,
-%% so the lookup is fast. Any failure (registry down, server gone)
-%% is treated as "no topics yet" and we'll retry on the next tick.
+%% Resolve the mesh-realm pubsub_server through the registry. Any
+%% failure (registry down, server gone) is treated as "no topics yet"
+%% and we'll retry on the next tick.
 safe_topics(Reg, Kp) ->
     try hecate_pubsub_registry:register(Reg, ?MESH_REALM, Kp) of
         {ok, ServerPid} ->
@@ -202,11 +191,10 @@ safe_topics(Reg, Kp) ->
     end.
 
 %% Broadcast `_mesh.bloom' to every active outbound station_link.
-%% No-op when the seeder has no live connections — peer caches are
-%% updated on the next rebuild tick once seeders reconnect.
-broadcast_filter(undefined, _BloomBin) -> ok;
-broadcast_filter(SeedPid, BloomBin) ->
-    Conns = safe_seeder_conns(SeedPid),
+%% No-op when no live connections — peer caches are updated on the
+%% next rebuild tick once outbound dialers reconnect.
+broadcast_filter(BloomBin) ->
+    Conns = macula_station_peer_links:connections(),
     lists:foreach(
       fun({_Url, LinkPid}) ->
               catch macula_station_link:publish(
@@ -214,13 +202,6 @@ broadcast_filter(SeedPid, BloomBin) ->
       end,
       Conns),
     ok.
-
-%% Pre-cutover this called the yggdrasil overlay seeder. Post-cutover
-%% (single-station, no yggdrasil) the seeder is gone; this returns []
-%% until bloom_exchange is rewired to query peer_observer directly
-%% (deferred to the identity_sup promotion step in the multi-identity
-%% rip-out).
-safe_seeder_conns(_) -> [].
 
 empty_bloom_bin() ->
     macula_station_bloom:to_binary(macula_station_bloom:new()).
@@ -231,16 +212,13 @@ empty_bloom_bin() ->
 
 %% Each rebuild tick: ensure we have an active `_mesh.bloom'
 %% subscription on every peer's station_link. Drops subs for peers
-%% the seeder no longer reports as connected. Idempotent — re-subscribing
-%% on an already-subscribed link is rare (the seeder reports stable
+%% no longer reported as connected. Idempotent — re-subscribing on an
+%% already-subscribed link is rare (peer_links reports stable
 %% connection lists between disconnect events) and tolerable.
-sync_inbound_subs(#state{overlay_seeder = undefined} = S) -> S;
-sync_inbound_subs(#state{overlay_seeder = SeedPid, subs = Subs} = S) ->
-    Conns   = safe_seeder_conns(SeedPid),
+sync_inbound_subs(#state{subs = Subs} = S) ->
+    Conns   = macula_station_peer_links:connections(),
     Active  = [{hostname_of(Url), LinkPid} || {Url, LinkPid} <- Conns],
-    %% Drop subs for peers that disappeared.
     Subs1   = drop_stale_subs(Subs, Active),
-    %% Subscribe on new peers.
     Subs2   = subscribe_new_peers(Subs1, Active),
     S#state{subs = Subs2}.
 

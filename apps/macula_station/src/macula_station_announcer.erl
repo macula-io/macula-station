@@ -55,18 +55,11 @@
     ttl_ms       => pos_integer(),
     %% Fraction of TTL after which to refresh (default 0.75).
     refresh_at_fraction => float(),
-    %% Per-identity peer observer. Queried at every refresh so the
+    %% Station's peer observer. Queried at every refresh so the
     %% record's `peers' field stays in lockstep with the live overlay
     %% session set. Optional — when absent the announcer omits the
     %% peers field (matches the pre-3.12 SDK shape).
-    peer_observer => pid(),
-    %% Per-identity overlay seeder pid — exposes the list of hostnames
-    %% this identity has dialled outbound. The announcer adds these to
-    %% the caps_hint peer list so the realm topology can render edges
-    %% even before peers' own node_records replicate into local DHT.
-    overlay_seeder => pid(),
-    %% Logger metadata.
-    identity_key => term()
+    peer_observer => pid()
 }.
 
 -define(DEFAULT_TTL_MS, 600_000).             %% 10 min
@@ -81,12 +74,9 @@
     ttl_ms       :: pos_integer(),
     refresh_ms   :: pos_integer(),
     timer_ref    :: reference() | undefined,
-    %% Per-identity peer observer pid. `undefined' for unit tests that
+    %% Station's peer observer pid. `undefined' for unit tests that
     %% don't bring up a real observer.
-    peer_observer :: pid() | undefined,
-    %% Per-identity overlay seeder pid — `undefined' when no outbound
-    %% peering is configured.
-    overlay_seeder :: pid() | undefined
+    peer_observer :: pid() | undefined
 }).
 
 %%====================================================================
@@ -107,7 +97,6 @@ stop(Pid) ->
 
 init(Opts) ->
     process_flag(trap_exit, true),
-    set_logger_identity(Opts),
     State = build_state(Opts),
     %% Publish on init — re-runs on every one_for_all restart cycle.
     publish_node_record(State),
@@ -126,8 +115,7 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
         ttl_ms         = Ttl,
         refresh_ms     = RefreshMs,
         timer_ref      = undefined,
-        peer_observer  = maps:get(peer_observer, Opts, undefined),
-        overlay_seeder = maps:get(overlay_seeder, Opts, undefined)
+        peer_observer  = maps:get(peer_observer, Opts, undefined)
     }.
 
 node_record_opts(Opts) ->
@@ -153,11 +141,6 @@ maybe_put(K, Src, Acc) ->
         error   -> Acc
     end.
 
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) ->
-    ok.
-
 handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
 handle_cast(_Msg, S)        -> {noreply, S}.
 
@@ -181,10 +164,9 @@ publish_node_record(#state{dht = Dht, identity = Kp,
                            record_opts = RecOpts,
                            realms = Realms,
                            capabilities = Caps,
-                           peer_observer = ObsPid,
-                           overlay_seeder = SeedPid} = _S) ->
+                           peer_observer = ObsPid} = _S) ->
     Pub      = macula_identity:public(Kp),
-    OptsWithPeers = with_current_peers(ObsPid, Dht, SeedPid, RecOpts),
+    OptsWithPeers = with_current_peers(ObsPid, Dht, RecOpts),
     Unsigned0 = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
     %% Inject the V1-style rich identity metadata into the payload —
     %% macula 3.12's node_record/4 only emits the fields it knows
@@ -257,7 +239,7 @@ add_env(Map, Key, EnvVar) ->
         Val   -> Map#{Key => list_to_binary(Val)}
     end.
 
-with_current_peers(ObsPid, Dht, SeedPid, RecOpts) ->
+with_current_peers(ObsPid, Dht, RecOpts) ->
     %% Three sources for relay-to-relay edges, unioned into caps_hint:
     %%
     %%   1. KLEINBERG OVERLAY (load-bearing) — geographic small-world
@@ -267,20 +249,21 @@ with_current_peers(ObsPid, Dht, SeedPid, RecOpts) ->
     %%
     %%   2. peer_observer LIVE PEERS (operational signal) — resolved
     %%      to hostnames via local DHT lookup, kind=station only.
-    %%      Captures real QUIC peerings the seeder/listener brought up.
+    %%      Captures real QUIC peerings the listener brought up.
     %%
-    %%   3. SEEDER DIALED HOSTS (bootstrap fallback) — peers we dialed
-    %%      whose own announce hasn't yet replicated into our DHT.
+    %%   3. PEER-LINKS HOSTS (bootstrap fallback) — outbound stations
+    %%      we dialed whose own announce hasn't yet replicated into
+    %%      our DHT.
     %%
     %% The realm topology only needs ONE of these to populate edges,
     %% but the union keeps coverage robust against churn + replication
     %% lag.
     KleinbergHosts = kleinberg_hostnames(Dht, RecOpts),
     DhtHosts       = peer_observer_hosts(ObsPid, Dht),
-    SeederHosts    = seeder_hostnames(SeedPid),
+    LinkHosts      = macula_station_peer_links:connected_hostnames(),
     StationPubkeys = peer_observer_pubkeys(ObsPid, Dht),
 
-    AllHosts = lists:usort(KleinbergHosts ++ DhtHosts ++ SeederHosts),
+    AllHosts = lists:usort(KleinbergHosts ++ DhtHosts ++ LinkHosts),
     HostsCsv = iolist_to_binary(lists:join($,, AllHosts)),
 
     RecOpts1 = RecOpts#{peers => StationPubkeys},
@@ -390,13 +373,6 @@ parse_int(Bin) ->
     try float(binary_to_integer(Bin))
     catch error:badarg -> undefined
     end.
-
-%% Connected-peer hostnames are sourced from the yggdrasil overlay
-%% seeder pre-cutover. Post-cutover (single-station, no yggdrasil) the
-%% seeder is gone; this returns [] until the announcer is rewired to
-%% query peer_observer directly (deferred to the identity_sup
-%% promotion step in the multi-identity rip-out).
-seeder_hostnames(_) -> [].
 
 %% Returns `{ok, Hostname}' iff the peer's local DHT record exists,
 %% has `kind=station', and carries a non-empty hostname. Anything

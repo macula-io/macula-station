@@ -1,11 +1,11 @@
-%%% @doc Per-identity peering router.
+%%% @doc Singleton peering router.
 %%%
 %%% Drives the cross-relay pubsub plumbing V1 had built into
 %%% `macula_relay_peering' (`maybe_subscribe_on_peers' /
 %%% `maybe_unsubscribe_from_peers'). For each (Topic, Peer-station)
 %%% pair the router maintains:
 %%%
-%%%   * an OUTBOUND forwarder process that joins the per-identity pg
+%%%   * an OUTBOUND forwarder process that joins the station-wide pg
 %%%     scope on `{relay_topic, Topic}' and forwards local publishes
 %%%     to that peer's station_link.
 %%%
@@ -15,7 +15,8 @@
 %%%
 %%% The router polls every `?TICK_MS' seconds (default 15s):
 %%%   1. asks the local pubsub_server for its current topics,
-%%%   2. asks the overlay_seeder for its live `[{Url, LinkPid}]',
+%%%   2. asks `macula_station_peer_links:connections/0' for the live
+%%%      `[{Url, LinkPid}]' set,
 %%%   3. computes the desired (Topic, Peer) cross-product,
 %%%   4. diffs against the running set, starts/stops forwarders +
 %%%      adds/drops subscriptions accordingly.
@@ -41,10 +42,7 @@
     pubsub_registry := pid(),
     identity        := macula_identity:key_pair(),
     forwarder_sup   := pid(),
-    overlay_seeder  := pid(),
-    pg_scope        := atom(),
-    realm           := <<_:256>>,
-    identity_key    => term()
+    realm           := <<_:256>>
 }.
 
 -export_type([opts/0]).
@@ -53,8 +51,6 @@
     pubsub_registry :: pid(),
     identity        :: macula_identity:key_pair(),
     forwarder_sup   :: pid(),
-    overlay_seeder  :: pid(),
-    pg_scope        :: atom(),
     realm           :: <<_:256>>,
     %% Running forwarders keyed by `{Topic, LinkPid}'.
     forwarders      :: #{{binary(), pid()} => pid()},
@@ -69,7 +65,7 @@
 
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
 start_link(#{pubsub_registry := _, identity := _, forwarder_sup := _,
-             overlay_seeder := _, pg_scope := _, realm := _} = Opts) ->
+             realm := _} = Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 -spec stop(pid()) -> ok.
@@ -86,23 +82,16 @@ sync_now(Pid) ->
 
 init(Opts) ->
     process_flag(trap_exit, true),
-    set_logger_identity(Opts),
     State = #state{
         pubsub_registry = maps:get(pubsub_registry, Opts),
         identity        = maps:get(identity, Opts),
         forwarder_sup   = maps:get(forwarder_sup, Opts),
-        overlay_seeder  = maps:get(overlay_seeder, Opts),
-        pg_scope        = maps:get(pg_scope, Opts),
         realm           = maps:get(realm, Opts),
         forwarders      = #{},
         subs            = #{}
     },
     self() ! tick,
     {ok, State}.
-
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) -> ok.
 
 handle_call(sync_now, _From, S) ->
     {reply, ok, sync(S)};
@@ -128,17 +117,15 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %%====================================================================
 
 sync(#state{pubsub_registry = Reg, identity = Kp,
-            overlay_seeder  = SeedPid,
             forwarder_sup   = FwdSup,
-            pg_scope        = Scope,
             realm           = Realm,
             forwarders      = Forwarders,
             subs            = Subs} = S) ->
     Topics = local_topics(Reg, Kp),
-    Peers  = peer_links(SeedPid),
+    Peers  = macula_station_peer_links:connections(),
     Desired = desired_pairs(Topics, Peers),
     {Forwarders1, Subs1} =
-        reconcile(Desired, Forwarders, Subs, FwdSup, Scope, Realm),
+        reconcile(Desired, Forwarders, Subs, FwdSup, Realm),
     S#state{forwarders = Forwarders1, subs = Subs1}.
 
 %% Cartesian product of (Topic, LinkPid). Topics that start with
@@ -154,11 +141,11 @@ desired_pairs(Topics, Peers) ->
 is_mesh_topic(<<"_mesh.", _/binary>>) -> true;
 is_mesh_topic(_) -> false.
 
-reconcile(Desired, Forwarders, Subs, FwdSup, Scope, Realm) ->
+reconcile(Desired, Forwarders, Subs, FwdSup, Realm) ->
     DesiredSet = sets:from_list(Desired),
     F1 = stop_forwarders_not_in(DesiredSet, Forwarders, FwdSup),
     S1 = drop_subs_not_in(DesiredSet, Subs),
-    F2 = start_forwarders_for(Desired, F1, FwdSup, Scope, Realm),
+    F2 = start_forwarders_for(Desired, F1, FwdSup, Realm),
     S2 = subscribe_for(Desired, S1, Realm),
     {F2, S2}.
 
@@ -185,19 +172,18 @@ drop_subs_not_in(Desired, Subs) ->
               end
       end, Subs).
 
-start_forwarders_for(Desired, Forwarders, FwdSup, Scope, Realm) ->
+start_forwarders_for(Desired, Forwarders, FwdSup, Realm) ->
     lists:foldl(
       fun({Topic, LinkPid} = Key, Acc) ->
               case maps:is_key(Key, Acc) of
                   true  -> Acc;
-                  false -> start_one_forwarder(Acc, Key, FwdSup, Scope, Realm,
+                  false -> start_one_forwarder(Acc, Key, FwdSup, Realm,
                                                Topic, LinkPid)
               end
       end, Forwarders, Desired).
 
-start_one_forwarder(Acc, Key, FwdSup, Scope, Realm, Topic, LinkPid) ->
-    Opts = #{pg_scope => Scope, topic => Topic,
-             peer_link => LinkPid, realm => Realm},
+start_one_forwarder(Acc, Key, FwdSup, Realm, Topic, LinkPid) ->
+    Opts = #{topic => Topic, peer_link => LinkPid, realm => Realm},
     case macula_station_forwarder_sup:start_forwarder(FwdSup, Opts) of
         {ok, FwdPid} -> Acc#{Key => FwdPid};
         {error, _R}  -> Acc
@@ -243,13 +229,6 @@ local_topics(Reg, Kp) ->
         _ -> []
     catch _:_ -> []
     end.
-
-%% Pre-cutover this called the yggdrasil overlay seeder. Post-cutover
-%% (single-station, no yggdrasil) the seeder is gone; this returns []
-%% until peering_router is rewired to query peer_observer directly
-%% (deferred to the identity_sup promotion step in the multi-identity
-%% rip-out).
-peer_links(_) -> [].
 
 %%====================================================================
 %% Schedule

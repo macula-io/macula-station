@@ -79,14 +79,15 @@ prep_stop_publishes_tombstone_and_flushes_cache_test_() ->
              process_flag(trap_exit, true),
              {ok, Dht} = macula_station:dht(),
              Pub       = macula_identity:public(Kp),
-             %% No prior tombstone for our NodeId.
-             ?assertEqual([],
-                 macula_dht:find_local_record(Dht, Pub)),
+             %% Initial state: the announcer has published a
+             %% node_record (type 0x01) for the station's pub key.
+             [Announce] = macula_dht:find_local_record(Dht, Pub),
+             ?assertEqual(16#01, macula_record:type(Announce)),
              %% Run prep_stop by hand — simulates what the app master
              %% does on `application:stop(macula_station)'. The sup
              %% stays alive; we then observe state.
              _State = macula_station_app:prep_stop(#{}),
-             %% Tombstone now in the local DHT.
+             %% Tombstone (type 0x0C) supersedes the announce record.
              [Tomb] = macula_dht:find_local_record(Dht, Pub),
              ?assertEqual(16#0C, macula_record:type(Tomb)),
              %% Cache file on disk.
@@ -114,9 +115,10 @@ publish_tombstone_lands_in_local_dht_test_() ->
              process_flag(trap_exit, true),
             {ok, Dht} = macula_station:dht(),
             Pub       = macula_identity:public(Kp),
-            %% No prior tombstone for the self-pub key.
-            ?assertEqual([],
-                macula_dht:find_local_record(Dht, Pub)),
+            %% Initial state: the announcer has published a
+            %% node_record (type 0x01) for the self-pub key.
+            [Announce] = macula_dht:find_local_record(Dht, Pub),
+            ?assertEqual(16#01, macula_record:type(Announce)),
             %% Build + put a tombstone directly — same code path
             %% the shutdown helper takes minus the best-effort
             %% store / sup-teardown steps.

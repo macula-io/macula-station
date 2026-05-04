@@ -1,9 +1,10 @@
-%%% @doc Per-identity relay ping pinger + responder.
+%%% @doc Singleton relay ping pinger + responder.
 %%%
 %%% Ports V1 macula_relay_heartbeat's cross-box ping cycle:
 %%%   * register `_relay.ping' as a fast-return RPC handler so peers
 %%%     measuring latency to us get a sub-ms response.
-%%%   * every 30s, for each connected outbound peer link, do
+%%%   * every 30s, for each connected outbound peer link reported by
+%%%     `macula_station_peer_links:connections/0', do
 %%%     `macula_station_link:call/5' against `_relay.ping' and time
 %%%     the round-trip.
 %%%   * publish `_mesh.relay.ping' on the local pubsub_server with
@@ -30,12 +31,10 @@
 -type opts() :: #{
     handler_registry := pid(),
     pubsub_registry  := pid(),
-    overlay_seeder   := pid(),
     identity         := macula_identity:key_pair(),
     hostname         := binary(),
     lat              => float() | integer() | undefined,
-    lng              => float() | integer() | undefined,
-    identity_key     => term()
+    lng              => float() | integer() | undefined
 }.
 
 -export_type([opts/0]).
@@ -43,7 +42,6 @@
 -record(state, {
     handler_registry :: pid(),
     pubsub_registry  :: pid(),
-    overlay_seeder   :: pid(),
     identity         :: macula_identity:key_pair(),
     hostname         :: binary(),
     lat              :: number() | undefined,
@@ -57,7 +55,7 @@
 
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
 start_link(#{handler_registry := _, pubsub_registry := _,
-             overlay_seeder := _, identity := _, hostname := _} = Opts) ->
+             identity := _, hostname := _} = Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 -spec stop(pid()) -> ok.
@@ -69,11 +67,9 @@ stop(Pid) -> gen_server:stop(Pid).
 
 init(Opts) ->
     process_flag(trap_exit, true),
-    set_logger_identity(Opts),
     State = #state{
         handler_registry = maps:get(handler_registry, Opts),
         pubsub_registry  = maps:get(pubsub_registry, Opts),
-        overlay_seeder   = maps:get(overlay_seeder, Opts),
         identity         = maps:get(identity, Opts),
         hostname         = maps:get(hostname, Opts),
         lat              = to_number(maps:get(lat, Opts, undefined)),
@@ -82,13 +78,9 @@ init(Opts) ->
     advertise_responder(State),
     {ok, schedule(State)}.
 
-set_logger_identity(#{identity_key := Key}) ->
-    logger:set_process_metadata(#{identity_id => Key});
-set_logger_identity(_) -> ok.
-
 %% Register `_relay.ping' as a fast-return handler against the
-%% per-identity registry. Inbound CALL frames hit this handler and
-%% return the receive timestamp — caller subtracts from its own
+%% station-singleton registry. Inbound CALL frames hit this handler
+%% and return the receive timestamp — caller subtracts from its own
 %% sent timestamp for one-way / round-trip measurement.
 advertise_responder(#state{handler_registry = Reg}) ->
     catch macula_handler_registry:advertise(
@@ -119,7 +111,7 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %%====================================================================
 
 do_ping_cycle(S) ->
-    Conns = peer_links(S#state.overlay_seeder),
+    Conns = macula_station_peer_links:connections(),
     lists:foreach(fun(Conn) -> ping_one(S, Conn) end, Conns).
 
 ping_one(S, {Url, LinkPid}) ->
@@ -176,13 +168,6 @@ strip_port(Bin) ->
     case binary:split(Bin, <<":">>) of
         [H | _] -> H
     end.
-
-%% Pre-cutover this called the yggdrasil overlay seeder. Post-cutover
-%% (single-station, no yggdrasil) the seeder is gone; this returns []
-%% until relay_ping is rewired to query peer_observer directly
-%% (deferred to the identity_sup promotion step in the multi-identity
-%% rip-out).
-peer_links(_) -> [].
 
 to_number(N) when is_number(N) -> N;
 to_number(_)                    -> undefined.

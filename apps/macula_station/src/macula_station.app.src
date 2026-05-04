@@ -1,7 +1,8 @@
 {application, macula_station, [
     {description, "Hecate Station — Macula V2 reference station (root app)"},
     {vsn, "0.1.0"},
-    {registered, [macula_station_sup, macula_station_identity_registry]},
+    {registered, [macula_station_sup, macula_station_peer_links,
+                  macula_station_record_fanout]},
     {mod, {macula_station_app, []}},
     {applications, [
         kernel,
