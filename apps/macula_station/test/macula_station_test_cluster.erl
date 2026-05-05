@@ -17,6 +17,10 @@
     spawn_cluster/2,
     stop_cluster/1,
 
+    %% Inter-station connectivity:
+    dial/2,
+    wait_for_handshakes/3,
+
     %% Helpers (real working code, used by spawn_cluster):
     allocate_data_dir/1,
     new_handle/5,
@@ -26,7 +30,12 @@
     pubkey/1,
     listen_addr/1,
     data_dir/1,
-    peer_pid/1
+    peer_pid/1,
+
+    %% Internal — invoked via peer:call to run on the peer node.
+    %% Public so the peer can resolve the function reference.
+    on_peer_boot_station/0,
+    on_peer_count_peers/0
 ]).
 
 -export_type([station_handle/0]).
@@ -150,6 +159,61 @@ stop_cluster(Handles) when is_list(Handles) ->
     ok.
 
 %%------------------------------------------------------------------
+%% Inter-station connectivity
+%%------------------------------------------------------------------
+
+%% @doc From station `From', open an outbound QUIC connection to
+%% station `To'. Synchronous: returns when the CONNECT/HELLO
+%% handshake completes (or fails / times out). The handshake is
+%% considered complete when `connect_to/1' returns; bidirectional
+%% peer registration may follow asynchronously (use
+%% `wait_for_handshakes/3' to assert the symmetric peer view).
+-spec dial(From :: station_handle(), To :: station_handle()) ->
+    ok | {error, term()}.
+dial(From, To) ->
+    {ToHost, ToPort} = listen_addr(To),
+    Target = #{
+        host       => host_to_str(ToHost),
+        port       => ToPort,
+        timeout_ms => 5_000
+    },
+    dial_result(peer:call(peer_pid(From), macula_station, connect_to, [Target])).
+
+dial_result({ok, _ConnPid}) -> ok;
+dial_result({error, _} = E) -> E.
+
+%% @doc Block until station `Handle' has at least `MinPeers' verified
+%% peers, or until `TimeoutMs' elapses. Polls
+%% `macula_station_peer_links:verified_peers/0' on the peer every
+%% 100ms. Returns ok on success; `{error, {timeout, ActualCount}}'
+%% on deadline.
+-spec wait_for_handshakes(station_handle(), non_neg_integer(),
+                          pos_integer()) ->
+    ok | {error, {timeout, non_neg_integer()}}.
+wait_for_handshakes(Handle, MinPeers, TimeoutMs)
+  when is_integer(MinPeers), MinPeers >= 0,
+       is_integer(TimeoutMs), TimeoutMs > 0 ->
+    wait_for_handshakes_loop(peer_pid(Handle), MinPeers, TimeoutMs).
+
+wait_for_handshakes_loop(PeerPid, _MinPeers, Remaining) when Remaining =< 0 ->
+    {error, {timeout, verified_peer_count(PeerPid)}};
+wait_for_handshakes_loop(PeerPid, MinPeers, Remaining) ->
+    handshake_check(verified_peer_count(PeerPid), MinPeers,
+                    PeerPid, Remaining).
+
+handshake_check(N, MinPeers, _PeerPid, _Remaining) when N >= MinPeers ->
+    ok;
+handshake_check(_N, MinPeers, PeerPid, Remaining) ->
+    timer:sleep(100),
+    wait_for_handshakes_loop(PeerPid, MinPeers, Remaining - 100).
+
+verified_peer_count(PeerPid) ->
+    %% on_peer_count_peers runs on the peer and counts peer_observer's
+    %% view (includes both inbound + outbound). peer_links would only
+    %% see outbound dials, missing the dialed-to side of a handshake.
+    peer:call(PeerPid, ?MODULE, on_peer_count_peers, []).
+
+%%------------------------------------------------------------------
 %% Internal — spawning
 %%------------------------------------------------------------------
 
@@ -220,7 +284,16 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
         [{macula_station_stub_tier, #{peers => StubPeers}}]),
     Set(macula_bootstrap, cascade_opts,
         #{min_peers => 1, timeout_ms => 5000}),
-    {ok, _Sup} = peer:call(PeerPid, macula_station_app, start, [normal, []]),
+    %% Boot via a guardian process on the peer (NOT directly via
+    %% peer:call to macula_station_app:start). peer:call routes through
+    %% a transient request-handler process; if we called start there,
+    %% supervisor:start_link would link macula_station_sup to that
+    %% transient process, and the sup would die when the transient
+    %% process exited (which it does as soon as peer:call returns its
+    %% result). The guardian is a long-lived process registered on the
+    %% peer; it owns the link, keeping the sup alive for the test's
+    %% duration. stop_cluster/1 lets the peer shut down naturally.
+    {ok, _Sup} = peer:call(PeerPid, ?MODULE, on_peer_boot_station, []),
     %% Block until macula_station's full subsystem is operational
     %% (sup + listener bound + DHT + SWIM + observer all alive).
     %% wait_until_ready/1 returns the listen_addr ATOMICALLY with the
@@ -228,13 +301,59 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
     %% `listen_addr/0' call. On timeout, returns rich diagnostics
     %% (sup_children, running_apps, per-subsystem state) so failures
     %% are self-explaining without needing to re-run.
-    case peer:call(PeerPid, macula_station, wait_until_ready, [120_000]) of
+    %% peer:call has its own (5s) default timeout; pass explicit
+    %% buffer above the inner wait_until_ready deadline so the outer
+    %% RPC doesn't time out before the inner readiness loop does.
+    case peer:call(PeerPid, macula_station, wait_until_ready,
+                   [120_000], 130_000) of
         {ok, {Host, ActualPort}} ->
             HostTuple = host_to_tuple(Host),
             {ok, {HostTuple, ActualPort}};
         {error, Diagnostics} ->
             error({station_not_ready, Diagnostics})
     end.
+
+%%------------------------------------------------------------------
+%% Internal — guardian (runs on the peer)
+%%------------------------------------------------------------------
+
+%% @doc Spawn a long-lived guardian process on the peer that calls
+%% `macula_station_app:start/2' and then sits in a receive loop.
+%% Returns `{ok, Sup}' to the test driver. The guardian holds the
+%% link to `macula_station_sup', keeping the supervision tree alive
+%% beyond the lifetime of the peer:call request handler that
+%% triggered the boot.
+%%
+%% Called via `peer:call(PeerPid, ?MODULE, on_peer_boot_station, [])'.
+%% Public for that resolution; not part of the user-facing API.
+on_peer_boot_station() ->
+    Caller = self(),
+    Pid = spawn(fun() ->
+        Result = (catch macula_station_app:start(normal, [])),
+        Caller ! {boot_result, self(), Result},
+        guardian_loop()
+    end),
+    receive
+        {boot_result, Pid, Result} -> Result
+    after 60_000 ->
+        catch exit(Pid, kill),
+        {error, boot_timeout}
+    end.
+
+guardian_loop() ->
+    receive
+        stop -> ok;
+        _Any -> guardian_loop()
+    end.
+
+%% @doc Count peers visible to the station's observer (both inbound
+%% and outbound connections). Runs on the peer via peer:call.
+%% Returns 0 if the observer isn't started yet.
+on_peer_count_peers() ->
+    peer_count_for(macula_station:observer()).
+
+peer_count_for({ok, ObsPid}) -> length(macula_station_peer_observer:peers(ObsPid));
+peer_count_for(_)            -> 0.
 
 %%------------------------------------------------------------------
 %% Internal — teardown
@@ -325,3 +444,7 @@ host_to_tuple(Host) when is_list(Host) ->
     {ok, Tuple} = inet:parse_address(Host),
     Tuple;
 host_to_tuple(Tuple) when is_tuple(Tuple) -> Tuple.
+
+host_to_str(Host) when is_list(Host) -> Host;
+host_to_str(Tuple) when is_tuple(Tuple) ->
+    inet:ntoa(Tuple).
