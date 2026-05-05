@@ -221,45 +221,19 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
     Set(macula_bootstrap, cascade_opts,
         #{min_peers => 1, timeout_ms => 5000}),
     {ok, _Sup} = peer:call(PeerPid, macula_station_app, start, [normal, []]),
-    %% The listener is started asynchronously by the cascade child;
-    %% `start/2' returns before the listener is registered AND
-    %% bound. Poll `listen_addr/0' directly (not `listener/0' — the
-    %% process can be registered briefly with a `{error, not_started}'
-    %% reply during init). 120s deadline. Boot variance under
-    %% contention from sibling peers spawning in sequence can spike
-    %% well past 60s — observed `listener_did_not_bind` at 60s on the
-    %% 3-station test even with shared cert + IPv6 + peer:start.
-    %% 120s gives 2-3x headroom for the worst observed case.
-    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 120_000),
-    {Host, ActualPort} = ListenAddr,
-    HostTuple = host_to_tuple(Host),
-    {ok, {HostTuple, ActualPort}}.
-
-%% Poll macula_station:listen_addr/0 until it returns a real
-%% {Host, Port}. 100ms interval; deadline = `TimeoutMs'.
-%% On timeout, dump the peer's last-known state so the failure is
-%% diagnosable from CT logs without re-running.
-wait_for_listen_addr(PeerPid, TimeoutMs) when TimeoutMs =< 0 ->
-    LastListenAddr = catch peer:call(PeerPid, macula_station, listen_addr, []),
-    LastListener   = catch peer:call(PeerPid, macula_station, listener, []),
-    LastSup        = catch peer:call(PeerPid, supervisor, which_children,
-                                     [macula_station_sup]),
-    LastApps       = catch peer:call(PeerPid, application,
-                                     which_applications, []),
-    error({listener_did_not_bind, #{
-        last_listen_addr  => LastListenAddr,
-        last_listener_pid => LastListener,
-        last_sup_children => LastSup,
-        last_running_apps => LastApps
-    }});
-wait_for_listen_addr(PeerPid, TimeoutMs) ->
-    case peer:call(PeerPid, macula_station, listen_addr, []) of
-        {Host, Port} when (is_list(Host) orelse is_tuple(Host)),
-                          is_integer(Port), Port > 0 ->
-            {ok, {Host, Port}};
-        _Other ->
-            timer:sleep(100),
-            wait_for_listen_addr(PeerPid, TimeoutMs - 100)
+    %% Block until macula_station's full subsystem is operational
+    %% (sup + listener bound + DHT + SWIM + observer all alive).
+    %% wait_until_ready/1 returns the listen_addr ATOMICALLY with the
+    %% ready verdict — no race window between "ready" and a follow-up
+    %% `listen_addr/0' call. On timeout, returns rich diagnostics
+    %% (sup_children, running_apps, per-subsystem state) so failures
+    %% are self-explaining without needing to re-run.
+    case peer:call(PeerPid, macula_station, wait_until_ready, [120_000]) of
+        {ok, {Host, ActualPort}} ->
+            HostTuple = host_to_tuple(Host),
+            {ok, {HostTuple, ActualPort}};
+        {error, Diagnostics} ->
+            error({station_not_ready, Diagnostics})
     end.
 
 %%------------------------------------------------------------------

@@ -24,6 +24,9 @@
     observer/0,
     listener/0,
     listen_addr/0,
+    wait_until_ready/1,
+    readiness/0,
+    diagnostics/0,
     connect_to/1,
     cache/0,
     rebootstrap/0,
@@ -260,6 +263,86 @@ listen_addr() ->
 
 listen_addr_of({ok, Pid}) -> macula_station_listener:listen_addr(Pid);
 listen_addr_of(Err)       -> Err.
+
+%% @doc Block until the station is fully operational (sup alive,
+%% listener bound, DHT/SWIM/observer registered) or until `Timeout'
+%% expires. On success, returns `{ok, ListenAddr}' atomically — the
+%% returned address is the SAME value observed during the readiness
+%% check, so callers do not race against a station that went down
+%% in the microseconds between "ready" and a follow-up `listen_addr/0'
+%% call. On timeout, returns `{error, #{reason := timeout, last_state
+%% := Snapshot}}' with a rich diagnostic so the caller knows WHY
+%% readiness wasn't achieved (which child is missing, which app is
+%% running, last known state of every supervised pid).
+%%
+%% Polls every 100ms. Used by integration tests to know when to start
+%% issuing operations against a freshly-spawned station; production
+%% code typically does not need this — proper supervision drives
+%% readiness through the boot pipeline.
+-spec wait_until_ready(timeout()) ->
+    {ok, macula_station_listener:listen_addr()} | {error, map()}.
+wait_until_ready(Timeout) when is_integer(Timeout), Timeout >= 0 ->
+    wait_until_ready_loop(Timeout).
+
+wait_until_ready_loop(Remaining) when Remaining =< 0 ->
+    {error, #{reason => timeout, last_state => diagnostics()}};
+wait_until_ready_loop(Remaining) ->
+    case readiness() of
+        {ready, ListenAddr} -> {ok, ListenAddr};
+        _NotReady ->
+            timer:sleep(100),
+            wait_until_ready_loop(Remaining - 100)
+    end.
+
+%% @doc One-shot readiness probe. Returns `{ready, ListenAddr}' if
+%% every critical subsystem is alive (sup, listener bound, DHT, SWIM,
+%% observer); returns `{not_ready, Snapshot}' otherwise. Cheap (no
+%% sleeps); the snapshot is suitable for a `/readyz' endpoint or a
+%% poll loop. Returning the bound address atomically with the ready
+%% verdict closes the race that otherwise opens between a
+%% `readiness/0' check and a follow-up `listen_addr/0' call.
+-spec readiness() ->
+    {ready, macula_station_listener:listen_addr()} | {not_ready, map()}.
+readiness() ->
+    readiness_for(critical_subsystems_alive(), listen_addr()).
+
+readiness_for(true, {Host, Port} = Addr)
+  when is_integer(Port), Port > 0,
+       (is_tuple(Host) orelse is_list(Host)) ->
+    {ready, Addr};
+readiness_for(_, _) ->
+    {not_ready, diagnostics()}.
+
+critical_subsystems_alive() ->
+    is_ok(listener()) andalso is_ok(dht())
+        andalso is_ok(swim()) andalso is_ok(observer()).
+
+is_ok({ok, _}) -> true;
+is_ok(_)       -> false.
+
+%% @doc Snapshot of the station's runtime state. Used by
+%% `wait_until_ready/1' for timeout diagnostics; also useful for
+%% admin tooling and CI integration tests.
+-spec diagnostics() -> map().
+diagnostics() ->
+    #{
+        sup_alive       => is_pid_alive(whereis(macula_station_sup)),
+        sup_children    => safe_which_children(macula_station_sup),
+        listener        => listener(),
+        listen_addr     => listen_addr(),
+        dht             => dht(),
+        swim            => swim(),
+        observer        => observer(),
+        running_apps    => [A || {A, _, _} <- application:which_applications()]
+    }.
+
+is_pid_alive(undefined)              -> false;
+is_pid_alive(Pid) when is_pid(Pid)   -> is_process_alive(Pid).
+
+safe_which_children(Name) ->
+    try supervisor:which_children(Name)
+    catch _:_ -> not_started
+    end.
 
 %% @doc Dial a peer. Handshake events (connected / frame / disconnected)
 %% flow to the station's observer. Returns the peering worker pid on
