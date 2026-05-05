@@ -143,7 +143,9 @@ stop_cluster_empty_list_is_noop_test() ->
 %%==================================================================
 
 spawn_three_stations_yields_unique_handles_test_() ->
-    {timeout, 60, fun() ->
+    %% 240s — sequential boot of 3 stations on a busy CI box can
+    %% take 30-60s each (cascade + listener init + NIF load).
+    {timeout, 240, fun() ->
         process_flag(trap_exit, true),
         Handles = macula_station_test_cluster:spawn_cluster(3, #{}),
         try

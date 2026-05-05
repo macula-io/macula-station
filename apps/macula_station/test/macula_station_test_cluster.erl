@@ -123,8 +123,10 @@ peer_pid(#{peer_pid := P}) -> P.
 %% On failure of any station's boot, rolls back all already-spawned
 %% stations (peer nodes stopped, data dirs removed) and re-raises.
 %%
-%% Caller must trap_exit (peers are started with link). Cleanup:
-%% `stop_cluster/1'.
+%% Peers are started without link (deterministic teardown is the
+%% caller's responsibility via `stop_cluster/1'). On test crashes,
+%% peer leaks recover when the host VM exits; CT's per-suite
+%% `priv_dir' cleanup catches the data dirs.
 -spec spawn_cluster(N :: pos_integer(), Opts :: map()) -> [station_handle()].
 spawn_cluster(N, Opts) when is_integer(N), N >= 1, is_map(Opts) ->
     spawn_cluster_loop(N, 1, Opts, []).
@@ -164,7 +166,14 @@ spawn_one_station(I, Opts) ->
     {Cert, K} = shared_test_cert(),
     Port      = free_loopback_port(),
     PeerName  = peer_name(I),
-    {ok, PeerPid, PeerNode} = peer:start_link(#{
+    %% peer:start (NOT peer:start_link). The link variant ties the
+    %% peer's lifetime to the calling process; under eunit, the per-
+    %% test process exits at test end and the linked peer is killed
+    %% mid-cleanup, leaving stdio ports/sockets in a transient state
+    %% that races the next test's setup. peer:start gives us
+    %% deterministic teardown via stop_cluster/1 and decouples test-
+    %% process lifecycle from peer lifecycle.
+    {ok, PeerPid, PeerNode} = peer:start(#{
         name      => PeerName,
         args      => code_path_args(),
         connection => standard_io
@@ -214,9 +223,10 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
     %% `start/2' returns before the listener is registered AND
     %% bound. Poll `listen_addr/0' directly (not `listener/0' — the
     %% process can be registered briefly with a `{error, not_started}'
-    %% reply during init). Generous 30s deadline because cascade can
-    %% take up to its 5s timeout plus listener init.
-    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 30_000),
+    %% reply during init). 60s deadline. Cold-cache flake observed
+    %% with 30s; boot variance under contention can spike to 20s+ per
+    %% station, so a 60s budget per station gives ~2-3x headroom.
+    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 60_000),
     {Host, ActualPort} = ListenAddr,
     HostTuple = host_to_tuple(Host),
     {ok, {HostTuple, ActualPort}}.
