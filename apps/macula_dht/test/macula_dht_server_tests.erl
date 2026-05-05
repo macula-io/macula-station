@@ -243,6 +243,59 @@ unknown_call_returns_error_test() ->
     stop(Pid).
 
 %%---------------------------------------------------------------------
+%% set_send_frame / set_identity (Phase 4 transport wiring)
+%%---------------------------------------------------------------------
+
+ping_without_transport_returns_no_transport_test() ->
+    Pid = start(id(0)),
+    ?assertEqual({error, no_transport},
+                 macula_dht_server:ping_peer(Pid, id(1))),
+    stop(Pid).
+
+set_send_frame_takes_effect_test() ->
+    %% With send_frame installed but identity still missing, ping_peer
+    %% must shift from no_transport to no_identity. That proves the
+    %% setter mutated server state.
+    Pid = start(id(0)),
+    Fun = fun(_NodeId, _Frame) -> ok end,
+    ok = macula_dht_server:set_send_frame(Pid, Fun),
+    ?assertEqual({error, no_identity},
+                 macula_dht_server:ping_peer(Pid, id(1))),
+    stop(Pid).
+
+set_send_frame_can_be_cleared_test() ->
+    Pid = start(id(0)),
+    Fun = fun(_NodeId, _Frame) -> ok end,
+    ok = macula_dht_server:set_send_frame(Pid, Fun),
+    ok = macula_dht_server:set_send_frame(Pid, undefined),
+    ?assertEqual({error, no_transport},
+                 macula_dht_server:ping_peer(Pid, id(1))),
+    stop(Pid).
+
+set_identity_alone_still_no_transport_test() ->
+    Pid = start(id(0)),
+    Kp = macula_identity:generate(),
+    ok = macula_dht_server:set_identity(Pid, Kp),
+    ?assertEqual({error, no_transport},
+                 macula_dht_server:ping_peer(Pid, id(1))),
+    stop(Pid).
+
+both_setters_invoke_send_fun_test() ->
+    Pid = start(id(0)),
+    Kp = macula_identity:generate(),
+    Self = self(),
+    Fun = fun(NodeId, Frame) -> Self ! {sent, NodeId, Frame}, ok end,
+    ok = macula_dht_server:set_identity(Pid, Kp),
+    ok = macula_dht_server:set_send_frame(Pid, Fun),
+    spawn(fun() -> macula_dht_server:ping_peer(Pid, id(1), 200) end),
+    receive
+        {sent, _NodeId, _Frame} -> ok
+    after 1000 ->
+        ?assert(send_fun_was_not_called)
+    end,
+    stop(Pid).
+
+%%---------------------------------------------------------------------
 %% Helpers
 %%---------------------------------------------------------------------
 

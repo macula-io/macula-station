@@ -64,7 +64,9 @@
     record_count/1,
     delete_record/2,
     handle_frame/3,
-    set_on_record_stored/2
+    set_on_record_stored/2,
+    set_send_frame/2,
+    set_identity/2
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -305,6 +307,23 @@ set_on_record_stored(Pid, Fun)
   when is_pid(Pid), (is_function(Fun, 1) orelse Fun =:= undefined) ->
     gen_server:call(Pid, {set_on_record_stored, Fun}).
 
+%% @doc Install (or replace) the outbound `send_frame' callback at
+%% runtime. Production wires this from `macula_station_app' after the
+%% peer observer is up — DHT depends on observer for NodeId → ConnPid
+%% lookup, so the callback can only be installed late.
+-spec set_send_frame(pid(), send_fun() | undefined) -> ok.
+set_send_frame(Pid, Fun)
+  when is_pid(Pid), (is_function(Fun, 2) orelse Fun =:= undefined) ->
+    gen_server:call(Pid, {set_send_frame, Fun}).
+
+%% @doc Install (or replace) the station identity (key pair) used to
+%% sign outbound DHT frames. Wired alongside `set_send_frame/2' at
+%% station boot.
+-spec set_identity(pid(), macula_identity:key_pair() | undefined) -> ok.
+set_identity(Pid, Kp)
+  when is_pid(Pid) ->
+    gen_server:call(Pid, {set_identity, Kp}).
+
 %%=====================================================================
 %% gen_server callbacks
 %%=====================================================================
@@ -390,6 +409,12 @@ handle_call(record_count, _From, #state{record_store = Ets} = S) ->
 
 handle_call({set_on_record_stored, Fun}, _From, S) ->
     {reply, ok, S#state{on_record_stored = Fun}};
+
+handle_call({set_send_frame, Fun}, _From, S) ->
+    {reply, ok, S#state{send_frame = Fun}};
+
+handle_call({set_identity, Kp}, _From, S) ->
+    {reply, ok, S#state{identity = Kp}};
 
 handle_call({delete_record, Record}, _From, #state{record_store = Ets} = S) ->
     store_delete(Ets, Record),

@@ -53,6 +53,8 @@
     delete_record/2,
     handle_frame/3,
     set_on_record_stored/2,
+    set_send_frame/2,
+    set_identity/2,
     version/0
 ]).
 
@@ -237,6 +239,16 @@ handle_frame(Dht, FromNodeId, Frame) ->
         fun((macula_record:record()) -> any()) | undefined) -> ok.
 set_on_record_stored(Dht, Fun) ->
     macula_dht_server:set_on_record_stored(Dht, Fun).
+
+-spec set_send_frame(dht(),
+        macula_dht_server:send_fun() | undefined) -> ok.
+set_send_frame(Dht, Fun) ->
+    macula_dht_server:set_send_frame(Dht, Fun).
+
+-spec set_identity(dht(),
+        macula_identity:key_pair() | undefined) -> ok.
+set_identity(Dht, Kp) ->
+    macula_dht_server:set_identity(Dht, Kp).
 
 %%=====================================================================
 %% Version
