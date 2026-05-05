@@ -87,20 +87,23 @@ handle_cast(_Msg, S) ->
 
 handle_info(dial, S) ->
     do_dial(S);
-handle_info({macula_peering, connected, ConnPid, NodeId},
+handle_info({macula_peering, connected, ConnPid, NodeId} = Msg,
             #state{conn_pid = ConnPid, url = Url} = S)
   when is_binary(NodeId) ->
     ok = macula_station_peer_links:set_peer_node_id(Url, NodeId),
+    forward_to_observer(Msg),
     %% Successful handshake — reset backoff for the next disconnect.
     {noreply, S#state{peer_node_id = NodeId,
                       backoff_ms   = ?INITIAL_BACKOFF_MS}};
-handle_info({macula_peering, disconnected, ConnPid, _Reason},
+handle_info({macula_peering, disconnected, ConnPid, _Reason} = Msg,
             #state{conn_pid = ConnPid} = S) ->
+    forward_to_observer(Msg),
     {noreply, schedule_reconnect(reset_conn(S))};
-handle_info({macula_peering, frame, _ConnPid, _Frame}, S) ->
-    %% Application frames are consumed by the peering_router /
-    %% DHT handlers via separate subscription paths; the link layer
-    %% itself doesn't process them.
+handle_info({macula_peering, frame, _ConnPid, _Frame} = Msg, S) ->
+    %% Forward to the peer_observer so SWIM/DHT/CALL/PUBSUB frames
+    %% inbound on outbound dials route through the same dispatcher
+    %% inbound accepts use. The link itself does not process frames.
+    forward_to_observer(Msg),
     {noreply, S};
 handle_info({'EXIT', ConnPid, _Reason}, #state{conn_pid = ConnPid} = S) ->
     {noreply, schedule_reconnect(reset_conn(S))};
@@ -117,6 +120,12 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %%====================================================================
 %% Internals
 %%====================================================================
+
+forward_to_observer(Msg) ->
+    case whereis(macula_station_peer_observer) of
+        undefined -> ok;
+        Pid       -> Pid ! Msg, ok
+    end.
 
 do_dial(#state{host = H, port = P, identity = Kp,
                capabilities = Caps} = S) ->
