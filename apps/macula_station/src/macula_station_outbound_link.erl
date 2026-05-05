@@ -11,7 +11,7 @@
 -module(macula_station_outbound_link).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, peer_node_id/1]).
+-export([start_link/1, stop/1, peer_node_id/1, conn_pid/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -57,6 +57,16 @@ stop(Pid) ->
 peer_node_id(Pid) ->
     gen_server:call(Pid, peer_node_id, 1_000).
 
+%% @doc Read the underlying `macula_peering_conn' worker pid for this
+%% link, if a dial is in progress or established. Returns `undefined'
+%% while the link is between connection attempts. Used by the
+%% `peer_observer' init reconciliation to derive its conns map from
+%% the current outbound state without depending on having received
+%% the original `connected' notification.
+-spec conn_pid(pid()) -> pid() | undefined.
+conn_pid(Pid) ->
+    gen_server:call(Pid, conn_pid, 1_000).
+
 %%====================================================================
 %% gen_server
 %%====================================================================
@@ -79,6 +89,8 @@ init(#{url := Url, identity := Kp} = Opts) ->
 
 handle_call(peer_node_id, _From, #state{peer_node_id = N} = S) ->
     {reply, N, S};
+handle_call(conn_pid, _From, #state{conn_pid = C} = S) ->
+    {reply, C, S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 

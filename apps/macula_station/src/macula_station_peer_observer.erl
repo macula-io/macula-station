@@ -114,14 +114,47 @@ conn_for(Pid, <<_:256>> = NodeId) ->
 
 init(#{dht := Dht, swim := Swim} = Opts)
   when is_pid(Dht), is_pid(Swim) ->
-    {ok, #state{dht              = Dht,
-                swim             = Swim,
-                handler_registry = maps:get(handler_registry, Opts, undefined),
-                pubsub_registry  = maps:get(pubsub_registry, Opts, undefined),
-                remote_advertise = maps:get(remote_advertise, Opts, undefined),
-                self_id          = maps:get(self_id, Opts, undefined),
-                peers            = #{},
-                conns            = #{}}}.
+    State0 = #state{dht              = Dht,
+                    swim             = Swim,
+                    handler_registry = maps:get(handler_registry, Opts, undefined),
+                    pubsub_registry  = maps:get(pubsub_registry, Opts, undefined),
+                    remote_advertise = maps:get(remote_advertise, Opts, undefined),
+                    self_id          = maps:get(self_id, Opts, undefined),
+                    peers            = #{},
+                    conns            = #{}},
+    %% Self-forming: derive the initial peers/conns view from the
+    %% peer_links registry (canonical source of truth for outbound
+    %% dials) instead of relying on having received every `connected'
+    %% event up to this point. Boot order, observer restart, and
+    %% missed notifications all become non-issues because the observer
+    %% reconciles whatever is true at init time and uses
+    %% `erlang:monitor/2' for ongoing death detection.
+    {ok, reconcile_outbound_dials(State0)}.
+
+%% Walk peer_links' current verified entries; for each link with a
+%% known peer node-id, query the link for its underlying conn_pid and
+%% fold it into our maps via the standard on_connected path. Failures
+%% (race with a link about to die, link not responding) are tolerated
+%% — anything we miss here will be picked up by a later `connected'
+%% notification from outbound_link's forward_to_observer.
+reconcile_outbound_dials(S) ->
+    Verified = try macula_station_peer_links:verified_peers()
+               catch _:_ -> []
+               end,
+    lists:foldl(fun(#{pid := LinkPid, node_id := NodeId}, Acc) ->
+        absorb_known_dial(LinkPid, NodeId, Acc)
+    end, S, Verified).
+
+absorb_known_dial(LinkPid, NodeId, S) ->
+    try macula_station_outbound_link:conn_pid(LinkPid) of
+        undefined -> S;
+        ConnPid when is_pid(ConnPid) ->
+            logger:info("[peer_observer] reconciled outbound dial "
+                        "pid=~p peer=~p", [ConnPid, NodeId]),
+            on_connected(ConnPid, NodeId, S)
+    catch
+        _:_ -> S
+    end.
 
 handle_call(peers, _From, #state{peers = P} = S) ->
     {reply, maps:to_list(P), S};
@@ -146,6 +179,15 @@ handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     {noreply, on_frame(ConnPid, Frame, S)};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
+handle_info({'DOWN', _Ref, process, Pid, _Reason},
+            #state{peers = P} = S) ->
+    %% A conn worker we were monitoring died for any reason — explicit
+    %% close, peer disconnect, upstream outbound_link crash, network
+    %% drop. on_disconnected is idempotent on unknown pids.
+    case maps:is_key(Pid, P) of
+        true  -> {noreply, on_disconnected(Pid, S)};
+        false -> {noreply, S}
+    end;
 handle_info({forwarded_timeout, CallId}, #state{forwarded = F} = S) ->
     {noreply, on_forwarded_timeout(maps:take(CallId, F), S)};
 handle_info(_Msg, S) ->
@@ -174,6 +216,12 @@ on_connected(ConnPid, NodeId, #state{dht = Dht, swim = Swim,
                                      peers = P, conns = C} = S) ->
     _ = macula_dht:observe(Dht, direct_peer_spec(NodeId)),
     ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
+    %% Monitor ConnPid so observer cleans up on death without
+    %% depending on a `disconnected' event flowing through some
+    %% controlling_pid we may or may not own. Idempotent re-monitoring
+    %% is fine — extra DOWN messages hit `on_disconnected' which is
+    %% map-remove based.
+    _ = erlang:monitor(process, ConnPid),
     S#state{peers = P#{ConnPid => NodeId},
             conns = C#{NodeId => ConnPid}}.
 
