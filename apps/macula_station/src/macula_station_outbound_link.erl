@@ -8,7 +8,7 @@
 %% Used by the seed-dial bootstrap tier: each link's `(host, port,
 %% node_id)' tuple becomes a `verified_peer()' for the cascade once
 %% the link reaches the connected state.
--module(macula_station_link).
+-module(macula_station_outbound_link).
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1, peer_node_id/1]).

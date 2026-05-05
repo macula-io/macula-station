@@ -3,8 +3,8 @@
 %%
 %% Unlike the foundation-anchored / mDNS / chain / explicit-URL
 %% tiers (A-E), `seed_dial' relies on the operator's outbound peer
-%% list having already been spawned as live `macula_station_link'
-%% workers BEFORE the cascade runs (see
+%% list having already been spawned as live
+%% `macula_station_outbound_link' workers BEFORE the cascade runs (see
 %% `macula_station_app:boot_outbound_links/2').
 %%
 %% At probe time the tier waits a configurable stagger window for

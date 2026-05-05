@@ -1,4 +1,4 @@
-%% @doc Supervisor for outbound `macula_station_link' workers — one
+%% @doc Supervisor for outbound `macula_station_outbound_link' workers — one
 %% per configured peer URL.
 %%
 %% Started from `macula_station_app' boot pipeline AFTER the listener
@@ -42,11 +42,11 @@ link_child(#{host := Host, port := Port}, Kp, Caps) ->
     Opts = #{url => Url, identity => Kp, capabilities => Caps},
     #{
         id       => {link, Url},
-        start    => {macula_station_link, start_link, [Opts]},
+        start    => {macula_station_outbound_link, start_link, [Opts]},
         restart  => permanent,
         shutdown => 5_000,
         type     => worker,
-        modules  => [macula_station_link]
+        modules  => [macula_station_outbound_link]
     }.
 
 peer_url(Host, Port) when is_binary(Host) ->

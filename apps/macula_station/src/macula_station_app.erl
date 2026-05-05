@@ -135,7 +135,7 @@ on_pubsub_registry(SupPid, Cfg, {ok, _Pid}) ->
     boot_outbound_links(SupPid, Cfg).
 
 %%==================================================================
-%% Outbound seed-dial links — start one `macula_station_link' worker
+%% Outbound seed-dial links — start one `macula_station_outbound_link' worker
 %% per configured outbound peer. They run in parallel with the rest
 %% of the boot chain so they have time to handshake before the
 %% bootstrap cascade's `seed_dial' tier probes the registry.

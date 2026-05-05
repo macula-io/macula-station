@@ -1,6 +1,6 @@
 %% @doc Outbound station-link registry — singleton.
 %%
-%% Tracks the live outbound `macula_station_link' workers this
+%% Tracks the live outbound `macula_station_outbound_link' workers this
 %% station has dialled to peer stations. Each entry carries the URL
 %% the link was dialled with, the link worker pid, and the peer's
 %% verified `node_id' (filled in once the CONNECT/HELLO handshake
@@ -77,7 +77,7 @@ register(Url, LinkPid) when is_binary(Url), is_pid(LinkPid) ->
     gen_server:cast(?MODULE, {register, Url, LinkPid}).
 
 %% @doc Stamp the peer's verified node-id onto a previously-registered
-%% link. Called by `macula_station_link' on receipt of
+%% link. Called by `macula_station_outbound_link' on receipt of
 %% `{macula_peering, connected, _, NodeId}'.
 -spec set_peer_node_id(binary(), macula_identity:pubkey()) -> ok.
 set_peer_node_id(Url, NodeId) when is_binary(Url), is_binary(NodeId) ->

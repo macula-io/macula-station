@@ -63,7 +63,7 @@
     bootstrap_cascade_opts = #{} :: map(),
     %% Outbound peer URLs the station dials at boot.
     %% `macula_station_outbound_links_sup' spawns one
-    %% `macula_station_link' worker per entry; the
+    %% `macula_station_outbound_link' worker per entry; the
     %% `seed_dial' bootstrap tier then reads the verified
     %% peers from `macula_station_peer_links'. Empty list
     %% means no outbound dial (the station only accepts inbound).
