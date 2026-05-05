@@ -243,12 +243,12 @@ subscribe_new_peers(Subs, Active) ->
               end
       end, Subs, Active).
 
+%% LinkPid may be a `macula_station_link' SDK client (handles
+%% subscribe) OR a `macula_station_outbound_link' worker (does
+%% not — returns `{error, unknown_call}'). The wildcard `of'
+%% clause is mandatory: `try_clause' from a missing `of' pattern
+%% is NOT caught by the `catch' below.
 subscribe_one(Acc, Host, LinkPid) ->
-    %% LinkPid may be a `macula_station_link' SDK client (handles
-    %% subscribe) OR a `macula_station_outbound_link' worker (does
-    %% not — returns `{error, unknown_call}'). The wildcard `of'
-    %% clause is mandatory: `try_clause' from a missing `of' pattern
-    %% is NOT caught by the `catch' below.
     try macula_station_link:subscribe(LinkPid, ?MESH_REALM,
                                        <<"_mesh.bloom">>, self()) of
         {ok, SubRef} -> Acc#{Host => {LinkPid, SubRef}};
