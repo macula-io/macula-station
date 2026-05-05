@@ -1,4 +1,16 @@
--sname macula_station
+## Erlang node name. Defaults to `macula_station' for single-host
+## deployments (CT, dev). When two or more stations share an EPMD
+## (e.g. `network_mode: host' with multiple containers per box),
+## the operator sets `MACULA_NODE_NAME=macula_station_<city>' in
+## the container env so each station registers a distinct short
+## name with the shared EPMD.
+##
+## `${VAR:-default}' substitution requires
+## `{relx, [..., {vm_args_src_replacements, [...]}]}' but rebar3 +
+## relx do `os.env' substitution on this file at boot when
+## `RELX_REPLACE_OS_VARS=true' is set in the container env (see
+## Dockerfile).
+-sname ${MACULA_NODE_NAME}
 -setcookie macula_station_dev_cookie
 +K true
 +A 64

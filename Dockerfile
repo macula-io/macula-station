@@ -98,6 +98,12 @@ USER app
 # was removed 2026-05-04 and the loader hard-rejects it at boot.
 ENV MACULA_STATION_CONFIG=/etc/macula-station/config.json
 
+# Erlang node name — substituted into vm.args at release start.
+# Override per-container when multiple stations share an EPMD on the
+# same host (e.g. network_mode: host with two containers per box).
+ENV MACULA_NODE_NAME=macula_station
+ENV RELX_REPLACE_OS_VARS=true
+
 # Expose QUIC port (UDP) + admin/health port (TCP).
 EXPOSE 4433/udp
 EXPOSE 8443
