@@ -105,21 +105,40 @@ peer_pid(#{peer_pid := P}) -> P.
 %% Cluster lifecycle
 %%------------------------------------------------------------------
 
-%% @doc Spawn N isolated stations. Step 2 supports N=1; step 4 lifts to
-%% arbitrary N via parallel boot.
+%% @doc Spawn N isolated stations sequentially.
 %%
 %% Each station gets:
 %%   * a fresh Ed25519 keypair (saved to data_dir/identity.key)
 %%   * its own temp data_dir under `Opts#{base_dir}` (default /tmp)
 %%   * a self-signed cert (openssl on PATH; CI has it)
 %%   * a separate BEAM peer node booted via OTP `peer'
-%%   * a QUIC listener on 127.0.0.1 + ephemeral port
+%%   * a QUIC listener on ::1 + ephemeral port
 %%
-%% Returns one handle per station. Caller must trap_exit (peer is
-%% started with link). Cleanup: `stop_cluster/1'.
--spec spawn_cluster(N :: 1, Opts :: map()) -> [station_handle()].
-spawn_cluster(1, Opts) when is_map(Opts) ->
-    [spawn_one_station(1, Opts)].
+%% Sequential boot keeps `peer:start_link' linkage clean (peer is
+%% linked to the test-driver process, not to a transient spawn).
+%% Boot time is ~1s per station; N=3 runs in ~3s. Parallelism is
+%% available as a follow-up if test latency becomes an issue, but
+%% requires splitting setup-vs-boot to preserve link semantics.
+%%
+%% On failure of any station's boot, rolls back all already-spawned
+%% stations (peer nodes stopped, data dirs removed) and re-raises.
+%%
+%% Caller must trap_exit (peers are started with link). Cleanup:
+%% `stop_cluster/1'.
+-spec spawn_cluster(N :: pos_integer(), Opts :: map()) -> [station_handle()].
+spawn_cluster(N, Opts) when is_integer(N), N >= 1, is_map(Opts) ->
+    spawn_cluster_loop(N, 1, Opts, []).
+
+spawn_cluster_loop(N, I, _Opts, Acc) when I > N ->
+    lists:reverse(Acc);
+spawn_cluster_loop(N, I, Opts, Acc) ->
+    try spawn_one_station(I, Opts) of
+        Handle -> spawn_cluster_loop(N, I + 1, Opts, [Handle | Acc])
+    catch
+        Class:Reason:Stack ->
+            lists:foreach(fun stop_one/1, Acc),
+            erlang:raise(Class, Reason, Stack)
+    end.
 
 %% @doc Tear down stations: stop peer nodes, remove data dirs.
 %% Idempotent: tolerant of already-dead peers and missing dirs.
@@ -138,7 +157,11 @@ spawn_one_station(I, Opts) ->
     KeyPair   = macula_identity:generate(),
     KeyFile   = filename:join(DataDir, "identity.key"),
     ok        = macula_identity:save(KeyFile, KeyPair),
-    {Cert, K} = generate_test_cert(DataDir),
+    %% Share one self-signed cert across all stations in the test run.
+    %% openssl shell-out is the expensive bit (~200ms each); without
+    %% sharing, an N-station test pays N × openssl. Cert validity
+    %% doesn't matter — TLS is loopback-only and tests don't verify.
+    {Cert, K} = shared_test_cert(),
     Port      = free_loopback_port(),
     PeerName  = peer_name(I),
     {ok, PeerPid, PeerNode} = peer:start_link(#{
@@ -187,9 +210,30 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
                    [macula_bootstrap, cascade_opts,
                     #{min_peers => 1, timeout_ms => 5000}]),
     {ok, _Sup} = peer:call(PeerPid, macula_station_app, start, [normal, []]),
-    {Host, ActualPort} = peer:call(PeerPid, macula_station, listen_addr, []),
+    %% The listener is started asynchronously by the cascade child;
+    %% `start/2' returns before the listener is registered AND
+    %% bound. Poll `listen_addr/0' directly (not `listener/0' — the
+    %% process can be registered briefly with a `{error, not_started}'
+    %% reply during init). Generous 30s deadline because cascade can
+    %% take up to its 5s timeout plus listener init.
+    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 30_000),
+    {Host, ActualPort} = ListenAddr,
     HostTuple = host_to_tuple(Host),
     {ok, {HostTuple, ActualPort}}.
+
+%% Poll macula_station:listen_addr/0 until it returns a real
+%% {Host, Port}. 100ms interval; deadline = `TimeoutMs'.
+wait_for_listen_addr(_PeerPid, TimeoutMs) when TimeoutMs =< 0 ->
+    error(listener_did_not_bind);
+wait_for_listen_addr(PeerPid, TimeoutMs) ->
+    case peer:call(PeerPid, macula_station, listen_addr, []) of
+        {Host, Port} when (is_list(Host) orelse is_tuple(Host)),
+                          is_integer(Port), Port > 0 ->
+            {ok, {Host, Port}};
+        _Other ->
+            timer:sleep(100),
+            wait_for_listen_addr(PeerPid, TimeoutMs - 100)
+    end.
 
 %%------------------------------------------------------------------
 %% Internal — teardown
@@ -247,6 +291,27 @@ generate_test_cert(Dir) ->
         true  -> {CertPath, KeyPath};
         false -> error({openssl_failed, Out})
     end.
+
+%% One self-signed cert shared by every station in the test run.
+%% Stored under a stable path so a stale cert from a prior crashed
+%% run is reused (still valid for 1 day after generation).
+shared_test_cert() ->
+    case persistent_term:get({?MODULE, shared_cert}, undefined) of
+        {Cert, Key} ->
+            case filelib:is_regular(Cert) andalso filelib:is_regular(Key) of
+                true  -> {Cert, Key};
+                false -> generate_and_cache_cert()
+            end;
+        undefined ->
+            generate_and_cache_cert()
+    end.
+
+generate_and_cache_cert() ->
+    Dir = filename:join(default_base_dir(), "shared_cert"),
+    ok  = filelib:ensure_dir(filename:join(Dir, ".keep")),
+    Pair = generate_test_cert(Dir),
+    persistent_term:put({?MODULE, shared_cert}, Pair),
+    Pair.
 
 default_base_dir() ->
     Tmp = case os:getenv("TMPDIR") of
