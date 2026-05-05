@@ -216,6 +216,14 @@ classify(subscribe)    -> pubsub;
 classify(unsubscribe)  -> pubsub;
 classify(publish)      -> pubsub;
 classify(event)        -> pubsub;
+classify(ping)         -> dht;
+classify(pong)         -> dht;
+classify(find_node)    -> dht;
+classify(nodes)        -> dht;
+classify(find_value)   -> dht;
+classify(value)        -> dht;
+classify(store)        -> dht;
+classify(store_ack)    -> dht;
 classify(_)            -> other.
 
 dispatch(swim, Frame, _ConnPid, NodeId, #state{swim = Swim} = S) ->
@@ -230,6 +238,9 @@ dispatch(advertise, Frame, ConnPid, NodeId, S) ->
     S;
 dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
     deliver_pubsub(macula_frame:verify(Frame, NodeId), Frame, NodeId, S),
+    S;
+dispatch(dht, Frame, _ConnPid, NodeId, #state{dht = Dht} = S) ->
+    ok = macula_dht:handle_frame(Dht, NodeId, Frame),
     S;
 dispatch(other, _Frame, _ConnPid, _NodeId, S) ->
     S.

@@ -81,12 +81,16 @@ find_value_walks_the_network(Config) ->
         ok = macula_station_test_cluster:dial(A, B),
         ok = macula_station_test_cluster:wait_for_handshakes(A, 1, 10_000),
         BPubkey = macula_station_test_cluster:pubkey(B),
-        ASelfId = macula_station_test_cluster:rpc(
-                    A, macula_dht, self_id, [macula_dht]),
+        %% Single-hop FIND_VALUE: A queries peer B for the value at
+        %% B's own NodeId. Pre-fix this returned {error, no_transport}
+        %% in 0ms because the DHT had no outbound callback. Post-fix
+        %% the frame travels A→B over QUIC, B's peer_observer routes
+        %% it into its DHT, the DHT either replies VALUE (B's record
+        %% is locally stored) or NODES (cache miss).
         Result  = macula_station_test_cluster:rpc(
                     A, macula_dht, find_value,
-                    [macula_dht, BPubkey, ASelfId, 5_000]),
-        ct:pal("find_value(A, B's pubkey) returned: ~p", [Result]),
+                    [macula_dht, BPubkey, BPubkey, 5_000]),
+        ct:pal("find_value(A, B's pubkey via B) returned: ~p", [Result]),
         case Result of
             {value, [_]} -> ok;
             {nodes, [_|_]} -> ok;
