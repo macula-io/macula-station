@@ -97,9 +97,9 @@ spawn_one_station_yields_well_formed_handle_test_() ->
             %% peer node atom is set; controller pid is alive
             Node = macula_station_test_cluster:peer_node(H),
             ?assert(is_atom(Node)),
-            %% listen_addr is loopback + a real port
+            %% listen_addr is IPv6 loopback + a real port
             {Host, Port} = macula_station_test_cluster:listen_addr(H),
-            ?assertEqual({127,0,0,1}, Host),
+            ?assertEqual({0,0,0,0,0,0,0,1}, Host),
             ?assert(Port > 1024),
             %% peer pid is alive
             ?assert(is_process_alive(macula_station_test_cluster:peer_pid(H))),

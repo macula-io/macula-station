@@ -171,7 +171,7 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
     end,
     Set(data_dir,      DataDir),
     Set(identity_file, KeyFile),
-    Set(bind,          "127.0.0.1"),
+    Set(bind,          "::1"),
     Set(port,          Port),
     Set(certfile,      Cert),
     Set(keyfile,       KeyP),
@@ -221,13 +221,16 @@ code_path_args() ->
 %% Internal — port + cert + paths
 %%------------------------------------------------------------------
 
-%% Pre-allocate a free UDP port on loopback. Has the standard TOCTOU
-%% window — between close and rebind, the kernel could reassign the
-%% port to another process. For test runs this is rare enough to
+%% Pre-allocate a free UDP port on IPv6 loopback. Has the standard
+%% TOCTOU window — between close and rebind, the kernel could reassign
+%% the port to another process. For test runs this is rare enough to
 %% accept. (Alternative: pass port=0 to the listener and read it back,
 %% but the V2 listener config does not currently support port=0.)
+%%
+%% Bound to ::1 specifically (not the IPv4-mapped any) so the port
+%% claim matches the actual listener bind family.
 free_loopback_port() ->
-    {ok, S}    = gen_udp:open(0, [{reuseaddr, true}]),
+    {ok, S}    = gen_udp:open(0, [inet6, {reuseaddr, true}]),
     {ok, Port} = inet:port(S),
     ok         = gen_udp:close(S),
     Port.
@@ -252,5 +255,7 @@ default_base_dir() ->
     end,
     filename:join(Tmp, "macula_station_test_cluster").
 
-host_to_tuple("127.0.0.1") -> {127,0,0,1};
+host_to_tuple(Host) when is_list(Host) ->
+    {ok, Tuple} = inet:parse_address(Host),
+    Tuple;
 host_to_tuple(Tuple) when is_tuple(Tuple) -> Tuple.
