@@ -13,7 +13,11 @@
 -module(macula_station_test_cluster).
 
 -export([
-    %% Helpers (real working code, used by future spawn_cluster):
+    %% Cluster lifecycle:
+    spawn_cluster/2,
+    stop_cluster/1,
+
+    %% Helpers (real working code, used by spawn_cluster):
     allocate_data_dir/1,
     new_handle/5,
 
@@ -96,3 +100,157 @@ data_dir(#{data_dir := D}) -> D.
 
 -spec peer_pid(station_handle()) -> pid().
 peer_pid(#{peer_pid := P}) -> P.
+
+%%------------------------------------------------------------------
+%% Cluster lifecycle
+%%------------------------------------------------------------------
+
+%% @doc Spawn N isolated stations. Step 2 supports N=1; step 4 lifts to
+%% arbitrary N via parallel boot.
+%%
+%% Each station gets:
+%%   * a fresh Ed25519 keypair (saved to data_dir/identity.key)
+%%   * its own temp data_dir under `Opts#{base_dir}` (default /tmp)
+%%   * a self-signed cert (openssl on PATH; CI has it)
+%%   * a separate BEAM peer node booted via OTP `peer'
+%%   * a QUIC listener on 127.0.0.1 + ephemeral port
+%%
+%% Returns one handle per station. Caller must trap_exit (peer is
+%% started with link). Cleanup: `stop_cluster/1'.
+-spec spawn_cluster(N :: 1, Opts :: map()) -> [station_handle()].
+spawn_cluster(1, Opts) when is_map(Opts) ->
+    [spawn_one_station(1, Opts)].
+
+%% @doc Tear down stations: stop peer nodes, remove data dirs.
+%% Idempotent: tolerant of already-dead peers and missing dirs.
+-spec stop_cluster([station_handle()]) -> ok.
+stop_cluster(Handles) when is_list(Handles) ->
+    lists:foreach(fun stop_one/1, Handles),
+    ok.
+
+%%------------------------------------------------------------------
+%% Internal — spawning
+%%------------------------------------------------------------------
+
+spawn_one_station(I, Opts) ->
+    BaseDir   = maps:get(base_dir, Opts, default_base_dir()),
+    DataDir   = allocate_data_dir(BaseDir),
+    KeyPair   = macula_identity:generate(),
+    KeyFile   = filename:join(DataDir, "identity.key"),
+    ok        = macula_identity:save(KeyFile, KeyPair),
+    {Cert, K} = generate_test_cert(DataDir),
+    Port      = free_loopback_port(),
+    PeerName  = peer_name(I),
+    {ok, PeerPid, PeerNode} = peer:start_link(#{
+        name      => PeerName,
+        args      => code_path_args(),
+        connection => standard_io
+    }),
+    %% Boot the station inside the peer. On failure, tear the peer
+    %% down so we don't leak a dangling BEAM.
+    try boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, K, Port) of
+        {ok, ListenAddr} ->
+            new_handle(PeerNode, macula_identity:public(KeyPair),
+                       ListenAddr, DataDir, PeerPid)
+    catch
+        Class:Reason:Stack ->
+            catch peer:stop(PeerPid),
+            catch file:del_dir_r(DataDir),
+            erlang:raise(Class, Reason, Stack)
+    end.
+
+%% Talks to the peer via its controller (standard_io connection),
+%% NOT via Erlang distribution. Lets the test driver stay
+%% non-distributed (no net_kernel needed; no node-name collisions
+%% between parallel test runs).
+boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
+    {ok, _} = peer:call(PeerPid, application, ensure_all_started, [macula]),
+    Set = fun(K, V) ->
+        ok = peer:call(PeerPid, application, set_env,
+                       [macula_station, K, V])
+    end,
+    Set(data_dir,      DataDir),
+    Set(identity_file, KeyFile),
+    Set(bind,          "127.0.0.1"),
+    Set(port,          Port),
+    Set(certfile,      Cert),
+    Set(keyfile,       KeyP),
+    %% Stub bootstrap so cascade satisfies min_peers without needing
+    %% a real network. macula_station_stub_tier lives in the same test
+    %% dir as this module; it is on the peer's code path because we
+    %% pass code:get_path() to the peer.
+    StubPeers = peer:call(PeerPid, macula_station_stub_tier, stub_peers, [1]),
+    ok = peer:call(PeerPid, application, set_env,
+                   [macula_bootstrap, tiers,
+                    [{macula_station_stub_tier, #{peers => StubPeers}}]]),
+    ok = peer:call(PeerPid, application, set_env,
+                   [macula_bootstrap, cascade_opts,
+                    #{min_peers => 1, timeout_ms => 5000}]),
+    {ok, _Sup} = peer:call(PeerPid, macula_station_app, start, [normal, []]),
+    {Host, ActualPort} = peer:call(PeerPid, macula_station, listen_addr, []),
+    HostTuple = host_to_tuple(Host),
+    {ok, {HostTuple, ActualPort}}.
+
+%%------------------------------------------------------------------
+%% Internal — teardown
+%%------------------------------------------------------------------
+
+stop_one(Handle) ->
+    catch peer:stop(peer_pid(Handle)),
+    catch file:del_dir_r(data_dir(Handle)),
+    ok.
+
+%%------------------------------------------------------------------
+%% Internal — peer node setup
+%%------------------------------------------------------------------
+
+peer_name(I) ->
+    Suffix = erlang:integer_to_list(erlang:unique_integer([positive])),
+    list_to_atom("macula_test_station_" ++ erlang:integer_to_list(I) ++
+                 "_" ++ Suffix).
+
+code_path_args() ->
+    %% Each path becomes a `-pa <path>' arg pair. Use flatmap (NOT
+    %% lists:flatten) — the latter recurses into strings and produces
+    %% a single charlist, which `peer:verify_args/1' rejects with
+    %% `{invalid_arg, 45}' (the ASCII for "-" at the head of the
+    %% accidentally-flattened "-pa").
+    lists:flatmap(fun(P) -> ["-pa", P] end, code:get_path()).
+
+%%------------------------------------------------------------------
+%% Internal — port + cert + paths
+%%------------------------------------------------------------------
+
+%% Pre-allocate a free UDP port on loopback. Has the standard TOCTOU
+%% window — between close and rebind, the kernel could reassign the
+%% port to another process. For test runs this is rare enough to
+%% accept. (Alternative: pass port=0 to the listener and read it back,
+%% but the V2 listener config does not currently support port=0.)
+free_loopback_port() ->
+    {ok, S}    = gen_udp:open(0, [{reuseaddr, true}]),
+    {ok, Port} = inet:port(S),
+    ok         = gen_udp:close(S),
+    Port.
+
+generate_test_cert(Dir) ->
+    CertPath = filename:join(Dir, "cert.pem"),
+    KeyPath  = filename:join(Dir, "key.pem"),
+    Cmd = lists:flatten(io_lib:format(
+        "openssl req -x509 -newkey rsa:2048 -nodes "
+        "-keyout ~s -out ~s -days 1 -subj /CN=localhost 2>&1",
+        [KeyPath, CertPath])),
+    Out = os:cmd(Cmd),
+    case filelib:is_regular(CertPath) of
+        true  -> {CertPath, KeyPath};
+        false -> error({openssl_failed, Out})
+    end.
+
+default_base_dir() ->
+    Tmp = case os:getenv("TMPDIR") of
+        false -> "/tmp";
+        T     -> T
+    end,
+    filename:join(Tmp, "macula_station_test_cluster").
+
+host_to_tuple("127.0.0.1") -> {127,0,0,1};
+host_to_tuple(Tuple) when is_tuple(Tuple) -> Tuple.
