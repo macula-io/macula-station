@@ -267,6 +267,16 @@ boot_record_fanout_wiring(SupPid, #station_cfg{identity = Kp} = Cfg,
            fun(Record) ->
                macula_station_record_fanout:on_record(Record)
            end),
+    %% Phase 4 step 3 — install the outbound DHT transport now that
+    %% the observer is registered. Without this, every wire-bound DHT
+    %% call (ping_peer/find_node/find_value/send_store) returns
+    %% {error, no_transport} immediately. See PLAN_DHT_TRANSPORT_WIRING.
+    ok = macula_dht:set_identity(DhtPid, Kp),
+    ok = macula_dht:set_send_frame(
+           DhtPid,
+           fun(NodeId, Frame) ->
+               macula_station_dht_transport:send_frame(NodeId, Frame)
+           end),
     boot_announcer(SupPid, Cfg, DhtPid, ObserverPid).
 
 %%==================================================================
