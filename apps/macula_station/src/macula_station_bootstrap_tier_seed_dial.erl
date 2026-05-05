@@ -37,10 +37,12 @@ stagger_ms() -> 0.
 probe(Opts) ->
     WaitMs = maps:get(wait_ms, Opts, ?DEFAULT_WAIT_MS),
     timer:sleep(WaitMs),
-    classify(macula_station_peer_links:verified_peers()).
-
-classify([])    -> {error, no_verified_peers};
-classify(Peers) -> {ok, [to_verified_peer(P) || P <- Peers]}.
+    %% Always returns `{ok, _}'. Empty list is valid: a fresh-fleet
+    %% station whose siblings haven't booted yet cannot dial them
+    %% successfully, but the listener still needs to come up so the
+    %% siblings can dial in. Pair with `cascade_opts: #{min_peers => 0}'
+    %% so the cascade accepts the empty result and boot proceeds.
+    {ok, [to_verified_peer(P) || P <- macula_station_peer_links:verified_peers()]}.
 
 to_verified_peer(#{node_id := N, host := H, port := P}) ->
     #{

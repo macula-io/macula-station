@@ -89,8 +89,13 @@ apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
     application:set_env(macula_bootstrap, tiers,
                         [{macula_station_bootstrap_tier_seed_dial,
                           #{wait_ms => 3_000}}]),
+    %% min_peers => 0 so the cascade accepts an empty seed_dial
+    %% result. First-boot stations whose siblings aren't up yet need
+    %% to come up anyway so the siblings can later dial in. The
+    %% outbound link workers reconnect with backoff and SWIM /
+    %% observer pick up peers organically once handshakes succeed.
     application:set_env(macula_bootstrap, cascade_opts,
-                        #{min_peers => 1, timeout_ms => 30_000}),
+                        #{min_peers => 0, timeout_ms => 30_000}),
     ok;
 apply_bootstrap_env(#station_cfg{bootstrap_tiers = Tiers,
                                  bootstrap_cascade_opts = Opts}) ->

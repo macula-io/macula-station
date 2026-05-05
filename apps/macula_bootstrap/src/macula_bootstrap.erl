@@ -33,7 +33,11 @@
 -type tier_spec() :: {module(), macula_bootstrap_tier:probe_opts()}.
 
 -type cascade_opts() :: #{
-    min_peers  => pos_integer(),
+    %% `0' is a valid value: the seed_dial tier may yield an empty
+    %% list on first boot of a fresh fleet. The cascade must accept
+    %% that and let boot proceed so the listener comes up and
+    %% siblings can dial back in.
+    min_peers  => non_neg_integer(),
     timeout_ms => non_neg_integer()
 }.
 

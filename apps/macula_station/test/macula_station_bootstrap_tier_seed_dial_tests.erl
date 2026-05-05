@@ -11,10 +11,13 @@ tier_metadata_test() ->
     ?assertEqual(seed_dial, ?TIER:tier()),
     ?assertEqual(0,         ?TIER:stagger_ms()).
 
-empty_registry_yields_no_verified_peers_test_() ->
+empty_registry_yields_ok_empty_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(_) ->
         fun() ->
-            ?assertEqual({error, no_verified_peers},
+            %% Empty registry must NOT be an error: fresh-fleet
+            %% boot needs the listener to come up so siblings can
+            %% dial in. Cascade accepts {ok, []} when min_peers=0.
+            ?assertEqual({ok, []},
                          ?TIER:probe(#{wait_ms => 0}))
         end
     end}.
@@ -52,8 +55,7 @@ unverified_peer_is_excluded_test_() ->
             LinkPid = spawn_dummy(),
             ok = macula_station_peer_links:register(Url, LinkPid),
             sync(),
-            ?assertEqual({error, no_verified_peers},
-                         ?TIER:probe(#{wait_ms => 0})),
+            ?assertEqual({ok, []}, ?TIER:probe(#{wait_ms => 0})),
             stop_dummy(LinkPid)
         end
     end}.
