@@ -15,11 +15,16 @@
 
 -export_type([tier/0, verified_peer/0, probe_result/0, probe_opts/0]).
 
--type tier() :: a | b | c | d | e.
+-type tier() :: a | b | c | d | e | seed_dial.
 
 -type verified_peer() :: #{
     node_id      := macula_identity:pubkey(),
-    record       := macula_record:record(),
+    %% Tiers A-E carry a foundation- or peer-signed `node_record';
+    %% the seed_dial tier (which learns peers via outbound CONNECT/
+    %% HELLO handshake only) leaves this `undefined'. The DHT ingest
+    %% path consumes `node_id' + `addresses' regardless and ignores
+    %% the `record' field.
+    record       := macula_record:record() | undefined,
     addresses    := [map()],
     tier         := tier(),
     via          := module(),

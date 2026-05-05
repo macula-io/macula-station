@@ -234,8 +234,20 @@ build_record_from_json(M) ->
         lat                    = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
         lng                    = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined)),
         bootstrap_tiers        = decode_tiers_json(maps:get(<<"tiers">>,        Bootstrap, [])),
-        bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{}))
+        bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{})),
+        outbound_peers         = decode_outbound_peers(maps:get(<<"outbound_peers">>, M, []))
     }.
+
+%% JSON outbound_peers shape: [{"host": "station-be-...", "port": 4433}, ...]
+decode_outbound_peers(L) when is_list(L) ->
+    [decode_outbound_peer(P) || P <- L].
+
+decode_outbound_peer(#{<<"host">> := Host, <<"port">> := Port})
+  when is_integer(Port) ->
+    #{host => to_bin(Host), port => Port}.
+
+to_bin(B) when is_binary(B) -> B;
+to_bin(L) when is_list(L)   -> list_to_binary(L).
 
 %% JSON tier shape: [{"module": "macula_bootstrap_tier_e",
 %%                    "opts":   {"peer_urls": ["quic://...", ...]}}, ...]

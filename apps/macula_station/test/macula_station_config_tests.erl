@@ -230,6 +230,51 @@ refuses_legacy_multi_identity_env_test_() ->
     end}.
 
 %%==================================================================
+%% from_env/0 — outbound_peers JSON parsing
+%%==================================================================
+
+from_env_json_outbound_peers_populates_record_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg0      = base_config(Dir, <<"127.0.0.1">>, 9000),
+                WithPeers = Cfg0#{<<"outbound_peers">> => [
+                    #{<<"host">> => <<"station-be-ghent.macula.io">>,
+                      <<"port">> => 4433},
+                    #{<<"host">> => <<"station-be-leuven.macula.io">>,
+                      <<"port">> => 4433}
+                ]},
+                Path = write_json(Dir, WithPeers),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual([#{host => <<"station-be-ghent.macula.io">>,
+                                port => 4433},
+                              #{host => <<"station-be-leuven.macula.io">>,
+                                port => 4433}],
+                             Cfg#station_cfg.outbound_peers)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_omits_outbound_peers_defaults_to_empty_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Path = write_json(Dir, base_config(Dir, <<"127.0.0.1">>, 9000)),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual([], Cfg#station_cfg.outbound_peers)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+%%==================================================================
 %% Helpers
 %%==================================================================
 

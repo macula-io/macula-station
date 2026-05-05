@@ -73,10 +73,24 @@ boot_cfg(SupPid, {ok, Cfg}) ->
     boot_handler_registry(SupPid, Cfg).
 
 %% Push the JSON-supplied bootstrap config into `macula_bootstrap'
-%% application env so `macula_bootstrap:run/0' picks it up. Skipped
-%% when the JSON omits the `bootstrap' block (e.g. CT path with tiers
-%% set in sys.config or `application:set_env/3' elsewhere).
-apply_bootstrap_env(#station_cfg{bootstrap_tiers = []}) ->
+%% application env so `macula_bootstrap:run/0' picks it up. When the
+%% JSON has `outbound_peers' but no explicit `bootstrap.tiers', the
+%% station defaults to a single `seed_dial' tier that probes the
+%% peer-links registry — the typical fleet bootstrap config.
+%%
+%% Skipped entirely when neither outbound_peers nor explicit tiers
+%% are configured (CT path with tiers set in sys.config or
+%% `application:set_env/3' elsewhere).
+apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
+                                 outbound_peers = []}) ->
+    ok;
+apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
+                                 outbound_peers = [_ | _]}) ->
+    application:set_env(macula_bootstrap, tiers,
+                        [{macula_station_bootstrap_tier_seed_dial,
+                          #{wait_ms => 3_000}}]),
+    application:set_env(macula_bootstrap, cascade_opts,
+                        #{min_peers => 1, timeout_ms => 30_000}),
     ok;
 apply_bootstrap_env(#station_cfg{bootstrap_tiers = Tiers,
                                  bootstrap_cascade_opts = Opts}) ->
@@ -118,6 +132,29 @@ boot_pubsub_registry(SupPid, #station_cfg{identity = Kp} = Cfg) ->
 on_pubsub_registry(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {pubsub_registry_start_failed, R});
 on_pubsub_registry(SupPid, Cfg, {ok, _Pid}) ->
+    boot_outbound_links(SupPid, Cfg).
+
+%%==================================================================
+%% Outbound seed-dial links — start one `macula_station_link' worker
+%% per configured outbound peer. They run in parallel with the rest
+%% of the boot chain so they have time to handshake before the
+%% bootstrap cascade's `seed_dial' tier probes the registry.
+%% No-op when the JSON config carries no `outbound_peers' (e.g. CT
+%% suites that drive the station programmatically with explicit
+%% bootstrap tiers).
+%%==================================================================
+
+boot_outbound_links(SupPid, #station_cfg{outbound_peers = []} = Cfg) ->
+    boot_dht(SupPid, Cfg);
+boot_outbound_links(SupPid, #station_cfg{identity = Kp,
+                                          capabilities = Caps,
+                                          outbound_peers = Peers} = Cfg) ->
+    Spec = outbound_links_sup_child(Kp, Caps, Peers),
+    on_outbound_links(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
+
+on_outbound_links(SupPid, _Cfg, {error, R}) ->
+    halt_sup(SupPid, {outbound_links_start_failed, R});
+on_outbound_links(SupPid, Cfg, {ok, _Pid}) ->
     boot_dht(SupPid, Cfg).
 
 %%==================================================================
@@ -373,6 +410,17 @@ pubsub_registry_child(Kp) ->
         shutdown => 5_000,
         type     => worker,
         modules  => [hecate_pubsub_registry]
+    }.
+
+outbound_links_sup_child(Kp, Caps, Peers) ->
+    Opts = #{identity => Kp, capabilities => Caps, peers => Peers},
+    #{
+        id       => macula_station_outbound_links_sup,
+        start    => {macula_station_outbound_links_sup, start_link, [Opts]},
+        restart  => permanent,
+        shutdown => 10_000,
+        type     => supervisor,
+        modules  => [macula_station_outbound_links_sup]
     }.
 
 dht_child(#station_cfg{identity = Kp}) ->

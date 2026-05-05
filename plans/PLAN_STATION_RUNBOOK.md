@@ -312,8 +312,9 @@ JSON schema.
 | `MACULA_BTC_ENABLE' | gated-suite switch | `0' |
 
 `data_dir', `bind', `port', `certfile', `keyfile', `capabilities',
-`cache', `rebootstrap', `admin', and `geo' all live inside the
-JSON file pointed to by `MACULA_STATION_CONFIG'. Sample config:
+`cache', `rebootstrap', `admin', `geo', and `outbound_peers' all
+live inside the JSON file pointed to by `MACULA_STATION_CONFIG'.
+Sample config:
 
 ```json
 {
@@ -328,9 +329,20 @@ JSON file pointed to by `MACULA_STATION_CONFIG'. Sample config:
     "country":  "BE",
     "lat":      50.8503,
     "lng":      4.3517
-  }
+  },
+  "outbound_peers": [
+    {"host": "station-be-ghent.macula.io",   "port": 4433},
+    {"host": "station-be-antwerp.macula.io", "port": 4433}
+  ]
 }
 ```
+
+When `outbound_peers' is set, the boot pipeline spawns one
+`macula_station_link' worker per peer and the bootstrap cascade
+defaults to a single `seed_dial' tier that reads the verified peers
+from `macula_station_peer_links'. Operators can override the
+cascade by supplying an explicit `bootstrap.tiers' block (e.g. for
+foundation-anchor + DoH bootstrap on production fleets).
 
 ---
 

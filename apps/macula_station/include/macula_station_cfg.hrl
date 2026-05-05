@@ -60,7 +60,15 @@
     %% before the boot pipeline runs. Without this, the cascade has no
     %% sources and the station refuses to boot with `{error, no_tiers}'.
     bootstrap_tiers        = [] :: [{atom(), map()}],
-    bootstrap_cascade_opts = #{} :: map()
+    bootstrap_cascade_opts = #{} :: map(),
+    %% Outbound peer URLs the station dials at boot.
+    %% `macula_station_outbound_links_sup' spawns one
+    %% `macula_station_link' worker per entry; the
+    %% `seed_dial' bootstrap tier then reads the verified
+    %% peers from `macula_station_peer_links'. Empty list
+    %% means no outbound dial (the station only accepts inbound).
+    outbound_peers         = [] :: [#{host := binary(),
+                                      port := inet:port_number()}]
 }).
 
 %% Matches the shape of `application:get_env(macula_station, realms_cfg, [])'
