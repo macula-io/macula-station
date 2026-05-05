@@ -204,8 +204,14 @@ subscribe_one(Acc, Key, Realm, Topic, LinkPid) ->
     %% on the local pubsub_server to handle inbound delivery via
     %% the existing process_frame path. Subscribe-on-peer is the
     %% interest signal; the inbound event flow is owned elsewhere.
+    %% LinkPid may be a `macula_station_link' SDK client (handles
+    %% subscribe) OR a `macula_station_outbound_link' worker (does
+    %% not — returns `{error, unknown_call}'). The wildcard `of'
+    %% clause is mandatory: `try_clause' from a missing `of' pattern
+    %% is NOT caught by the `catch' below.
     try macula_station_link:subscribe(LinkPid, Realm, Topic, self()) of
-        {ok, SubRef} -> Acc#{Key => SubRef}
+        {ok, SubRef} -> Acc#{Key => SubRef};
+        _Other       -> Acc
     catch _:_         -> Acc
     end.
 
