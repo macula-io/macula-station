@@ -35,11 +35,14 @@ all() ->
 %% Suite-level setup
 %%------------------------------------------------------------------
 
-init_per_suite(Config) ->
-    {ok, _} = application:ensure_all_started(macula_peering),
-    PrivDir = ?config(priv_dir, Config),
-    {Cert, Key} = phase1_helper:generate_test_cert(PrivDir),
-    [{certfile, Cert}, {keyfile, Key} | Config].
+%% Suite is legacy V2 phase-buildout testbed. Superseded by
+%% macula_station_test_cluster_SUITE + macula_station_dht_*_SUITE
+%% which cover handshake, signed record exchange, and full DHT
+%% primitives over a multi-process cluster. Kept for archaeology;
+%% skipped in CI until repaired or removed. See
+%% PLAN_PHASE_1_MULTI_PROCESS_CT_HARNESS.md.
+init_per_suite(_Config) ->
+    {skip, "superseded by macula_station_test_cluster_SUITE harness"}.
 
 end_per_suite(_Config) ->
     ok = application:stop(macula_peering),

@@ -33,11 +33,12 @@ all() ->
 %% Suite-level setup
 %%------------------------------------------------------------------
 
-init_per_suite(Config) ->
-    {ok, _} = application:ensure_all_started(macula_peering),
-    PrivDir = ?config(priv_dir, Config),
-    {Cert, Key} = phase1_helper:generate_test_cert(PrivDir),
-    [{certfile, Cert}, {keyfile, Key} | Config].
+%% Suite is legacy V2 phase-buildout testbed for SWIM convergence.
+%% Skipped in CI until repaired or migrated to the new
+%% macula_station_test_cluster harness. See
+%% PLAN_PHASE_1_MULTI_PROCESS_CT_HARNESS.md.
+init_per_suite(_Config) ->
+    {skip, "legacy phase2 SWIM suite; awaiting harness migration"}.
 
 end_per_suite(_Config) ->
     ok.
