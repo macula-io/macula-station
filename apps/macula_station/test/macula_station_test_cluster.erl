@@ -196,45 +196,62 @@ spawn_one_station(I, Opts) ->
 %% non-distributed (no net_kernel needed; no node-name collisions
 %% between parallel test runs).
 boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
+    %% Mirror the existing in-VM test pattern (macula_station_app_tests):
+    %% start the macula SDK only, set env, then call macula_station_app
+    %% start/2 directly. ensure_all_started(macula_station) would also
+    %% start macula_content which has external boot requirements not
+    %% met in the test environment.
     {ok, _} = peer:call(PeerPid, application, ensure_all_started, [macula]),
-    Set = fun(K, V) ->
-        ok = peer:call(PeerPid, application, set_env,
-                       [macula_station, K, V])
+    Set = fun(App, K, V) ->
+        ok = peer:call(PeerPid, application, set_env, [App, K, V])
     end,
-    Set(data_dir,      DataDir),
-    Set(identity_file, KeyFile),
-    Set(bind,          "::1"),
-    Set(port,          Port),
-    Set(certfile,      Cert),
-    Set(keyfile,       KeyP),
+    Set(macula_station, data_dir,      DataDir),
+    Set(macula_station, identity_file, KeyFile),
+    Set(macula_station, bind,          "::1"),
+    Set(macula_station, port,          Port),
+    Set(macula_station, certfile,      Cert),
+    Set(macula_station, keyfile,       KeyP),
     %% Stub bootstrap so cascade satisfies min_peers without needing
     %% a real network. macula_station_stub_tier lives in the same test
     %% dir as this module; it is on the peer's code path because we
     %% pass code:get_path() to the peer.
     StubPeers = peer:call(PeerPid, macula_station_stub_tier, stub_peers, [1]),
-    ok = peer:call(PeerPid, application, set_env,
-                   [macula_bootstrap, tiers,
-                    [{macula_station_stub_tier, #{peers => StubPeers}}]]),
-    ok = peer:call(PeerPid, application, set_env,
-                   [macula_bootstrap, cascade_opts,
-                    #{min_peers => 1, timeout_ms => 5000}]),
+    Set(macula_bootstrap, tiers,
+        [{macula_station_stub_tier, #{peers => StubPeers}}]),
+    Set(macula_bootstrap, cascade_opts,
+        #{min_peers => 1, timeout_ms => 5000}),
     {ok, _Sup} = peer:call(PeerPid, macula_station_app, start, [normal, []]),
     %% The listener is started asynchronously by the cascade child;
     %% `start/2' returns before the listener is registered AND
     %% bound. Poll `listen_addr/0' directly (not `listener/0' — the
     %% process can be registered briefly with a `{error, not_started}'
-    %% reply during init). 60s deadline. Cold-cache flake observed
-    %% with 30s; boot variance under contention can spike to 20s+ per
-    %% station, so a 60s budget per station gives ~2-3x headroom.
-    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 60_000),
+    %% reply during init). 120s deadline. Boot variance under
+    %% contention from sibling peers spawning in sequence can spike
+    %% well past 60s — observed `listener_did_not_bind` at 60s on the
+    %% 3-station test even with shared cert + IPv6 + peer:start.
+    %% 120s gives 2-3x headroom for the worst observed case.
+    {ok, ListenAddr} = wait_for_listen_addr(PeerPid, 120_000),
     {Host, ActualPort} = ListenAddr,
     HostTuple = host_to_tuple(Host),
     {ok, {HostTuple, ActualPort}}.
 
 %% Poll macula_station:listen_addr/0 until it returns a real
 %% {Host, Port}. 100ms interval; deadline = `TimeoutMs'.
-wait_for_listen_addr(_PeerPid, TimeoutMs) when TimeoutMs =< 0 ->
-    error(listener_did_not_bind);
+%% On timeout, dump the peer's last-known state so the failure is
+%% diagnosable from CT logs without re-running.
+wait_for_listen_addr(PeerPid, TimeoutMs) when TimeoutMs =< 0 ->
+    LastListenAddr = catch peer:call(PeerPid, macula_station, listen_addr, []),
+    LastListener   = catch peer:call(PeerPid, macula_station, listener, []),
+    LastSup        = catch peer:call(PeerPid, supervisor, which_children,
+                                     [macula_station_sup]),
+    LastApps       = catch peer:call(PeerPid, application,
+                                     which_applications, []),
+    error({listener_did_not_bind, #{
+        last_listen_addr  => LastListenAddr,
+        last_listener_pid => LastListener,
+        last_sup_children => LastSup,
+        last_running_apps => LastApps
+    }});
 wait_for_listen_addr(PeerPid, TimeoutMs) ->
     case peer:call(PeerPid, macula_station, listen_addr, []) of
         {Host, Port} when (is_list(Host) orelse is_tuple(Host)),
