@@ -21,6 +21,10 @@
     dial/2,
     wait_for_handshakes/3,
 
+    %% Run a function on the peer node:
+    rpc/4,
+    rpc/5,
+
     %% Helpers (real working code, used by spawn_cluster):
     allocate_data_dir/1,
     new_handle/5,
@@ -212,6 +216,23 @@ verified_peer_count(PeerPid) ->
     %% view (includes both inbound + outbound). peer_links would only
     %% see outbound dials, missing the dialed-to side of a handshake.
     peer:call(PeerPid, ?MODULE, on_peer_count_peers, []).
+
+%%------------------------------------------------------------------
+%% RPC into the peer node
+%%------------------------------------------------------------------
+
+%% @doc Run M:F(Args) on the peer node, returning the result.
+%% Wraps `peer:call/4'. Default 30s timeout (peer:call's own 5s
+%% default is too short for any operation that blocks on station
+%% subsystems; tests that need longer should use `rpc/5').
+-spec rpc(station_handle(), module(), atom(), [term()]) -> term().
+rpc(Handle, Module, Function, Args) ->
+    rpc(Handle, Module, Function, Args, 30_000).
+
+-spec rpc(station_handle(), module(), atom(), [term()],
+          pos_integer()) -> term().
+rpc(Handle, Module, Function, Args, TimeoutMs) ->
+    peer:call(peer_pid(Handle), Module, Function, Args, TimeoutMs).
 
 %%------------------------------------------------------------------
 %% Internal — spawning
