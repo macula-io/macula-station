@@ -14,8 +14,13 @@
 %% Lifeguard extensions (indirect-ping via K buddies, self-awareness,
 %% refutation-buddy, NACK) land in a follow-up session — see plan Part 4 §5.
 %%
-%% Membership changes are pushed to the controlling pid (the station's
-%% gen_server) as `{macula_swim, member_state, NodeId, State}'.
+%% Membership changes are pushed to the `controlling_pid' as
+%% `{macula_swim, member_state, NodeId, State}'. `controlling_pid'
+%% may be either a `pid()' (resolved once at start) or an `atom()'
+%% (resolved on every notification via `whereis/1', dropping the
+%% notification if the registered name is not yet up). The atom
+%% form lets SWIM start before its consumer in the boot order
+%% without losing the supervisor-warning-spam fight.
 -module(macula_swim).
 -behaviour(gen_server).
 
@@ -40,7 +45,7 @@
 -type opts() :: #{
     self_node_id       := macula_identity:pubkey(),
     identity           := macula_identity:key_pair(),
-    controlling_pid    := pid(),
+    controlling_pid    := pid() | atom(),
     period_ms          => pos_integer(),
     ping_timeout_ms    => pos_integer(),
     suspect_timeout_ms => pos_integer()
@@ -71,7 +76,7 @@
 -record(state, {
     self_node_id     :: macula_identity:pubkey(),
     identity         :: macula_identity:key_pair(),
-    controlling_pid  :: pid(),
+    controlling_pid  :: pid() | atom(),
     round = 0        :: non_neg_integer(),
     members = #{}    :: #{macula_identity:pubkey() => member()},
     probes = #{}     :: #{non_neg_integer() => probe()},
@@ -335,6 +340,17 @@ maybe_touch_alive(NodeId, #state{members = M} = S) ->
 %% Notifications
 %%------------------------------------------------------------------
 
-notify_state_change(NodeId, State, #state{controlling_pid = Pid}) ->
+notify_state_change(NodeId, State, #state{controlling_pid = Ctrl}) ->
+    send_to_controller(resolve_pid(Ctrl), NodeId, State).
+
+resolve_pid(Pid) when is_pid(Pid) -> Pid;
+resolve_pid(Name) when is_atom(Name) -> erlang:whereis(Name).
+
+send_to_controller(undefined, _NodeId, _State) ->
+    %% Atom controller name not yet registered (e.g. observer hasn't
+    %% booted). Drop the notification — SWIM keeps tracking; the next
+    %% state change will surface once the consumer is up.
+    ok;
+send_to_controller(Pid, NodeId, State) when is_pid(Pid) ->
     Pid ! {macula_swim, member_state, NodeId, State},
     ok.

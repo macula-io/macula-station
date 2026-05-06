@@ -494,10 +494,23 @@ dht_expire_child(DhtPid) ->
     }.
 
 swim_child(#station_cfg{identity = Kp}) ->
+    %% controlling_pid is a registered atom name (NOT a pid) because
+    %% SWIM boots before `macula_station_peer_observer' (per the
+    %% bootstrap order DHT → SWIM → observer). At each SWIM
+    %% notification time we `whereis(macula_station_peer_observer)';
+    %% before observer registers, notifications are dropped (SWIM
+    %% keeps tracking, the next state change after observer comes
+    %% up surfaces normally).
+    %%
+    %% Previously this was `whereis(macula_station_sup)' which sent
+    %% SWIM notifications to the supervisor process — supervisors
+    %% don't have a clause for `{macula_swim, member_state, _, _}',
+    %% so every notification logged
+    %% `Supervisor received unexpected message' and was dropped.
     SwimOpts = #{
         self_node_id    => macula_identity:public(Kp),
         identity        => Kp,
-        controlling_pid => whereis(macula_station_sup)
+        controlling_pid => macula_station_peer_observer
     },
     #{
         id       => macula_swim,
