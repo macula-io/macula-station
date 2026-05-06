@@ -21,7 +21,7 @@
 %% `_macula.peering.cap_exceeded' diagnostic event is emitted.
 %%
 %% Cap is read from `application:get_env(macula_station,
-%% peering_cap_per_identity, 500)' at boot. Each identity's listener
+%% peering_cap_per_identity, 5000)' at boot. Each identity's listener
 %% has its own count; one identity flooding cannot suffocate others.
 %%
 %% This protects against the stuck-handshaking accumulation observed
@@ -30,6 +30,15 @@
 %% forever, sup grew to 1000+ workers per box. The cap blocks new
 %% conns once the limit hits; a subsequent SDK-side handshake
 %% timeout will drain the existing stuck workers.
+%%
+%% Note: the cap currently counts ALL alive peering workers (both
+%% handshaking and connected). The intent is to bound the *stuck*
+%% subset, but a healthy fleet of stubs holds enough connected slots
+%% to push the cap and starve station↔station handshakes. The
+%% follow-up fix splits the count so only handshaking workers
+%% consume cap (see in-progress refactor). 5000 here is a temporary
+%% headroom that absorbs realistic stub fan-out (~500 per station)
+%% plus the burst of churn the 30s handshake timeout can pile up.
 %%
 %% Graceful shutdown: `terminate/2' closes the transport listener so
 %% the port is released before the sup restarts us. Inbound peer
@@ -76,7 +85,7 @@
     rejected  := non_neg_integer()
 }.
 
--define(DEFAULT_PEERING_CAP, 500).
+-define(DEFAULT_PEERING_CAP, 5000).
 
 -record(state, {
     listener    :: macula_transport:listener(),
