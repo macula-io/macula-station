@@ -18,16 +18,24 @@
 %% that have not yet completed CONNECT/HELLO. Healthy connected
 %% peers do NOT consume the cap.
 %%
-%% Two state maps:
+%% Three state maps:
 %% <ul>
 %%   <li>`handshaking' — workers spawned by `macula_peering:accept/2'
 %%       that have not yet signalled `handshake_complete'. Cap
 %%       applies here.</li>
 %%   <li>`connected' — workers that have transitioned to the
 %%       `connected' peering state and emitted the
-%%       `{macula_peering, handshake_complete, ConnPid}' signal
-%%       (macula SDK ≥ 4.1.0). Untracked count, only monitored for
-%%       cleanup on death.</li>
+%%       `{macula_peering, handshake_complete, ConnPid, PeerNodeId}'
+%%       signal (macula SDK ≥ 4.2.0). Untracked count, only monitored
+%%       for cleanup on death.</li>
+%%   <li>`peers' — reverse index `PeerNodeId => {Ref, Pid}'. On a
+%%       duplicate dial from the same identity, the prior worker is
+%%       sent a graceful `{close, replaced_by_newer_handshake}' and
+%%       its `connected' slot is freed when the resulting DOWN
+%%       fires. Without this dedupe, a peer that re-dials before its
+%%       prior conn is torn down accumulates `connected' workers on
+%%       every retry — observed in production at 99 stuck workers
+%%       from a single sister-station.</li>
 %% </ul>
 %%
 %% When `handshaking' size reaches the cap, new inbound
@@ -117,6 +125,11 @@
     %% Workers that have completed handshake and transitioned to
     %% `connected'. Monitored only for cleanup on death.
     connected   :: #{reference() => pid()},
+    %% Reverse index by verified peer identity. On handshake_complete
+    %% with a `PeerNodeId' already present, the prior worker is sent
+    %% `{close, replaced_by_newer_handshake}' and the entry is
+    %% replaced. Cleared from this map on DOWN.
+    peers       :: #{macula_identity:pubkey() => {reference(), pid()}},
     rejected    :: non_neg_integer()
 }).
 
@@ -163,6 +176,7 @@ on_listen({ok, Listener}, Opts) ->
                 cap         = Cap,
                 handshaking = #{},
                 connected   = #{},
+                peers       = #{},
                 rejected    = 0}};
 on_listen({error, Reason}, _Opts) ->
     {stop, {listen_failed, Reason}}.
@@ -186,8 +200,8 @@ handle_cast(_Msg, S) ->
 
 handle_info({quic, new_conn, Conn, _Info}, S) ->
     on_new_conn(Conn, over_capacity(S), S);
-handle_info({macula_peering, handshake_complete, WorkerPid}, S) ->
-    {noreply, on_handshake_complete(WorkerPid, S)};
+handle_info({macula_peering, handshake_complete, WorkerPid, PeerNodeId}, S) ->
+    {noreply, on_handshake_complete(WorkerPid, PeerNodeId, S)};
 handle_info({'DOWN', Ref, process, _Pid, _Reason}, S) ->
     {noreply, drop_ref(Ref, S)};
 handle_info(_Msg, S) ->
@@ -219,10 +233,9 @@ resolve_cert_source(#{cert_source := {self_signed_pubkey, {Pubkey, Privkey}},
                       identity := _} = Opts) ->
     %% Generate a self-signed cert wrapping the station-keypair pubkey,
     %% write to a per-pid temp dir, hand the paths off. Stations are
-    %% realm-agnostic infrastructure — no realm-derived SANs are added
-    %% (the yggdrasil-derived SAN that lived here predated the
-    %% sovereign-substrate cutover; macula-net replaces yggdrasil and
-    %% does not bind realm-scoped addresses to station listeners).
+    %% realm-agnostic infrastructure — no realm-derived SANs are added.
+    %% `macula-net' is the routing substrate; the listener does not
+    %% bind realm-scoped addresses.
     case macula_quic:generate_self_signed_cert(Pubkey, Privkey, []) of
         {ok, {CertPem, KeyPem}} ->
             write_temp_cert_pair(CertPem, KeyPem, Opts);
@@ -311,18 +324,44 @@ on_peering_accept({ok, WorkerPid}, HS) when is_pid(WorkerPid) ->
 on_peering_accept({error, _}, HS) ->
     HS.
 
-%% Worker emitted `{macula_peering, handshake_complete, ConnPid}' —
-%% move it from `handshaking' to `connected'. Idempotent (a stray
-%% signal for an unknown pid is silently dropped) so a race between
-%% handshake_complete and DOWN cannot corrupt state.
-on_handshake_complete(Pid, #state{handshaking = HS, connected = C} = S) ->
-    promote_to_connected(find_ref_by_pid(Pid, HS), Pid, HS, C, S).
+%% Worker emitted `{macula_peering, handshake_complete, ConnPid,
+%% PeerNodeId}' — move it from `handshaking' to `connected' and
+%% reconcile the `peers' index. If a prior worker exists for the
+%% same `PeerNodeId', send it `{close, replaced_by_newer_handshake}'
+%% (graceful drain via the SDK's draining state) and let the DOWN
+%% reaper free its `connected' slot. Idempotent on unknown pid.
+on_handshake_complete(Pid, PeerNodeId,
+                       #state{handshaking = HS, connected = C,
+                              peers = P} = S) ->
+    promote_to_connected(find_ref_by_pid(Pid, HS), Pid, PeerNodeId,
+                         HS, C, P, S).
 
-promote_to_connected(error, _Pid, _HS, _C, S) ->
+promote_to_connected(error, _Pid, _PeerNodeId, _HS, _C, _P, S) ->
     S;
-promote_to_connected(Ref, Pid, HS, C, S) ->
+promote_to_connected(Ref, Pid, PeerNodeId, HS, C, P, S) ->
+    NewP = replace_peer_entry(PeerNodeId, Ref, Pid, P),
     S#state{handshaking = maps:remove(Ref, HS),
-            connected   = C#{Ref => Pid}}.
+            connected   = C#{Ref => Pid},
+            peers       = NewP}.
+
+%% Insert the new {Ref, Pid} for `PeerNodeId'. If a prior entry
+%% exists, fire-and-forget the graceful close cast at the old worker
+%% before overwriting. The old worker drains via the SDK's `draining'
+%% state and emits its own DOWN, which `drop_ref/2' then reaps from
+%% `connected' and `peers'.
+replace_peer_entry(PeerNodeId, Ref, Pid, P) ->
+    maybe_close_old_worker(maps:find(PeerNodeId, P), Pid, PeerNodeId),
+    P#{PeerNodeId => {Ref, Pid}}.
+
+maybe_close_old_worker({ok, {_OldRef, OldPid}}, NewPid, PeerNodeId)
+        when OldPid =/= NewPid ->
+    macula_peering:close(OldPid, replaced_by_newer_handshake),
+    macula_diagnostics:event(<<"_macula.peering.duplicate_replaced">>, #{
+        peer_node_id_prefix =>
+            binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId)))
+    });
+maybe_close_old_worker(_, _, _) ->
+    ok.
 
 peering_opts(#{identity := Id, realms := R, capabilities := C,
                observer := Observer}) ->
@@ -339,15 +378,26 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
         accept_owner    => self()
     }.
 
-%% DOWN routing — a monitored worker died. Could be in either map.
-%% Probe both; the matching entry is removed.
-drop_ref(Ref, #state{handshaking = HS, connected = C} = S) ->
-    drop_ref_in(maps:is_key(Ref, HS), Ref, HS, C, S).
+%% DOWN routing — a monitored worker died. Could be in either lifecycle
+%% map. Probe both; the matching entry is removed. Always also drop
+%% any `peers' entry whose monitor ref matches — covers both the
+%% normal case (worker exited after replacement) and the race where
+%% the DOWN arrives before `handshake_complete' wrote a fresh entry.
+drop_ref(Ref, #state{handshaking = HS, connected = C, peers = P} = S0) ->
+    S = drop_ref_in(maps:is_key(Ref, HS), Ref, HS, C, S0),
+    S#state{peers = drop_peer_by_ref(Ref, P)}.
 
 drop_ref_in(true, Ref, HS, _C, S) ->
     S#state{handshaking = maps:remove(Ref, HS)};
 drop_ref_in(false, Ref, _HS, C, S) ->
     S#state{connected = maps:remove(Ref, C)}.
+
+%% Remove only the entry whose monitor ref matches. A peer that has
+%% already been replaced by a newer worker has a different ref under
+%% the same `PeerNodeId' key — that newer entry must survive the
+%% old worker's DOWN.
+drop_peer_by_ref(Ref, P) ->
+    maps:filter(fun(_PeerNodeId, {R, _Pid}) -> R =/= Ref end, P).
 
 %% Find the monitor ref for a given worker pid by scanning the map.
 %% O(n) — acceptable: only fires once per accepted conn at the moment
