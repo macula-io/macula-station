@@ -128,7 +128,7 @@ node_record_opts(Opts) ->
     %% node_record so the realm dashboard can render the station
     %% without a side-channel topology poll.
     Optional = [display_name, caps_hint, station_id,
-                hostname, endpoint, city, country, lat, lng],
+                hostname, endpoint, city, country, lat, lng, power_m],
     add_optional(Optional, Opts, Base).
 
 add_optional([], _Src, Acc) -> Acc;
@@ -198,7 +198,22 @@ identity_metadata(RecOpts) ->
         <<"cpu_cores">> => Cores
     },
     Map1 = add_env(Map0, <<"provider">>,  "MACULA_PROVIDER"),
-    add_bind_addr(Map1, RecOpts).
+    Map2 = add_bind_addr(Map1, RecOpts),
+    add_power_m(Map2, RecOpts).
+
+%% Coverage-radius hint in meters. Topology dashboards render the
+%% station's halo with this radius. Stamped into the announce payload
+%% as a text-encoded integer (matches the wire convention for ram_mb,
+%% cpu_cores, etc — everything in identity_metadata is text). Realms
+%% that don't yet read this field are unaffected; new realms read
+%% `power_m' and fall back to a default radius when missing.
+add_power_m(Map, RecOpts) ->
+    case maps:get(power_m, RecOpts, undefined) of
+        N when is_integer(N), N > 0 ->
+            Map#{<<"power_m">> => integer_to_binary(N)};
+        _ ->
+            Map
+    end.
 
 %% Surface the IPv6 listener bind from identity_config as `ipv6' so
 %% the realm topology label shows it at street-zoom.

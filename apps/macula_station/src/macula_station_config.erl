@@ -233,6 +233,7 @@ build_record_from_json(M) ->
         country                = to_bin_or_undef(maps:get(<<"country">>,  Geo, undefined)),
         lat                    = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
         lng                    = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined)),
+        power_m                = to_pos_int_or_undef(maps:get(<<"power_m">>, Geo, undefined)),
         bootstrap_tiers        = decode_tiers_json(maps:get(<<"tiers">>,        Bootstrap, [])),
         bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{})),
         outbound_peers         = decode_outbound_peers(maps:get(<<"outbound_peers">>, M, []))
@@ -305,6 +306,11 @@ to_bin_or_undef(L) when is_list(L)   -> list_to_binary(L).
 
 to_number_or_undef(undefined) -> undefined;
 to_number_or_undef(N) when is_number(N) -> N.
+
+to_pos_int_or_undef(undefined) -> undefined;
+to_pos_int_or_undef(N) when is_integer(N), N > 0 -> N;
+to_pos_int_or_undef(N) when is_float(N), N > 0 -> trunc(N);
+to_pos_int_or_undef(_) -> undefined.
 
 key_to_atom(<<"data_dir">>) -> data_dir;
 key_to_atom(<<"bind">>)     -> bind;

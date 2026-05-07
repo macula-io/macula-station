@@ -55,6 +55,13 @@
     country         = undefined :: binary() | undefined,
     lat             = undefined :: number() | undefined,
     lng             = undefined :: number() | undefined,
+    %% Coverage-radius hint in meters. Topology dashboards render a
+    %% station's "halo" with this radius. Operator-set per station
+    %% (named tier in stations.csv → radius in meters); flows through
+    %% the announce payload as `power_m` so the realm doesn't need a
+    %% side-channel lookup. `undefined' → consumer falls back to its
+    %% default radius (typically ~1200m).
+    power_m         = undefined :: pos_integer() | undefined,
     %% Optional bootstrap block — translated into `macula_bootstrap'
     %% application env (`tiers' + `cascade_opts') by the app callback
     %% before the boot pipeline runs. Without this, the cascade has no
