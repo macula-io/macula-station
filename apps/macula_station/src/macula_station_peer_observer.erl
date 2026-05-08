@@ -464,38 +464,101 @@ relay_forwarded_reply({{Origin, TRef}, NewF}, Frame, S) ->
 %% routing entry. Frames are signed by the advertiser; verification
 %% already happened in `dispatch'. The advertiser pubkey on the
 %% wire MUST equal the connection-bound NodeId so a peer cannot
-%% advertise on behalf of another identity.
+%% advertise on behalf of another identity. Cross-station gossip
+%% (re-broadcast below) uses the gossiping station's OWN identity
+%% as advertiser, so the same check passes at the next hop and
+%% the receiver registers the gossiping station as the next-hop
+%% target for forwarded CALLs.
 deliver_advertise({error, _}, _Frame, _ConnPid, _NodeId, _S) ->
     ok;
-deliver_advertise({ok, Frame}, _OrigFrame, ConnPid, NodeId,
-                  #state{remote_advertise = R}) ->
-    on_advertise_frame(R, macula_frame:frame_type(Frame), Frame,
+deliver_advertise({ok, Frame}, _OrigFrame, ConnPid, NodeId, S) ->
+    on_advertise_frame(S, macula_frame:frame_type(Frame), Frame,
                        ConnPid, NodeId).
 
-on_advertise_frame(undefined, _Type, _Frame, _ConnPid, _NodeId) ->
+on_advertise_frame(#state{remote_advertise = undefined}, _Type, _Frame,
+                   _ConnPid, _NodeId) ->
     ok;
-on_advertise_frame(R, advertise, Frame, ConnPid, NodeId) ->
+on_advertise_frame(S, advertise, Frame, ConnPid, NodeId) ->
     Realm     = maps:get(realm,      Frame),
     Procedure = maps:get(procedure,  Frame),
     Adv       = maps:get(advertiser, Frame),
-    %% Reject mismatched advertiser to keep the per-conn invariant.
-    on_advertise_match(Adv =:= NodeId, R, Realm, Procedure, Adv, ConnPid);
-on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId) ->
+    on_advertise_match(Adv =:= NodeId, S, Realm, Procedure, Adv,
+                       ConnPid, NodeId);
+on_advertise_frame(S, unadvertise, Frame, _ConnPid, NodeId) ->
     Realm     = maps:get(realm,      Frame),
     Procedure = maps:get(procedure,  Frame),
     Adv       = maps:get(advertiser, Frame),
-    on_unadvertise_match(Adv =:= NodeId, R, Realm, Procedure).
+    on_unadvertise_match(Adv =:= NodeId, S, Realm, Procedure, NodeId).
 
-on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid) ->
+on_advertise_match(false, _S, _Realm, _Proc, _Adv, _ConnPid, _NodeId) ->
     ok;
-on_advertise_match(true, R, Realm, Proc, Adv, ConnPid) ->
-    macula_remote_advertise_registry:register(
-      R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}).
+on_advertise_match(true, #state{remote_advertise = R} = S, Realm, Proc,
+                   Adv, ConnPid, NodeId) ->
+    %% Anti-loop: only register + re-gossip if we don't already have
+    %% an entry for (Realm, Proc). A direct daemon advertise wins
+    %% over later gossip echoes; gossip from the FIRST station to
+    %% propagate it wins over subsequent gossip from longer paths.
+    case macula_remote_advertise_registry:lookup(R, Realm, Proc) of
+        {ok, _Existing} ->
+            ok;
+        {error, not_found} ->
+            macula_remote_advertise_registry:register(
+              R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}),
+            gossip_advertise(advertise, Realm, Proc, NodeId, S)
+    end.
 
-on_unadvertise_match(false, _R, _Realm, _Proc) ->
+on_unadvertise_match(false, _S, _Realm, _Proc, _NodeId) ->
     ok;
-on_unadvertise_match(true, R, Realm, Proc) ->
-    macula_remote_advertise_registry:unregister(R, Realm, Proc).
+on_unadvertise_match(true, #state{remote_advertise = R} = S, Realm, Proc,
+                     NodeId) ->
+    %% Only gossip UNADVERTISE if we actually had it registered —
+    %% prevents flooding for spurious unadvertise echoes.
+    case macula_remote_advertise_registry:lookup(R, Realm, Proc) of
+        {ok, _} ->
+            macula_remote_advertise_registry:unregister(R, Realm, Proc),
+            gossip_advertise(unadvertise, Realm, Proc, NodeId, S);
+        {error, not_found} ->
+            ok
+    end.
+
+%% Re-broadcast an ADVERTISE / UNADVERTISE to every other peer. Uses
+%% OUR station's identity as advertiser so the receiver registers us
+%% as the next-hop target for CALLs to (Realm, Proc). The receiver's
+%% per-conn-invariant check (`Adv =:= NodeId') passes because the
+%% conn it arrives on has us as its verified peer. Skip the source
+%% peer to break gossip loops; the `lookup-then-skip-if-known' guard
+%% above also bounds propagation across cycles.
+gossip_advertise(_Type, _Realm, _Proc, _SourceNodeId,
+                 #state{self_id = undefined}) ->
+    ok;
+gossip_advertise(Type, Realm, Proc, SourceNodeId,
+                 #state{self_id = SelfId, conns = Conns}) ->
+    Frame = build_advertise_gossip_frame(Type, Realm, Proc, SelfId),
+    maps:foreach(fun(NodeId, PeerConns) ->
+        case NodeId of
+            SourceNodeId -> ok;
+            _            -> send_advertise_gossip(PeerConns, Frame)
+        end
+    end, Conns).
+
+build_advertise_gossip_frame(advertise, Realm, Proc, SelfId) ->
+    macula_frame:advertise(#{realm => Realm, procedure => Proc,
+                             advertiser => SelfId});
+build_advertise_gossip_frame(unadvertise, Realm, Proc, SelfId) ->
+    macula_frame:unadvertise(#{realm => Realm, procedure => Proc,
+                               advertiser => SelfId}).
+
+%% Prefer the inbound conn (matches the EVENT-fan-out direction
+%% rationale documented at `send_event_to_sub/2'): the bytes travel
+%% to the peer's `outbound_link' which forwards to its peer_observer
+%% via the existing `forward_to_observer' wildcard, where dispatch
+%% picks up our gossiped ADVERTISE.
+send_advertise_gossip(#{inbound := Pid}, Frame) when is_pid(Pid) ->
+    macula_peering:send_frame(Pid, Frame), ok;
+send_advertise_gossip(#{outbound := Pid}, Frame) when is_pid(Pid) ->
+    macula_peering:send_frame(Pid, Frame), ok;
+send_advertise_gossip(_Empty, _Frame) ->
+    ok.
 
 send_reply_to(error, _Reply) ->
     %% Caller's connection is gone — RESULT goes nowhere. The
