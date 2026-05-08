@@ -138,28 +138,33 @@ handle_cast(_Msg, S) ->
 handle_info({rebuild, Ref}, #state{timer_ref = Ref} = S) ->
     S1 = sync_inbound_subs(do_rebuild(S)),
     {noreply, schedule_rebuild(S1)};
-%% Inbound EVENT frame from a peer's outbound_link — `_mesh.bloom'
-%% delivery. The outbound_link (and the SDK station_link) deliver
-%% events as the 5-tuple `{macula_event, SubRef, Topic, Payload,
-%% Meta}'; we look up SubRef in our `subs' map to find which peer
-%% sent it and key the cache by hostname.
-handle_info({macula_event, SubRef, <<"_mesh.bloom">>, Payload, _Meta},
-            #state{subs = Subs, peer_blooms = PB} = S)
-  when is_binary(Payload), byte_size(Payload) =:= 1024 ->
-    case hostname_for_sub(SubRef, Subs) of
-        {ok, Host} ->
-            {noreply, S#state{peer_blooms = PB#{Host => Payload}}};
-        error ->
-            {noreply, S}
+%% Inbound EVENT frame for `_mesh.bloom' — outbound_link (and the SDK
+%% station_link) deliver events as
+%% `{macula_event, SubRef, Topic, Payload, Meta}'.
+%%
+%% Key the cache by `Meta.publisher` (the originator's pubkey), NOT
+%% by SubRef→Host. EVENTs traverse fan-out chains through intermediate
+%% stations: a PUBLISH from B sent on B's outbound to A will fan out
+%% on A's pubsub_server to every subscriber on A's server (including
+%% C, D, ...). C receives the EVENT but the publisher field is B, not
+%% A. Keying by SubRef→Host would record `peer_blooms[A] = B's bloom',
+%% which is wrong; the publisher is the right cache key. Self-echoes
+%% (where publisher = our own identity) are dropped.
+handle_info({macula_event, _SubRef, <<"_mesh.bloom">>, Payload,
+             #{publisher := Publisher}},
+            #state{identity = Kp, peer_blooms = PB} = S)
+  when is_binary(Payload), byte_size(Payload) =:= 1024,
+       is_binary(Publisher), byte_size(Publisher) =:= 32 ->
+    case Publisher =:= macula_identity:public(Kp) of
+        true  -> {noreply, S};  % self-echo from a peer's fan-out — ignore
+        false -> {noreply, S#state{peer_blooms = PB#{Publisher => Payload}}}
     end;
+handle_info({macula_event, _SubRef, <<"_mesh.bloom">>, _Payload, _Meta}, S) ->
+    %% Missing publisher field, wrong-sized payload, or other malformed
+    %% event — drop silently.
+    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
-
-hostname_for_sub(SubRef, Subs) ->
-    case [Host || {Host, {_LinkPid, R}} <- maps:to_list(Subs), R =:= SubRef] of
-        [Host | _] -> {ok, Host};
-        []         -> error
-    end.
 
 terminate(_Reason, _S) -> ok.
 
