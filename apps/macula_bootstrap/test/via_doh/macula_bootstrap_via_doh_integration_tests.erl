@@ -2,7 +2,7 @@
 %%
 %% The tier_a unit tests mock the resolver directly; this suite
 %% instead plugs a resolver whose internals run the real
-%% `macula_bootstrap_doh:resolve/4' codec over a fake HTTP transport
+%% `macula_bootstrap_via_doh_resolver:resolve/4' codec over a fake HTTP transport
 %% that builds DoH-shaped response packets. Verifies that:
 %% <ul>
 %%   <li>The base32-derived zone name round-trips — the resolver's
@@ -11,10 +11,10 @@
 %%   <li>TXT rdata flowing back through the codec decodes to exactly
 %%       the `macula_record:encode/1' bytes Tier A then verifies.</li>
 %% </ul>
--module(macula_bootstrap_tier_a_doh_tests).
+-module(macula_bootstrap_via_doh_integration_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--behaviour(macula_bootstrap_resolver).
+-behaviour(macula_bootstrap_via_doh_resolver_behaviour).
 -export([resolve/3]).
 
 -define(URL1, <<"https://dns1.example/dns-query">>).
@@ -51,14 +51,14 @@ doh_end_to_end(#{fk := Fk}) ->
         Resolvers = [{?MODULE, ?URL1},
                      {?MODULE, ?URL2},
                      {?MODULE, ?URL3}],
-        {ok, Peers} = macula_bootstrap_tier_a:discover(
+        {ok, Peers} = macula_bootstrap_via_doh:discover(
                         #{resolvers     => Resolvers,
                           pubkeys       => [Fk],
                           corroboration => 2,
                           timeout_ms    => 1_000}),
         ?assertEqual(4, length(Peers)),
         ?assert(lists:all(fun(#{strategy := S, via := V}) ->
-                                  S =:= via_doh andalso V =:= macula_bootstrap_tier_a
+                                  S =:= via_doh andalso V =:= macula_bootstrap_via_doh
                           end, Peers))
     end.
 
@@ -68,7 +68,7 @@ doh_end_to_end(#{fk := Fk}) ->
 
 resolve(Url, Pubkey, Opts) ->
     Send = fun(U, QueryBin) -> canned_http(U, QueryBin) end,
-    macula_bootstrap_doh:resolve(Url, Pubkey, Opts, Send).
+    macula_bootstrap_via_doh_resolver:resolve(Url, Pubkey, Opts, Send).
 
 canned_http(_Url, QueryBin) ->
     {ok, DnsRec} = inet_dns:decode(QueryBin),

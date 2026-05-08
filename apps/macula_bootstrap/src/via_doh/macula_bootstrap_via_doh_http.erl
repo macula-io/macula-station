@@ -1,6 +1,6 @@
 %% @doc Concrete DoH resolver — RFC 8484 POST over `inets:httpc'.
 %%
-%% Thin behaviour-conforming wrapper around `macula_bootstrap_doh':
+%% Thin behaviour-conforming wrapper around `macula_bootstrap_via_doh_resolver':
 %% the pure codec builds the DNS query and parses the response; this
 %% module plugs in the HTTP transport and the zone-base configuration.
 %%
@@ -21,27 +21,27 @@
 %%
 %% This module has no unit tests — its single responsibility is
 %% translating `{ok, HttpStatus, Body}' into the shape
-%% `macula_bootstrap_doh:resolve/4' expects. Coverage lives in
-%% `macula_bootstrap_doh_tests' (codec) and in the network-integrated
+%% `macula_bootstrap_via_doh_resolver:resolve/4' expects. Coverage lives in
+%% `macula_bootstrap_via_doh_resolver_tests' (codec) and in the network-integrated
 %% CT suite gated on `MACULA_DOH_ENABLE=1'.
--module(macula_bootstrap_doh_http).
--behaviour(macula_bootstrap_resolver).
+-module(macula_bootstrap_via_doh_http).
+-behaviour(macula_bootstrap_via_doh_resolver_behaviour).
 
 -export([resolve/3]).
 
 -define(CONTENT_TYPE,     "application/dns-message").
 -define(DEFAULT_TIMEOUT,  1500).
 
--spec resolve(macula_bootstrap_resolver:url(),
+-spec resolve(macula_bootstrap_via_doh_resolver_behaviour:url(),
               macula_identity:pubkey(),
-              macula_bootstrap_resolver:resolve_opts()) ->
-            macula_bootstrap_resolver:resolve_result().
+              macula_bootstrap_via_doh_resolver_behaviour:resolve_opts()) ->
+            macula_bootstrap_via_doh_resolver_behaviour:resolve_result().
 resolve(Url, Pubkey, Opts) ->
     Timeout  = maps:get(timeout_ms, Opts, ?DEFAULT_TIMEOUT),
     ZoneBase = application:get_env(macula_bootstrap, doh_zone_base,
                                    <<"macula.io">>),
     CodecOpts = #{zone_base => ZoneBase, timeout_ms => Timeout},
-    macula_bootstrap_doh:resolve(Url, Pubkey, CodecOpts,
+    macula_bootstrap_via_doh_resolver:resolve(Url, Pubkey, CodecOpts,
                                  send_fun(Timeout)).
 
 %%------------------------------------------------------------------

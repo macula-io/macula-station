@@ -15,7 +15,7 @@
 %%       network I/O.</li>
 %%   <li><b>Resolver core</b> — `resolve/4'. Composes the pure codec
 %%       with a caller-supplied HTTP `SendFun'. Concrete DoH
-%%       behaviours (e.g. `macula_bootstrap_doh_http') plug a real
+%%       behaviours (e.g. `macula_bootstrap_via_doh_http') plug a real
 %%       `inets:httpc' send function in here; tests plug a canned
 %%       response function.</li>
 %% </ul>
@@ -23,8 +23,8 @@
 %% Wire format is handled by the undocumented-but-stable `inet_dns'
 %% OTP module. No DNSSEC — trust is earned at the record layer
 %% (`macula_foundation:verify_record/1') and corroboration layer
-%% (`macula_bootstrap_tier_a'), not at the DNS layer.
--module(macula_bootstrap_doh).
+%% (`macula_bootstrap_via_doh'), not at the DNS layer.
+-module(macula_bootstrap_via_doh_resolver).
 
 -export([
     query_domain/2,
@@ -42,7 +42,7 @@
 ]).
 
 -type query_id()   :: 0..65535.
--type send_fun()   :: fun((Url :: macula_bootstrap_resolver:url(),
+-type send_fun()   :: fun((Url :: macula_bootstrap_via_doh_resolver_behaviour:url(),
                             Body :: binary()) ->
                          {ok, binary()} | {error, term()}).
 
@@ -73,7 +73,7 @@
           string().
 query_domain(Pubkey, ZoneBase)
   when is_binary(Pubkey), byte_size(Pubkey) =:= 32 ->
-    Label = macula_bootstrap_base32:encode(Pubkey),
+    Label = macula_bootstrap_via_doh_base32:encode(Pubkey),
     Zone  = iolist_to_binary(ZoneBase),
     binary_to_list(<<"_pkarr.", Label/binary, ".", Zone/binary>>).
 
@@ -147,7 +147,7 @@ names_equal(A, B) when is_list(A), is_list(B) ->
 %% @doc High-level resolve: build the DoH query, ship it via
 %% `SendFun', parse the response, and return the foundation record
 %% bytes.
--spec resolve(macula_bootstrap_resolver:url(),
+-spec resolve(macula_bootstrap_via_doh_resolver_behaviour:url(),
               macula_identity:pubkey(),
               resolve_opts(),
               send_fun()) -> {ok, binary()} | {error, resolve_error()}.

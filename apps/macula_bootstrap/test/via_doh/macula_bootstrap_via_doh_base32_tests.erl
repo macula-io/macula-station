@@ -1,4 +1,4 @@
--module(macula_bootstrap_base32_tests).
+-module(macula_bootstrap_via_doh_base32_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 rfc4648_vectors_test_() ->
@@ -14,13 +14,13 @@ rfc4648_vectors_test_() ->
         {<<"fooba">>,  <<"mzxw6ytb">>},
         {<<"foobar">>, <<"mzxw6ytboi">>}
     ],
-    [?_assertEqual(Expected, macula_bootstrap_base32:encode(Input))
+    [?_assertEqual(Expected, macula_bootstrap_via_doh_base32:encode(Input))
      || {Input, Expected} <- Vectors].
 
 round_trip_test_() ->
     [?_assertEqual({ok, Bin},
-                   macula_bootstrap_base32:decode(
-                     macula_bootstrap_base32:encode(Bin)))
+                   macula_bootstrap_via_doh_base32:decode(
+                     macula_bootstrap_via_doh_base32:encode(Bin)))
      || Bin <- [<<>>,
                 <<0>>,
                 <<"abc">>,
@@ -31,7 +31,7 @@ round_trip_test_() ->
 
 pubkey_fits_in_dns_label_test() ->
     Pub = crypto:strong_rand_bytes(32),
-    Encoded = macula_bootstrap_base32:encode(Pub),
+    Encoded = macula_bootstrap_via_doh_base32:encode(Pub),
     ?assertEqual(52, byte_size(Encoded)),
     ?assert(byte_size(Encoded) =< 63),
     [?assert((C >= $a andalso C =< $z) orelse
@@ -40,22 +40,22 @@ pubkey_fits_in_dns_label_test() ->
 
 case_insensitive_decode_test() ->
     Pub = crypto:strong_rand_bytes(32),
-    Lower = macula_bootstrap_base32:encode(Pub),
+    Lower = macula_bootstrap_via_doh_base32:encode(Pub),
     Upper = string:uppercase(Lower),
     Mixed = mix_case(Lower),
-    ?assertEqual({ok, Pub}, macula_bootstrap_base32:decode(Lower)),
-    ?assertEqual({ok, Pub}, macula_bootstrap_base32:decode(Upper)),
-    ?assertEqual({ok, Pub}, macula_bootstrap_base32:decode(Mixed)).
+    ?assertEqual({ok, Pub}, macula_bootstrap_via_doh_base32:decode(Lower)),
+    ?assertEqual({ok, Pub}, macula_bootstrap_via_doh_base32:decode(Upper)),
+    ?assertEqual({ok, Pub}, macula_bootstrap_via_doh_base32:decode(Mixed)).
 
 bad_char_rejected_test_() ->
     [?_assertMatch({error, {bad_char, $=}},
-                   macula_bootstrap_base32:decode(<<"mzxw=">>)),
+                   macula_bootstrap_via_doh_base32:decode(<<"mzxw=">>)),
      ?_assertMatch({error, {bad_char, $0}},
-                   macula_bootstrap_base32:decode(<<"mz0xw">>)),
+                   macula_bootstrap_via_doh_base32:decode(<<"mz0xw">>)),
      ?_assertMatch({error, {bad_char, $1}},
-                   macula_bootstrap_base32:decode(<<"m1zxw">>)),
+                   macula_bootstrap_via_doh_base32:decode(<<"m1zxw">>)),
      ?_assertMatch({error, {bad_char, $ }},
-                   macula_bootstrap_base32:decode(<<"mz xw">>))].
+                   macula_bootstrap_via_doh_base32:decode(<<"mz xw">>))].
 
 %%------------------------------------------------------------------
 

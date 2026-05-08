@@ -56,7 +56,7 @@ peers_from_record_preserves_seed_node_ids_test() ->
     Record = macula_record:sign(
                macula_record:foundation_seed_list(Fk, Seeds), Kp),
     Peers = macula_bootstrap_foundation:peers_from_record(
-              Record, via_doh, macula_bootstrap_tier_a),
+              Record, via_doh, macula_bootstrap_via_doh),
     Expected = lists:sort([maps:get(node_id, S) || S <- Seeds]),
     Got      = lists:sort([maps:get(node_id, P) || P <- Peers]),
     ?assertEqual(Expected, Got).
@@ -81,7 +81,7 @@ peers_from_non_seed_list_record_returns_empty_test() ->
                macula_record:foundation_parameter(
                  Fk, <<"puzzle_difficulty">>, 8), Kp),
     ?assertEqual([], macula_bootstrap_foundation:peers_from_record(
-                       Record, a, macula_bootstrap_tier_a)).
+                       Record, a, macula_bootstrap_via_doh)).
 
 peers_from_record_preserves_addresses_test() ->
     Kp    = macula_identity:generate(),

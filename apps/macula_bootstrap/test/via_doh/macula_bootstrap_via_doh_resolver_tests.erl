@@ -1,4 +1,4 @@
--module(macula_bootstrap_doh_tests).
+-module(macula_bootstrap_via_doh_resolver_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(DOH_URL, <<"https://dns.example/dns-query">>).
@@ -11,28 +11,28 @@ query_domain_zero_key_test() ->
     Pub = <<0:256>>,
     Expected = "_pkarr." ++ string:copies("a", 52) ++ ".macula.io",
     ?assertEqual(Expected,
-                 macula_bootstrap_doh:query_domain(Pub, <<"macula.io">>)).
+                 macula_bootstrap_via_doh_resolver:query_domain(Pub, <<"macula.io">>)).
 
 query_domain_random_key_shape_test() ->
     Pub = crypto:strong_rand_bytes(32),
-    Domain = macula_bootstrap_doh:query_domain(Pub, <<"macula.eu">>),
+    Domain = macula_bootstrap_via_doh_resolver:query_domain(Pub, <<"macula.eu">>),
     ["_pkarr", Label, "macula", "eu"] = string:split(Domain, ".", all),
     ?assertEqual(52, length(Label)),
-    {ok, Decoded} = macula_bootstrap_base32:decode(
+    {ok, Decoded} = macula_bootstrap_via_doh_base32:decode(
                       iolist_to_binary(Label)),
     ?assertEqual(Pub, Decoded).
 
 query_domain_accepts_string_zone_test() ->
     Pub = <<0:256>>,
     ?assertEqual("_pkarr." ++ string:copies("a", 52) ++ ".example.org",
-                 macula_bootstrap_doh:query_domain(Pub, "example.org")).
+                 macula_bootstrap_via_doh_resolver:query_domain(Pub, "example.org")).
 
 %%==================================================================
 %% build_query
 %%==================================================================
 
 build_query_encodes_txt_in_question_test() ->
-    {Id, Bin} = macula_bootstrap_doh:build_query("example.com", 7),
+    {Id, Bin} = macula_bootstrap_via_doh_resolver:build_query("example.com", 7),
     ?assertEqual(7, Id),
     {ok, {dns_rec, {dns_header, 7, false, query, _, _, true, _, _, 0},
                    [{dns_query, "example.com", txt, in, _}],
@@ -40,7 +40,7 @@ build_query_encodes_txt_in_question_test() ->
 
 build_query_random_id_in_range_test_() ->
     [begin
-        {Id, _Bin} = macula_bootstrap_doh:build_query("example.com"),
+        {Id, _Bin} = macula_bootstrap_via_doh_resolver:build_query("example.com"),
         ?_assert(Id >= 0 andalso Id =< 65535)
      end || _ <- lists:seq(1, 10)].
 
@@ -52,68 +52,68 @@ parse_response_single_string_test() ->
     Bytes = <<1, 2, 3, 4>>,
     Bin = build_answer(42, "example.com", [Bytes]),
     ?assertEqual({ok, Bytes},
-                 macula_bootstrap_doh:parse_response(Bin, 42,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 42,
                                                     "example.com")).
 
 parse_response_concatenates_strings_in_one_rr_test() ->
     Bin = build_answer(1, "example.com",
                        [<<"hello">>, <<"world">>]),
     ?assertEqual({ok, <<"helloworld">>},
-                 macula_bootstrap_doh:parse_response(Bin, 1,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 1,
                                                     "example.com")).
 
 parse_response_concatenates_multiple_rrs_test() ->
     Bin = build_answer_multi(9, "example.com",
                              [[<<"aaa">>], [<<"bbb">>], [<<"ccc">>]]),
     ?assertEqual({ok, <<"aaabbbccc">>},
-                 macula_bootstrap_doh:parse_response(Bin, 9,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 9,
                                                     "example.com")).
 
 parse_response_case_insensitive_name_test() ->
     Bin = build_answer(5, "EXAMPLE.com", [<<"zzz">>]),
     ?assertEqual({ok, <<"zzz">>},
-                 macula_bootstrap_doh:parse_response(Bin, 5,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 5,
                                                     "example.com")).
 
 parse_response_id_mismatch_test() ->
     Bin = build_answer(1, "example.com", [<<"x">>]),
     ?assertEqual({error, id_mismatch},
-                 macula_bootstrap_doh:parse_response(Bin, 2,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 2,
                                                     "example.com")).
 
 parse_response_not_a_response_test() ->
     Bin = build_question_only(3, "example.com"),
     ?assertEqual({error, not_a_response},
-                 macula_bootstrap_doh:parse_response(Bin, 3,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 3,
                                                     "example.com")).
 
 parse_response_rcode_nxdomain_test() ->
     Bin = build_rcode_only(4, "example.com", 3),
     ?assertEqual({error, {rcode, 3}},
-                 macula_bootstrap_doh:parse_response(Bin, 4,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 4,
                                                     "example.com")).
 
 parse_response_rcode_refused_test() ->
     Bin = build_rcode_only(11, "example.com", 5),
     ?assertEqual({error, {rcode, 5}},
-                 macula_bootstrap_doh:parse_response(Bin, 11,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 11,
                                                     "example.com")).
 
 parse_response_no_txt_answer_test() ->
     Bin = build_rcode_only(6, "example.com", 0),
     ?assertEqual({error, no_txt_answer},
-                 macula_bootstrap_doh:parse_response(Bin, 6,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 6,
                                                     "example.com")).
 
 parse_response_wrong_domain_test() ->
     Bin = build_answer(8, "other.example", [<<"data">>]),
     ?assertEqual({error, no_txt_answer},
-                 macula_bootstrap_doh:parse_response(Bin, 8,
+                 macula_bootstrap_via_doh_resolver:parse_response(Bin, 8,
                                                     "example.com")).
 
 parse_response_garbage_bytes_test() ->
     ?assertEqual({error, decode_failed},
-                 macula_bootstrap_doh:parse_response(
+                 macula_bootstrap_via_doh_resolver:parse_response(
                    <<"not a dns packet">>, 1, "example.com")).
 
 %%==================================================================
@@ -123,7 +123,7 @@ parse_response_garbage_bytes_test() ->
 resolve_happy_path_test() ->
     Pub = crypto:strong_rand_bytes(32),
     Bytes = <<"hello-record-bytes">>,
-    Domain = macula_bootstrap_doh:query_domain(Pub, <<"macula.io">>),
+    Domain = macula_bootstrap_via_doh_resolver:query_domain(Pub, <<"macula.io">>),
     Send = fun(Url, QueryBin) ->
                    ?assertEqual(?DOH_URL, Url),
                    {ok, {dns_rec, Hdr, [{dns_query, QDomain, txt, in, _}],
@@ -133,14 +133,14 @@ resolve_happy_path_test() ->
                    {ok, build_answer(Id, Domain, [Bytes])}
            end,
     ?assertEqual({ok, Bytes},
-                 macula_bootstrap_doh:resolve(
+                 macula_bootstrap_via_doh_resolver:resolve(
                    ?DOH_URL, Pub, #{}, Send)).
 
 resolve_http_error_wrapped_test() ->
     Pub = crypto:strong_rand_bytes(32),
     Send = fun(_, _) -> {error, econnrefused} end,
     ?assertEqual({error, {http, econnrefused}},
-                 macula_bootstrap_doh:resolve(
+                 macula_bootstrap_via_doh_resolver:resolve(
                    ?DOH_URL, Pub, #{}, Send)).
 
 resolve_honours_zone_base_test() ->
@@ -155,7 +155,7 @@ resolve_honours_zone_base_test() ->
                    {ok, build_answer(Id, QDomain, [Bytes])}
            end,
     ?assertEqual({ok, Bytes},
-                 macula_bootstrap_doh:resolve(
+                 macula_bootstrap_via_doh_resolver:resolve(
                    ?DOH_URL, Pub,
                    #{zone_base => <<"macula.eu">>}, Send)).
 
@@ -163,7 +163,7 @@ resolve_propagates_parse_errors_test() ->
     Pub = crypto:strong_rand_bytes(32),
     Send = fun(_, _) -> {ok, <<"garbage">>} end,
     ?assertEqual({error, decode_failed},
-                 macula_bootstrap_doh:resolve(
+                 macula_bootstrap_via_doh_resolver:resolve(
                    ?DOH_URL, Pub, #{}, Send)).
 
 %%==================================================================

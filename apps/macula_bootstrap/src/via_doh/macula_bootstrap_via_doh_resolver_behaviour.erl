@@ -6,7 +6,7 @@
 %% <ul>
 %%   <li>The <em>orchestration</em> (parallel queries, K-of-N
 %%       corroboration, signature verification) lives in
-%%       `macula_bootstrap_tier_a' and is fully unit-testable.</li>
+%%       `macula_bootstrap_via_doh' and is fully unit-testable.</li>
 %%   <li>Real DoH I/O, request shaping, and TLS pinning live in
 %%       transport-specific modules (e.g. an `httpc'-backed
 %%       resolver, a Cloudflare-1.1.1.1 resolver, a Quad9 resolver)
@@ -21,7 +21,7 @@
 %% trust-anchor failure mode).
 %%
 %% Reference: plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md §4.
--module(macula_bootstrap_resolver).
+-module(macula_bootstrap_via_doh_resolver_behaviour).
 
 -export_type([url/0, resolve_opts/0, resolve_result/0]).
 

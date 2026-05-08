@@ -1,4 +1,4 @@
--module(macula_bootstrap_tier_a_tests).
+-module(macula_bootstrap_via_doh_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -28,7 +28,7 @@ tier_a_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    macula_bootstrap_tier_a_fake:init(),
+    macula_bootstrap_via_doh_fake:init(),
     Kp     = macula_identity:generate(),
     Fk     = macula_identity:public(Kp),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
@@ -44,7 +44,7 @@ setup() ->
 
 cleanup(_Ctx) ->
     application:unset_env(macula_record, foundation_pubkeys),
-    macula_bootstrap_tier_a_fake:reset(),
+    macula_bootstrap_via_doh_fake:reset(),
     ok.
 
 %%==================================================================
@@ -139,7 +139,7 @@ verified_peer_shape(#{fk := Fk, seeds := Seeds, record := Record,
         #{node_id := NodeId, record := PeerRecord,
           addresses := Addrs, strategy := Strategy, via := Via} = P,
         ?assertEqual(via_doh, Strategy),
-        ?assertEqual(macula_bootstrap_tier_a, Via),
+        ?assertEqual(macula_bootstrap_via_doh, Via),
         ?assertEqual(Record, PeerRecord),
         ?assert(is_list(Addrs)),
         ExpectedIds = [maps:get(node_id, S) || S <- Seeds],
@@ -164,9 +164,9 @@ slow_resolver_does_not_block(#{fk := Fk, bytes := Bytes}) ->
 %%==================================================================
 
 default_resolvers() ->
-    [{macula_bootstrap_tier_a_fake, ?URL_A},
-     {macula_bootstrap_tier_a_fake, ?URL_B},
-     {macula_bootstrap_tier_a_fake, ?URL_C}].
+    [{macula_bootstrap_via_doh_fake, ?URL_A},
+     {macula_bootstrap_via_doh_fake, ?URL_B},
+     {macula_bootstrap_via_doh_fake, ?URL_C}].
 
 slow_aware_resolvers() -> default_resolvers().
 
@@ -174,14 +174,14 @@ probe(Resolvers, Pubkeys, Threshold) ->
     probe(Resolvers, Pubkeys, Threshold, 1_000).
 
 probe(Resolvers, Pubkeys, Threshold, TimeoutMs) ->
-    macula_bootstrap_tier_a:discover(
+    macula_bootstrap_via_doh:discover(
       #{resolvers     => Resolvers,
         pubkeys       => Pubkeys,
         corroboration => Threshold,
         timeout_ms    => TimeoutMs}).
 
 canned(Url, Pubkey, Reply) ->
-    macula_bootstrap_tier_a_fake:set(Url, Pubkey, Reply).
+    macula_bootstrap_via_doh_fake:set(Url, Pubkey, Reply).
 
 sample_seeds(N) ->
     [#{node_id   => crypto:strong_rand_bytes(32),

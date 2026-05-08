@@ -52,7 +52,7 @@ end_per_suite(_Cfg) -> ok.
 
 init_per_testcase(_Case, Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
-    macula_bootstrap_tier_a_fake:init(),
+    macula_bootstrap_via_doh_fake:init(),
     macula_bootstrap_mdns_fake:init(),
     macula_bootstrap_dht_fake:init(),
     macula_bootstrap_chain_fake:init(),
@@ -61,7 +61,7 @@ init_per_testcase(_Case, Cfg) ->
 
 end_per_testcase(_Case, _Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
-    macula_bootstrap_tier_a_fake:reset(),
+    macula_bootstrap_via_doh_fake:reset(),
     macula_bootstrap_mdns_fake:reset(),
     macula_bootstrap_dht_fake:reset(),
     macula_bootstrap_chain_fake:reset(),
@@ -170,13 +170,13 @@ tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Bytes = signed_seed_list_bytes(Kp, Fk, 5),
     Resolvers = [
-        {macula_bootstrap_tier_a_fake, <<"r1">>},
-        {macula_bootstrap_tier_a_fake, <<"r2">>},
-        {macula_bootstrap_tier_a_fake, <<"r3">>}
+        {macula_bootstrap_via_doh_fake, <<"r1">>},
+        {macula_bootstrap_via_doh_fake, <<"r2">>},
+        {macula_bootstrap_via_doh_fake, <<"r3">>}
     ],
-    [macula_bootstrap_tier_a_fake:set(U, Fk, {ok, Bytes})
+    [macula_bootstrap_via_doh_fake:set(U, Fk, {ok, Bytes})
      || {_, U} <- Resolvers],
-    Tiers = [{macula_bootstrap_tier_a,
+    Tiers = [{macula_bootstrap_via_doh,
               #{resolvers     => Resolvers,
                 pubkeys       => [Fk],
                 corroboration => 2,
@@ -193,15 +193,15 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Bytes = signed_seed_list_bytes(Kp, Fk, 3),
     %% Only one resolver corroborates — threshold is 2, so Tier A fails.
-    macula_bootstrap_tier_a_fake:set(<<"r1">>, Fk, {ok, Bytes}),
-    macula_bootstrap_tier_a_fake:set(<<"r2">>, Fk, {error, dns_failure}),
-    macula_bootstrap_tier_a_fake:set(<<"r3">>, Fk, {error, dns_failure}),
-    AResolvers = [{macula_bootstrap_tier_a_fake, <<"r1">>},
-                  {macula_bootstrap_tier_a_fake, <<"r2">>},
-                  {macula_bootstrap_tier_a_fake, <<"r3">>}],
+    macula_bootstrap_via_doh_fake:set(<<"r1">>, Fk, {ok, Bytes}),
+    macula_bootstrap_via_doh_fake:set(<<"r2">>, Fk, {error, dns_failure}),
+    macula_bootstrap_via_doh_fake:set(<<"r3">>, Fk, {error, dns_failure}),
+    AResolvers = [{macula_bootstrap_via_doh_fake, <<"r1">>},
+                  {macula_bootstrap_via_doh_fake, <<"r2">>},
+                  {macula_bootstrap_via_doh_fake, <<"r3">>}],
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
     Tiers = [
-        {macula_bootstrap_tier_a,
+        {macula_bootstrap_via_doh,
          #{resolvers     => AResolvers,
            pubkeys       => [Fk],
            corroboration => 2,
@@ -228,7 +228,7 @@ tier_b_wins_cascade_when_tier_a_has_no_resolvers(_Cfg) ->
     macula_bootstrap_mdns_fake:set_replies(Replies),
     Handshake = registry_handshake(Peers),
     Tiers = [
-        {macula_bootstrap_tier_a,
+        {macula_bootstrap_via_doh,
          #{resolvers     => [],
            pubkeys       => [crypto:strong_rand_bytes(32)],
            corroboration => 2,
@@ -309,7 +309,7 @@ tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
     macula_bootstrap_dht_fake:set(
       macula_bootstrap_bep44:target_id(Fk), Item),
     Tiers = [
-        {macula_bootstrap_tier_a,
+        {macula_bootstrap_via_doh,
          #{resolvers => [], pubkeys => [Fk],
            corroboration => 2, timeout_ms => 500}},
         {macula_bootstrap_tier_b,
@@ -432,7 +432,7 @@ full_cascade_tiers(Fk, Opts) ->
                        false -> macula_bootstrap_dht_fake
                    end,
     [
-        {macula_bootstrap_tier_a,
+        {macula_bootstrap_via_doh,
          #{resolvers => [], pubkeys => [Fk],
            corroboration => 2, timeout_ms => 200}},
         {macula_bootstrap_tier_b,

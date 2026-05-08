@@ -6,7 +6,7 @@
 %%==================================================================
 
 spec_defaults_for_unknown_metadata_test() ->
-    Peer = peer(<<1:256>>, via_doh, macula_bootstrap_tier_a),
+    Peer = peer(<<1:256>>, via_doh, macula_bootstrap_via_doh),
     Spec = macula_station_bootstrap:to_entry_spec(Peer),
     ?assertEqual(<<1:256>>, maps:get(node_id, Spec)),
     ?assertEqual(0, maps:get(asn, Spec)),
@@ -17,12 +17,12 @@ spec_defaults_for_unknown_metadata_test() ->
 spec_preserves_addresses_test() ->
     Addrs = [#{ {text, <<"ip">>}   => {text, <<"::1">>},
                 {text, <<"port">>} => 7000 }],
-    Peer = (peer(<<2:256>>, via_doh, macula_bootstrap_tier_a))#{addresses => Addrs},
+    Peer = (peer(<<2:256>>, via_doh, macula_bootstrap_via_doh))#{addresses => Addrs},
     Spec = macula_station_bootstrap:to_entry_spec(Peer),
     ?assertEqual(Addrs, maps:get(endpoints, Spec)).
 
 spec_gateway_tier_3_maps_to_t3_test() ->
-    Peer = (peer(<<3:256>>, via_doh, macula_bootstrap_tier_a))#{gateway_tier => 3},
+    Peer = (peer(<<3:256>>, via_doh, macula_bootstrap_via_doh))#{gateway_tier => 3},
     Spec = macula_station_bootstrap:to_entry_spec(Peer),
     ?assertEqual(t3, maps:get(tier, Spec)).
 
@@ -70,7 +70,7 @@ ingest_observes_new_peers_test_() ->
      fun cleanup_dht/1,
      fun({Dht}) ->
          fun() ->
-             Peers = [peer(rand_id(), via_doh, macula_bootstrap_tier_a)
+             Peers = [peer(rand_id(), via_doh, macula_bootstrap_via_doh)
                       || _ <- lists:seq(1, 5)],
              Summary = macula_station_bootstrap:ingest(Dht, Peers),
              ?assertEqual(5, maps:get(observed, Summary)),
@@ -86,7 +86,7 @@ ingest_touches_on_repeat_test_() ->
      fun cleanup_dht/1,
      fun({Dht}) ->
          fun() ->
-             Peer = peer(rand_id(), via_doh, macula_bootstrap_tier_a),
+             Peer = peer(rand_id(), via_doh, macula_bootstrap_via_doh),
              _ = macula_station_bootstrap:ingest(Dht, [Peer]),
              Summary = macula_station_bootstrap:ingest(Dht, [Peer]),
              ?assertEqual(1, maps:get(observed, Summary)),
@@ -102,7 +102,7 @@ ingest_from_foundation_seeds_tags_t3_test_() ->
      fun({Dht}) ->
          fun() ->
              Id    = rand_id(),
-             Peer  = (peer(Id, via_doh, macula_bootstrap_tier_a))#{gateway_tier => 4},
+             Peer  = (peer(Id, via_doh, macula_bootstrap_via_doh))#{gateway_tier => 4},
              _     = macula_station_bootstrap:ingest(Dht, [Peer]),
              {ok, Entry} = macula_dht:find(Dht, Id),
              ?assertEqual(t3, macula_dht_entry:tier(Entry))
@@ -115,7 +115,7 @@ ingest_preserves_count_across_cascade_tiers_test_() ->
      fun cleanup_dht/1,
      fun({Dht}) ->
          fun() ->
-             Peers = [peer(rand_id(), via_doh, macula_bootstrap_tier_a),
+             Peers = [peer(rand_id(), via_doh, macula_bootstrap_via_doh),
                       peer(rand_id(), via_mdns, macula_bootstrap_tier_b),
                       peer(rand_id(), via_mainline_dht, macula_bootstrap_tier_c),
                       peer(rand_id(), via_blockchain, macula_bootstrap_tier_d),

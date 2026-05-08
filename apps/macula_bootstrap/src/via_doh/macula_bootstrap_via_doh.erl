@@ -25,7 +25,7 @@
 %%
 %% <ul>
 %%   <li>`resolvers' :: [{module(), url()}] — required. Each tuple is
-%%       a `macula_bootstrap_resolver' implementation paired with the
+%%       a `macula_bootstrap_via_doh_resolver_behaviour' implementation paired with the
 %%       endpoint it should query. Multiple distinct providers are
 %%       required for any meaningful corroboration.</li>
 %%   <li>`pubkeys' :: [pubkey()] — defaults to
@@ -38,14 +38,14 @@
 %% </ul>
 %%
 %% Tier A runs at zero stagger — it is the cascade's first hop.
--module(macula_bootstrap_tier_a).
+-module(macula_bootstrap_via_doh).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).
 
 -export_type([resolver_spec/0, discover_opts/0]).
 
--type resolver_spec() :: {module(), macula_bootstrap_resolver:url()}.
+-type resolver_spec() :: {module(), macula_bootstrap_via_doh_resolver_behaviour:url()}.
 
 -type discover_opts() :: #{
     resolvers     := [resolver_spec()],

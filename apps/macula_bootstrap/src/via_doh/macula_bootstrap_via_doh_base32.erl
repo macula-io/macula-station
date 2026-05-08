@@ -15,7 +15,7 @@
 %%
 %% This module is intentionally minimal: it does the RFC 4648 base32
 %% alphabet and nothing else. No base32hex, no z-base32, no crockford.
--module(macula_bootstrap_base32).
+-module(macula_bootstrap_via_doh_base32).
 
 -export([encode/1, decode/1]).
 
