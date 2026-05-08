@@ -68,6 +68,17 @@
     forwarders      :: #{triple() => pid()},
     %% Active inbound subscriptions keyed by `{Realm, Topic, LinkPid}'.
     subs            :: #{triple() => reference()},
+    %% Per-peer (Realm, Proc) set we have ALREADY ADVERTISED on each
+    %% peer's conn. Diff-driven: each tick we compute the desired set
+    %% (= our local DIRECT advertises = remote_advertise entries we
+    %% own) and send ADVERTISE / UNADVERTISE only for the changes.
+    %% Steady state = zero frames. The previous (reverted) attempt
+    %% broadcast on every received frame, which amplified under
+    %% e2e advertise/unadvertise churn until peer_observer's mailbox
+    %% climbed to 116k.
+    %%
+    %% NodeId → set of {Realm, Proc} we last sent to that NodeId.
+    advertised      = #{} :: #{macula_identity:pubkey() => sets:set({realm(), binary()})},
     timer_ref       :: reference() | undefined
 }).
 
@@ -129,12 +140,17 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 sync(#state{pubsub_registry = Reg,
             forwarder_sup   = FwdSup,
             forwarders      = Forwarders,
-            subs            = Subs} = S) ->
+            subs            = Subs,
+            advertised      = Advertised,
+            identity        = Kp} = S) ->
     Pairs = local_realm_topics(Reg),
     Peers = macula_station_peer_links:connections(),
     Desired = desired_triples(Pairs, Peers),
     {Forwarders1, Subs1} = reconcile(Desired, Forwarders, Subs, FwdSup),
-    S#state{forwarders = Forwarders1, subs = Subs1}.
+    Advertised1 = sync_advertises(Kp, Advertised),
+    S#state{forwarders = Forwarders1,
+            subs       = Subs1,
+            advertised = Advertised1}.
 
 %% Cartesian product of (Realm, Topic, LinkPid). Topics that start with
 %% `_mesh.' are protocol-internal — bloom_exchange already broadcasts
@@ -256,6 +272,145 @@ safe_topics_for_realm(Reg, Realm) ->
         _ -> []
     catch _:_ -> []
     end.
+
+%%====================================================================
+%% Cross-station ADVERTISE propagation (single-hop, diff-driven)
+%%
+%% Each tick we compute the set of (Realm, Procedure) pairs WE
+%% directly know about — local handler_registry plus
+%% remote_advertise entries whose advertiser is NOT a station we're
+%% peering with (= a daemon connected directly to us). For each
+%% connected peer (NodeId in peer_observer.conns), we diff against
+%% the last set we sent to that peer and ship ADVERTISE for adds,
+%% UNADVERTISE for drops. Steady state = zero frames.
+%%
+%% Single-hop only: we don't propagate gossip we received. That
+%% bounds amplification at O(direct-advertises × peers) per change
+%% event. For our partial-mesh topology (each station has 3
+%% outbound + ~3 inbound peers), every two-stations-at-most pair
+%% has at least one shared neighbour through which CALL forwarding
+%% works.
+%%====================================================================
+
+sync_advertises(Kp, Advertised) ->
+    SelfId = try macula_identity:public(Kp) catch _:_ -> undefined end,
+    LocalSet = local_advertised_set(SelfId),
+    PeerConns = peer_observer_conns(),
+    maps:fold(fun(NodeId, ConnPid, Acc) ->
+        Last = maps:get(NodeId, Acc, sets:new()),
+        ToAdd  = sets:subtract(LocalSet, Last),
+        ToDrop = sets:subtract(Last, LocalSet),
+        send_advertise_diff(ConnPid, SelfId, ToAdd, ToDrop),
+        Acc#{NodeId => LocalSet}
+    end, prune_dropped_peers(Advertised, PeerConns), PeerConns).
+
+%% NodeIds whose conns we still hold survive; entries for peers that
+%% disconnected get cleared so we don't carry phantom advertise
+%% state across reconnects.
+prune_dropped_peers(Advertised, PeerConns) ->
+    maps:filter(fun(NodeId, _) -> maps:is_key(NodeId, PeerConns) end,
+                Advertised).
+
+%% Pull (NodeId → preferred ConnPid) from peer_observer's conns map.
+%% Direction preference: inbound first (matches the EVENT-fan-out
+%% direction rationale — bytes route to the peer's outbound_link →
+%% peer_observer dispatches ADVERTISE → registers in remote_advertise
+%% with us as the next-hop target).
+peer_observer_conns() ->
+    case whereis(macula_station_peer_observer) of
+        undefined -> #{};
+        Pid       -> safe_peer_observer_conns(Pid)
+    end.
+
+safe_peer_observer_conns(Pid) ->
+    %% sys:get_state is reasonable for a once-per-tick cost; the
+    %% peer_observer carries no large per-call state, just maps.
+    try sys:get_state(Pid, 1_000) of
+        State -> extract_conn_map(State)
+    catch _:_ ->
+        #{}
+    end.
+
+%% peer_observer's #state{} record: conns lives at element 9 (see
+%% the record definition). Direction-aware shape:
+%% `#{NodeId => #{inbound, outbound}}'. Pick a live conn per peer.
+extract_conn_map(State) when is_tuple(State), tuple_size(State) >= 9 ->
+    Conns = element(9, State),
+    case is_map(Conns) of
+        true  -> maps:fold(fun pick_one_conn/3, #{}, Conns);
+        false -> #{}
+    end;
+extract_conn_map(_) ->
+    #{}.
+
+pick_one_conn(NodeId, #{inbound := Pid}, Acc) when is_pid(Pid) ->
+    Acc#{NodeId => Pid};
+pick_one_conn(NodeId, #{outbound := Pid}, Acc) when is_pid(Pid) ->
+    Acc#{NodeId => Pid};
+pick_one_conn(_NodeId, _Empty, Acc) ->
+    Acc.
+
+%% Set of (Realm, Procedure) the LOCAL station directly knows about:
+%%   1. macula_handler_registry (DHT primitives etc.) — realm-blind,
+%%      attributed to ?DHT_REALM = <<0:256>>.
+%%   2. macula_remote_advertise_registry — daemon-direct entries.
+%%      Entries whose advertiser is the SelfId are loops we caused
+%%      ourselves and get filtered. (Daemon advertises always have
+%%      advertiser = the daemon's pubkey, never SelfId.)
+%%
+%% We deliberately do NOT include gossip-received entries in this
+%% set. Single-hop propagation: we only re-broadcast our own direct
+%% advertises. Anti-loop is structural — gossip never echoes.
+local_advertised_set(undefined) ->
+    sets:new();
+local_advertised_set(SelfId) ->
+    HandlerSet  = handler_registry_set(),
+    DirectAdvSet = direct_remote_advertise_set(SelfId),
+    sets:union(HandlerSet, DirectAdvSet).
+
+handler_registry_set() ->
+    case whereis(macula_handler_registry) of
+        undefined -> sets:new();
+        Pid ->
+            try
+                Procs = macula_handler_registry:list(Pid),
+                sets:from_list([{<<0:256>>, P} || P <- Procs])
+            catch _:_ -> sets:new()
+            end
+    end.
+
+direct_remote_advertise_set(SelfId) ->
+    case whereis(macula_remote_advertise_registry) of
+        undefined -> sets:new();
+        Pid ->
+            try
+                Entries = macula_remote_advertise_registry:list(Pid),
+                sets:from_list(
+                  [{Realm, Proc}
+                   || {Realm, Proc, #{advertiser := Adv}} <- Entries,
+                      Adv =/= SelfId])
+            catch _:_ -> sets:new()
+            end
+    end.
+
+send_advertise_diff(_ConnPid, undefined, _ToAdd, _ToDrop) ->
+    ok;
+send_advertise_diff(ConnPid, SelfId, ToAdd, ToDrop) ->
+    sets:fold(fun({Realm, Proc}, _) ->
+        Frame = macula_frame:advertise(#{realm => Realm,
+                                         procedure => Proc,
+                                         advertiser => SelfId}),
+        catch macula_peering:send_frame(ConnPid, Frame),
+        ok
+    end, ok, ToAdd),
+    sets:fold(fun({Realm, Proc}, _) ->
+        Frame = macula_frame:unadvertise(#{realm => Realm,
+                                           procedure => Proc,
+                                           advertiser => SelfId}),
+        catch macula_peering:send_frame(ConnPid, Frame),
+        ok
+    end, ok, ToDrop),
+    ok.
 
 %%====================================================================
 %% Schedule
