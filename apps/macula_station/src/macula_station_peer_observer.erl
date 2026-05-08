@@ -598,16 +598,24 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       Conns);
 deliver_pubsub_typed(event, Realm, _NodeId, Verified,
-                     #state{pubsub_registry = Reg, conns = Conns}) ->
-    %% Inbound EVENT — typically a cross-station relay from a peer
-    %% station whose pubsub_server fanned out to us as a registered
-    %% subscriber. Look up our local pubsub_server, find LOCAL
-    %% subscribers (daemons connected to us via SUBSCRIBE inbound),
-    %% fan out the EVENT frame to each. This is the second hop of
-    %% the cross-station propagation chain — without it, EVENTs
-    %% arrived at our listener but never reached the daemons that
-    %% subscribed for the topic.
-    deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns);
+                     #state{pubsub_registry = Reg, conns = Conns,
+                            self_id = SelfId}) ->
+    %% Inbound EVENT — cross-station relay from a peer whose
+    %% pubsub_server fanned out to us as a registered subscriber.
+    %% Fan out to LOCAL subs that are NOT THEMSELVES PEER STATIONS.
+    %% Without the station-exclusion, peer stations who subscribed
+    %% on us via cross-station SUBSCRIBE would receive the EVENT
+    %% and re-fan, looping forever (verified live: peer_observer
+    %% mailbox climbed to 116k after one e2e suite run before this
+    %% guard was added).
+    %%
+    %% A NodeId is "peer station" if it has an `outbound' conn in
+    %% our conns map (= we dial them). Asymmetric peering also
+    %% leaves inbound-only stations un-flagged here — those still
+    %% loop one extra hop, but the receiver's gossip-dedup stops
+    %% the cycle further out.
+    deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns,
+                          stations(Conns), SelfId);
 deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg}) ->
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
@@ -644,12 +652,24 @@ safe_lookup(Reg, Realm) ->
     catch _:_ -> {error, registry_unavailable}
     end.
 
-deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
+%% NodeIds of every peer we have an `outbound' conn for — i.e. peers
+%% we dial. By construction these are stations (we never dial a
+%% daemon). Used to filter out station-as-subscriber from inbound
+%% EVENT fan-out so we don't ping-pong cross-station relays.
+stations(Conns) ->
+    sets:from_list(
+      [NodeId || {NodeId, #{outbound := Pid}} <- maps:to_list(Conns),
+                 is_pid(Pid)]).
+
+deliver_inbound_event({ok, Server}, EventFrame, Conns, StationSet, SelfId) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
-    fan_out_event(EventFrame, Matched, Conns);
-deliver_inbound_event(_Other, _EventFrame, _Conns) ->
+    Filtered = [S || S <- Matched,
+                     S =/= SelfId,
+                     not sets:is_element(S, StationSet)],
+    fan_out_event(EventFrame, Filtered, Conns);
+deliver_inbound_event(_Other, _EventFrame, _Conns, _StationSet, _SelfId) ->
     ok.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->
