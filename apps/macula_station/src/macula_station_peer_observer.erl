@@ -339,13 +339,30 @@ classify(store)        -> dht;
 classify(store_ack)    -> dht;
 classify(_)            -> other.
 
+claimed_caller(#{caller := <<_:256>> = Pub}) -> Pub;
+claimed_caller(_)                            -> <<0:256>>.
+
+claimed_replier(#{responded_by := <<_:256>> = Pub}) -> Pub;
+claimed_replier(#{reported_by  := <<_:256>> = Pub}) -> Pub;
+claimed_replier(_)                                  -> <<0:256>>.
+
 dispatch(swim, Frame, _ConnPid, NodeId, #state{swim = Swim} = S) ->
     deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim),
     S;
 dispatch(call, Frame, ConnPid, NodeId, S) ->
-    deliver_call(macula_frame:verify(Frame, NodeId), Frame, ConnPid, NodeId, S);
-dispatch(reply, Frame, _ConnPid, NodeId, S) ->
-    deliver_reply(macula_frame:verify(Frame, NodeId), Frame, S);
+    %% CALL is signed end-to-end by the original caller and forwarded
+    %% as-is across relay hops, so verify against the frame's claimed
+    %% caller — NOT the connection's NodeId, which would only match on
+    %% a direct dial (caller -> first relay) and fail on every
+    %% subsequent hop in a multi-station path.
+    deliver_call(macula_frame:verify(Frame, claimed_caller(Frame)),
+                 Frame, ConnPid, NodeId, S);
+dispatch(reply, Frame, _ConnPid, _NodeId, S) ->
+    %% RESULT signed by `responded_by'; call_error signed by
+    %% `reported_by'. Both are preserved end-to-end across the relay
+    %% chain, same reasoning as CALL above.
+    deliver_reply(macula_frame:verify(Frame, claimed_replier(Frame)),
+                  Frame, S);
 dispatch(advertise, Frame, ConnPid, NodeId, S) ->
     deliver_advertise(macula_frame:verify(Frame, NodeId), Frame, ConnPid, NodeId, S),
     S;
