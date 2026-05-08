@@ -41,7 +41,13 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(TICK_MS, 15_000).
+%% Pre-Gap-B this was 15s, which left e2e cross-station probes
+%% timing out before the router could propagate a fresh local
+%% SUBSCRIBE to peers. 2s is the right balance: snappy convergence
+%% under steady-state churn, still <1% CPU even on a heavily-
+%% subscribed station. `peer_observer' also calls `sync_now/1' on
+%% every inbound SUBSCRIBE / UNSUBSCRIBE for sub-tick latency.
+-define(TICK_MS, 2_000).
 
 -type opts() :: #{
     pubsub_registry := pid(),

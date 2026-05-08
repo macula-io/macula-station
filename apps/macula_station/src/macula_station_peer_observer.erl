@@ -530,14 +530,63 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
                      #state{pubsub_registry = Reg, conns = Conns}) ->
     %% Inbound PUBLISH from a remote daemon. Build the EVENT frame
     %% in the realm's pubsub_server, fan out to each matched local
-    %% subscriber's peering connection. Phase 1: single-station
-    %% fan-out only; cross-station gossip is a Plan C.2 deliverable.
+    %% subscriber's peering connection.
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       Conns);
+deliver_pubsub_typed(event, Realm, _NodeId, Verified,
+                     #state{pubsub_registry = Reg, conns = Conns}) ->
+    %% Inbound EVENT — typically a cross-station relay from a peer
+    %% station whose pubsub_server fanned out to us as a registered
+    %% subscriber. Look up our local pubsub_server, find LOCAL
+    %% subscribers (daemons connected to us via SUBSCRIBE inbound),
+    %% fan out the EVENT frame to each. This is the second hop of
+    %% the cross-station propagation chain — without it, EVENTs
+    %% arrived at our listener but never reached the daemons that
+    %% subscribed for the topic.
+    deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns);
+deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
+                     #state{pubsub_registry = Reg}) ->
+    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
+    %% Snap the router to a sync NOW so this fresh subscriber gets
+    %% propagated to peer stations within milliseconds rather than
+    %% waiting up to ?TICK_MS for the next periodic poll. The router
+    %% drives subscribe-on-peer for cross-station fan-out; without
+    %% this trigger, e2e probes time out before the router notices.
+    notify_router_change(),
+    ok;
+deliver_pubsub_typed(unsubscribe, Realm, NodeId, Verified,
+                     #state{pubsub_registry = Reg}) ->
+    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
+    notify_router_change(),
+    ok;
 deliver_pubsub_typed(_Type, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg}) ->
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
+    ok.
+
+notify_router_change() ->
+    case whereis(macula_station_peering_router) of
+        undefined -> ok;
+        Pid       ->
+            %% Async cast so peer_observer doesn't block on router
+            %% sync (sync can take seconds when fanning out to many
+            %% peers). The router handles a `tick' message identically
+            %% to its periodic timer.
+            Pid ! tick, ok
+    end.
+
+safe_lookup(Reg, Realm) ->
+    try hecate_pubsub_registry:lookup(Reg, Realm)
+    catch _:_ -> {error, registry_unavailable}
+    end.
+
+deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
+    Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
+              catch _:_ -> []
+              end,
+    fan_out_event(EventFrame, Matched, Conns);
+deliver_inbound_event(_Other, _EventFrame, _Conns) ->
     ok.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->
