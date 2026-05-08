@@ -48,6 +48,32 @@
 
 -type opts() :: #{dht := pid(), swim := pid()}.
 
+%% Direction of a peering connection from THIS station's perspective:
+%%   inbound  — the listener accepted a CONNECT from the peer (server-role).
+%%   outbound — `outbound_link' dialled the peer (client-role).
+%% Mutual peers (both sides have an outbound_peers entry for the other)
+%% materialise BOTH directions; lone-direction peers materialise one.
+-type direction() :: inbound | outbound.
+
+%% Per-NodeId conns view. Held as a map so we can carry both directions
+%% concurrently without one overwriting the other. `inbound' is the conn
+%% that received the peer's SUBSCRIBE / CALL frames (its `controlling_pid'
+%% is this peer_observer). `outbound' is the conn we dial out on (its
+%% `controlling_pid' is the relevant `macula_station_outbound_link').
+%%
+%% EVENT delivery to a peer who subscribed via the inbound side MUST go
+%% out on `inbound'; the bytes then arrive at the peer's
+%% `outbound_link', whose subscriber-fan-out delivers
+%% `{macula_event, ...}' messages to local Erlang processes (e.g.
+%% `bloom_exchange'). If we mistakenly send via `outbound', the bytes
+%% land on the peer's listener-side conn, dispatch into the peer's
+%% pubsub_server, and dead-end — the peer has no local subscribers
+%% there.
+-type peer_conns() :: #{
+    inbound  => pid() | undefined,
+    outbound => pid() | undefined
+}.
+
 -record(state, {
     dht                  :: pid(),
     swim                 :: pid(),
@@ -71,7 +97,14 @@
     %% caller knows who answered.
     self_id              :: macula_identity:pubkey() | undefined,
     peers                :: #{pid() => macula_identity:pubkey()},
-    conns                :: #{macula_identity:pubkey() => pid()},
+    %% NodeId → {inbound, outbound} ConnPids. Both can be set for mutual
+    %% peers; clears entry-by-entry on `disconnected'.
+    conns                :: #{macula_identity:pubkey() => peer_conns()},
+    %% Reverse map ConnPid → its direction, populated alongside `peers'.
+    %% Lets `on_disconnected' / DOWN-handler clear ONLY the affected
+    %% direction in `conns' instead of nuking the whole NodeId entry
+    %% (which would lose the still-live other direction).
+    direction_of_pid = #{} :: #{pid() => direction()},
     %% In-flight forwarded CALLs. Maps each forwarded call_id to the
     %% origin connection that issued the CALL plus a TTL timer ref
     %% so an entry whose advertiser never replies (advertiser
@@ -151,7 +184,7 @@ absorb_known_dial(LinkPid, NodeId, S) ->
         ConnPid when is_pid(ConnPid) ->
             logger:info("[peer_observer] reconciled outbound dial "
                         "pid=~p peer=~p", [ConnPid, NodeId]),
-            on_connected(ConnPid, NodeId, S)
+            on_connected_directional(outbound, ConnPid, NodeId, S)
     catch
         _:_ -> S
     end.
@@ -159,25 +192,34 @@ absorb_known_dial(LinkPid, NodeId, S) ->
 handle_call(peers, _From, #state{peers = P} = S) ->
     {reply, maps:to_list(P), S};
 handle_call({conn_for, NodeId}, _From, #state{conns = C} = S) ->
-    {reply, resolve(maps:find(NodeId, C)), S};
+    {reply, primary_conn_lookup(maps:find(NodeId, C)), S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
-
-resolve({ok, Pid}) -> {ok, Pid};
-resolve(error)     -> error.
 
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
-    logger:info("[peer_observer] connected pid=~p peer=~p",
+    %% Inbound (listener-accepted) handshake — peer dialled us.
+    logger:info("[peer_observer] connected pid=~p peer=~p direction=inbound",
                 [ConnPid, PeerNodeId]),
-    {noreply, on_connected(ConnPid, PeerNodeId, S)};
+    {noreply, on_connected_directional(inbound, ConnPid, PeerNodeId, S)};
+handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId}, S) ->
+    %% Outbound (client-side) handshake — `outbound_link' relays
+    %% peering events here with the `_outbound' suffix so direction
+    %% is unambiguous. Without it the conn map would race between
+    %% inbound + outbound for mutual peers and EVENT delivery would
+    %% land on the wrong side of the link.
+    logger:info("[peer_observer] connected pid=~p peer=~p direction=outbound",
+                [ConnPid, PeerNodeId]),
+    {noreply, on_connected_directional(outbound, ConnPid, PeerNodeId, S)};
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     logger:debug("[peer_observer] frame pid=~p type=~p",
                  [ConnPid, macula_frame:frame_type(Frame)]),
     {noreply, on_frame(ConnPid, Frame, S)};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
+    {noreply, on_disconnected(ConnPid, S)};
+handle_info({macula_peering, disconnected_outbound, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info({'DOWN', _Ref, process, Pid, _Reason},
             #state{peers = P} = S) ->
@@ -212,8 +254,10 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% connected
 %%==================================================================
 
-on_connected(ConnPid, NodeId, #state{dht = Dht, swim = Swim,
-                                     peers = P, conns = C} = S) ->
+on_connected_directional(Direction, ConnPid, NodeId,
+                         #state{dht = Dht, swim = Swim,
+                                peers = P, conns = C,
+                                direction_of_pid = D} = S) ->
     _ = macula_dht:observe(Dht, direct_peer_spec(NodeId)),
     ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
     %% Monitor ConnPid so observer cleans up on death without
@@ -222,8 +266,29 @@ on_connected(ConnPid, NodeId, #state{dht = Dht, swim = Swim,
     %% is fine — extra DOWN messages hit `on_disconnected' which is
     %% map-remove based.
     _ = erlang:monitor(process, ConnPid),
-    S#state{peers = P#{ConnPid => NodeId},
-            conns = C#{NodeId => ConnPid}}.
+    Existing = maps:get(NodeId, C, empty_peer_conns()),
+    Updated  = Existing#{Direction => ConnPid},
+    S#state{peers            = P#{ConnPid => NodeId},
+            conns            = C#{NodeId => Updated},
+            direction_of_pid = D#{ConnPid => Direction}}.
+
+empty_peer_conns() ->
+    #{inbound => undefined, outbound => undefined}.
+
+%% Pick the conn we want to use for fire-and-forget outbound
+%% writes that don't require a specific direction (replies, forwarded
+%% CALL trampolines, the public `conn_for/2' API). Inbound is
+%% preferred because EVENT-delivery uses the same lookup and
+%% inbound is the right answer there; non-EVENT callers don't care
+%% which direction they get.
+primary_conn_lookup(error) ->
+    error;
+primary_conn_lookup({ok, #{inbound := Pid}}) when is_pid(Pid) ->
+    {ok, Pid};
+primary_conn_lookup({ok, #{outbound := Pid}}) when is_pid(Pid) ->
+    {ok, Pid};
+primary_conn_lookup({ok, _Empty}) ->
+    error.
 
 direct_peer_spec(NodeId) ->
     #{node_id   => NodeId,
@@ -327,7 +392,7 @@ on_call_lookup({ok, _Handler}, Frame, _ConnPid, NodeId,
                #state{handler_registry = Registry,
                       self_id = SelfId, conns = C} = S) ->
     Reply = macula_handler_dispatch:dispatch_call(Frame, Registry, SelfId),
-    send_reply_to(maps:find(NodeId, C), Reply),
+    send_reply_to(primary_conn_lookup(maps:find(NodeId, C)), Reply),
     S;
 on_call_lookup({error, not_found}, Frame, ConnPid, NodeId, S) ->
     on_remote_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
@@ -344,7 +409,7 @@ remote_lookup(Frame, #state{remote_advertise = R}) ->
 on_remote_lookup({error, not_found}, Frame, _ConnPid, NodeId,
                  #state{self_id = SelfId, conns = C} = S) ->
     Reply = unknown_next_peer_reply(Frame, SelfId),
-    send_reply_to(maps:find(NodeId, C), Reply),
+    send_reply_to(primary_conn_lookup(maps:find(NodeId, C)), Reply),
     S;
 on_remote_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame, _ConnPid, NodeId,
                  #state{conns = C, forwarded = F} = S) ->
@@ -353,7 +418,7 @@ on_remote_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame, _ConnPid, NodeId,
     %% local handler and emit a RESULT or call_error back. Track the
     %% origin so we can route the reply.
     macula_peering:send_frame(AdvertiserConn, Frame),
-    Origin = origin_for_reply(maps:find(NodeId, C)),
+    Origin = origin_for_reply(primary_conn_lookup(maps:find(NodeId, C))),
     track_forwarded(maps:get(call_id, Frame), Origin, F, S).
 
 origin_for_reply({ok, ConnPid}) -> ConnPid;
@@ -486,9 +551,21 @@ fan_out_event(EventFrame, [Sub | Rest], Conns) ->
     send_event_to_sub(maps:find(Sub, Conns), EventFrame),
     fan_out_event(EventFrame, Rest, Conns).
 
-send_event_to_sub({ok, ConnPid}, EventFrame) ->
-    macula_peering:send_frame(ConnPid, EventFrame);
-send_event_to_sub(error, _EventFrame) ->
+%% EVENT delivery deliberately PREFERS the inbound conn — the one
+%% through which the peer originally sent its SUBSCRIBE. The bytes
+%% travel back to the peer's `outbound_link', whose subscriber
+%% fan-out delivers `{macula_event, ...}' to local Erlang processes
+%% (e.g. cross-station bloom gossip). Sending via outbound would
+%% land on the peer's listener-side conn, dispatch into the peer's
+%% pubsub_server, and dead-end (the peer has no local subscribers
+%% there). Falls back to outbound when inbound is missing — better
+%% than dropping the EVENT, even though delivery from there is
+%% best-effort and may be silently lost on the peer side.
+send_event_to_sub({ok, #{inbound := Pid}}, EventFrame) when is_pid(Pid) ->
+    macula_peering:send_frame(Pid, EventFrame);
+send_event_to_sub({ok, #{outbound := Pid}}, EventFrame) when is_pid(Pid) ->
+    macula_peering:send_frame(Pid, EventFrame);
+send_event_to_sub(_, _EventFrame) ->
     %% Subscriber's connection already gone — drop the EVENT.
     %% The conns map cleanup happens in `on_disconnected'.
     ok.
@@ -498,14 +575,57 @@ send_event_to_sub(error, _EventFrame) ->
 %%==================================================================
 
 on_disconnected(ConnPid, #state{swim = Swim, peers = P, conns = C,
+                                direction_of_pid = D,
                                 forwarded = F,
                                 remote_advertise = R} = S) ->
-    NodeId = maps:get(ConnPid, P, undefined),
-    maybe_remove(NodeId, Swim),
+    NodeId    = maps:get(ConnPid, P, undefined),
+    Direction = maps:get(ConnPid, D, undefined),
+    NewConns  = drop_directional_conn(NodeId, Direction, ConnPid, C),
+    %% Remove the peer from SWIM only when BOTH directions are gone —
+    %% a mutual-peer with one direction still alive is still reachable.
+    maybe_remove_if_isolated(NodeId, NewConns, Swim),
     maybe_purge_advertise(R, ConnPid),
-    S#state{peers     = maps:remove(ConnPid, P),
-            conns     = drop_conn(NodeId, C),
-            forwarded = drop_forwarded_for(ConnPid, F)}.
+    S#state{peers            = maps:remove(ConnPid, P),
+            conns            = NewConns,
+            direction_of_pid = maps:remove(ConnPid, D),
+            forwarded        = drop_forwarded_for(ConnPid, F)}.
+
+drop_directional_conn(undefined, _Direction, _ConnPid, C) ->
+    C;
+drop_directional_conn(NodeId, undefined, ConnPid, C) ->
+    %% Direction unknown (DOWN before any `connected' notification
+    %% landed, or pre-upgrade entry from an older shape). Best-effort:
+    %% scrub the pid from BOTH slots, preserving anything else.
+    Existing = maps:get(NodeId, C, empty_peer_conns()),
+    Cleared = maps:fold(fun(K, V, Acc) ->
+        Acc#{K => clear_if_match(V, ConnPid)}
+    end, #{}, Existing),
+    on_cleared_peer_conns(NodeId, Cleared, C);
+drop_directional_conn(NodeId, Direction, ConnPid, C) ->
+    Existing = maps:get(NodeId, C, empty_peer_conns()),
+    Cleared = Existing#{Direction => clear_if_match(maps:get(Direction, Existing, undefined),
+                                                    ConnPid)},
+    on_cleared_peer_conns(NodeId, Cleared, C).
+
+clear_if_match(Pid, Pid)            -> undefined;
+clear_if_match(Existing, _OtherPid) -> Existing.
+
+%% Drop the NodeId entry entirely once both slots are empty so the
+%% conns map doesn't leak `#{inbound => undefined, outbound => undefined}'
+%% husks for every disconnected peer.
+on_cleared_peer_conns(NodeId, #{inbound := undefined, outbound := undefined}, C) ->
+    maps:remove(NodeId, C);
+on_cleared_peer_conns(NodeId, Cleared, C) ->
+    C#{NodeId => Cleared}.
+
+maybe_remove_if_isolated(undefined, _NewConns, _Swim) ->
+    ok;
+maybe_remove_if_isolated(NodeId, NewConns, Swim) ->
+    case maps:find(NodeId, NewConns) of
+        error                                                            -> maybe_remove(NodeId, Swim);
+        {ok, #{inbound := undefined, outbound := undefined}}             -> maybe_remove(NodeId, Swim);
+        _                                                                -> ok
+    end.
 
 %% Drop in-flight forwarded entries whose origin (or advertiser, for
 %% bulk-purge by either endpoint) has just gone. Cancels TTL timers
@@ -530,5 +650,3 @@ maybe_purge_advertise(R, ConnPid) ->
 maybe_remove(undefined, _Swim) -> ok;
 maybe_remove(NodeId,     Swim) -> macula_swim:remove_peer(Swim, NodeId).
 
-drop_conn(undefined, C) -> C;
-drop_conn(NodeId,    C) -> maps:remove(NodeId, C).

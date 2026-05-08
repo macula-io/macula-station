@@ -258,11 +258,17 @@ handle_cast(_Msg, S) ->
 
 handle_info(dial, S) ->
     do_dial(S);
-handle_info({macula_peering, connected, ConnPid, NodeId} = Msg,
+handle_info({macula_peering, connected, ConnPid, NodeId},
             #state{conn_pid = ConnPid, url = Url} = S)
   when is_binary(NodeId) ->
     ok = macula_station_peer_links:set_peer_node_id(Url, NodeId),
-    forward_to_observer(Msg),
+    %% Re-tag the connected event with `connected_outbound' so
+    %% peer_observer can distinguish this client-side conn from the
+    %% inbound (listener-accepted) handshake of the SAME peer that
+    %% mutual-peering produces. Without it peer_observer's `conns'
+    %% map would race between inbound + outbound for the same NodeId
+    %% and EVENT delivery would land on the wrong side of the link.
+    forward_to_observer({macula_peering, connected_outbound, ConnPid, NodeId}),
     %% Successful handshake — reset backoff for the next disconnect
     %% and replay every active SUBSCRIBE so the peer rebuilds its
     %% interest set after the reconnect.
@@ -270,9 +276,9 @@ handle_info({macula_peering, connected, ConnPid, NodeId} = Msg,
                  backoff_ms   = ?INITIAL_BACKOFF_MS},
     drain_pending_subscribes(S1),
     {noreply, S1};
-handle_info({macula_peering, disconnected, ConnPid, Reason} = Msg,
+handle_info({macula_peering, disconnected, ConnPid, Reason},
             #state{conn_pid = ConnPid} = S) ->
-    forward_to_observer(Msg),
+    forward_to_observer({macula_peering, disconnected_outbound, ConnPid, Reason}),
     S1 = fail_all_pending({disconnected, Reason}, S),
     {noreply, schedule_reconnect(reset_conn(S1))};
 handle_info({macula_peering, frame, ConnPid, Frame} = Msg,
