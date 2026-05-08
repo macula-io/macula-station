@@ -79,7 +79,7 @@ run_from_explicit_config_reaches_tier_e_test() ->
     },
     {ok, Peers} = macula_bootstrap:run(Cfg),
     ?assertEqual(3, length(Peers)),
-    [?assertEqual(e, maps:get(tier, P)) || P <- Peers].
+    [?assertEqual(via_operator_paste, maps:get(strategy, P)) || P <- Peers].
 
 run_from_application_env_test() ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],

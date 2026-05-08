@@ -102,15 +102,15 @@ cascade_times_out_test() ->
 register_fake_tier(Name, StaggerMs, ProbeResult) ->
     Forms = [
         {attribute, 1, module, Name},
-        {attribute, 1, behaviour, macula_bootstrap_tier},
+        {attribute, 1, behaviour, macula_bootstrap_peer_discoverer},
         {attribute, 1, export,
-         [{tier, 0}, {stagger_ms, 0}, {probe, 1}]},
-        {function, 1, tier, 0,
+         [{strategy, 0}, {stagger_ms, 0}, {discover, 1}]},
+        {function, 1, strategy, 0,
          [{clause, 1, [], [], [{atom, 1, Name}]}]},
         {function, 1, stagger_ms, 0,
          [{clause, 1, [], [],
            [{integer, 1, StaggerMs}]}]},
-        {function, 1, probe, 1,
+        {function, 1, discover, 1,
          [{clause, 1, [{var, 1, '_'}], [],
            [term_to_expr(ProbeResult)]}]}
     ],
@@ -147,6 +147,6 @@ fake_peer(Url) ->
         node_id   => macula_record:key(Record),
         record    => Record,
         addresses => Addrs,
-        tier      => x,
+        strategy  => x,
         via       => fake
     }.

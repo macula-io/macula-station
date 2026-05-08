@@ -184,7 +184,7 @@ tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 2000}),
     5 = length(Peers),
-    [a] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_doh] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     ok.
 
 tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
@@ -211,7 +211,7 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 2000}),
     3 = length(Peers),
-    [e] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_operator_paste] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     ok.
 
 %%---------------------------------------------------------------------
@@ -241,7 +241,7 @@ tier_b_wins_cascade_when_tier_a_has_no_resolvers(_Cfg) ->
     {ok, Got} = macula_bootstrap:cascade(
                   Tiers, #{min_peers => 3, timeout_ms => 2000}),
     3 = length(Got),
-    [b] = lists:usort([maps:get(tier, P) || P <- Got]),
+    [via_mdns] = lists:usort([maps:get(strategy, P) || P <- Got]),
     ok.
 
 make_peer() ->
@@ -323,7 +323,7 @@ tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 2000}),
     5 = length(Peers),
-    [c] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_mainline_dht] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     ok.
 
 tier_c_seeds(N) ->
@@ -369,7 +369,7 @@ tier_d_wins_when_a_b_c_are_down(_Cfg) ->
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 5_000}),
     4 = length(Peers),
-    [d] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_blockchain] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     ok.
 
 %%---------------------------------------------------------------------
@@ -412,7 +412,7 @@ full_cascade_under_time_budget(_Cfg) ->
                     Tiers, #{min_peers => 3, timeout_ms => 5_000}),
     T1 = erlang:monotonic_time(millisecond),
     3 = length(Peers),
-    [e] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_operator_paste] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     %% Instantaneous fakes should resolve well under 2 s even under
     %% full fall-through; real-transport bars are exercised by the
     %% network-integrated suite (Part 7 §11 follow-up).
@@ -494,7 +494,7 @@ tier_d_eth_adapter_end_to_end(_Cfg) ->
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 3_000}),
     3 = length(Peers),
-    [d] = lists:usort([maps:get(tier, P) || P <- Peers]),
+    [via_blockchain] = lists:usort([maps:get(strategy, P) || P <- Peers]),
     ok.
 
 eth_log(Contract, Topic, BlockNumHex, PayloadBytes) ->
@@ -521,14 +521,14 @@ eth_abi_bytes(Bin) ->
 register_fake(Name, StaggerMs, ProbeResult) ->
     Forms = [
         {attribute, 1, module, Name},
-        {attribute, 1, behaviour, macula_bootstrap_tier},
+        {attribute, 1, behaviour, macula_bootstrap_peer_discoverer},
         {attribute, 1, export,
-         [{tier, 0}, {stagger_ms, 0}, {probe, 1}]},
-        {function, 1, tier, 0,
+         [{strategy, 0}, {stagger_ms, 0}, {discover, 1}]},
+        {function, 1, strategy, 0,
          [{clause, 1, [], [], [{atom, 1, Name}]}]},
         {function, 1, stagger_ms, 0,
          [{clause, 1, [], [], [{integer, 1, StaggerMs}]}]},
-        {function, 1, probe, 1,
+        {function, 1, discover, 1,
          [{clause, 1, [{var, 1, '_'}], [],
            [erl_parse:abstract(ProbeResult)]}]}
     ],

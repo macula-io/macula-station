@@ -44,7 +44,7 @@ happy_path(#{peers := Peers, handshake := Handshake}) ->
         ExpectedIds = lists:sort([maps:get(pub, P) || P <- Peers]),
         GotIds      = lists:sort([maps:get(node_id, G) || G <- Got]),
         ?assertEqual(ExpectedIds, GotIds),
-        [?assertEqual(b, maps:get(tier, G)) || G <- Got],
+        [?assertEqual(via_mdns, maps:get(strategy, G)) || G <- Got],
         [?assertEqual(macula_bootstrap_tier_b, maps:get(via, G))
          || G <- Got]
     end.
@@ -110,7 +110,7 @@ deduplicates_by_node_id(#{peers := [P1 | _], handshake := Handshake}) ->
 missing_handshake_opt_drops_candidate(#{peers := [P1 | _]}) ->
     fun() ->
         macula_bootstrap_mdns_fake:set_replies([peer_to_reply(P1)]),
-        {ok, Got} = macula_bootstrap_tier_b:probe(
+        {ok, Got} = macula_bootstrap_tier_b:discover(
                       #{udp_transport => macula_bootstrap_mdns_fake,
                         timeout_ms    => 500}),
         ?assertEqual([], Got)
@@ -121,7 +121,7 @@ missing_handshake_opt_drops_candidate(#{peers := [P1 | _]}) ->
 %%==================================================================
 
 probe(Handshake) ->
-    macula_bootstrap_tier_b:probe(
+    macula_bootstrap_tier_b:discover(
       #{udp_transport => macula_bootstrap_mdns_fake,
         handshake_fun => Handshake,
         timeout_ms    => 500}).

@@ -18,7 +18,7 @@
 %% </ol>
 %%
 %% Once a record clears corroboration, every seed in its payload is
-%% emitted as a `macula_bootstrap_tier:verified_peer()' carrying the
+%% emitted as a `macula_bootstrap_peer_discoverer:verified_peer()' carrying the
 %% same signed record as its trust anchor.
 %%
 %% == Probe options ==
@@ -39,15 +39,15 @@
 %%
 %% Tier A runs at zero stagger — it is the cascade's first hop.
 -module(macula_bootstrap_tier_a).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
--export_type([resolver_spec/0, probe_opts/0]).
+-export_type([resolver_spec/0, discover_opts/0]).
 
 -type resolver_spec() :: {module(), macula_bootstrap_resolver:url()}.
 
--type probe_opts() :: #{
+-type discover_opts() :: #{
     resolvers     := [resolver_spec()],
     pubkeys       => [macula_identity:pubkey()],
     corroboration => pos_integer(),
@@ -58,11 +58,11 @@
 -define(DEFAULT_TIMEOUT_MS,    1500).
 -define(STORAGE_DOMAIN_FOUND_SEED, <<"foundation_seed_list">>).
 
-tier()       -> a.
+strategy()   -> via_doh.
 stagger_ms() -> 0.
 
--spec probe(probe_opts()) -> macula_bootstrap_tier:probe_result().
-probe(Opts) ->
+-spec discover(discover_opts()) -> macula_bootstrap_peer_discoverer:discover_result().
+discover(Opts) ->
     Resolvers = maps:get(resolvers,     Opts, []),
     Pubkeys   = maps:get(pubkeys,       Opts, macula_foundation:pubkeys()),
     Threshold = maps:get(corroboration, Opts, ?DEFAULT_CORROBORATION),
@@ -168,7 +168,7 @@ check_storage_key(Pk, Record) ->
 %%------------------------------------------------------------------
 
 peers_from(Record) ->
-    macula_bootstrap_foundation:peers_from_record(Record, a, ?MODULE).
+    macula_bootstrap_foundation:peers_from_record(Record, via_doh, ?MODULE).
 
 %%------------------------------------------------------------------
 %% Time helpers

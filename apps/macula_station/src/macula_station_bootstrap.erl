@@ -53,7 +53,7 @@
 %% @doc Convert a cascade `verified_peer()' into a
 %% `macula_dht_entry:spec()' with sensible defaults for metadata the
 %% cascade does not carry.
--spec to_entry_spec(macula_bootstrap_tier:verified_peer()) ->
+-spec to_entry_spec(macula_bootstrap_peer_discoverer:verified_peer()) ->
           macula_dht_entry:spec().
 to_entry_spec(#{node_id := NodeId} = Peer) ->
     #{
@@ -77,7 +77,7 @@ dht_tier(_)                    -> t0.
 %% a summary of outcomes. Safe to call on an empty peer list
 %% (summary is all-zero).
 -spec ingest(macula_dht:dht(),
-             [macula_bootstrap_tier:verified_peer()]) ->
+             [macula_bootstrap_peer_discoverer:verified_peer()]) ->
           ingest_summary().
 ingest(Dht, Peers) when is_list(Peers) ->
     lists:foldl(fun(P, Acc) -> absorb(observe(Dht, P), Acc) end,

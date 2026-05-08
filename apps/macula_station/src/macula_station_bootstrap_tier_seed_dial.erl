@@ -23,18 +23,18 @@
 %% Tier seed_dial enters the cascade at zero stagger — outbound link
 %% workers are already up by the time the cascade starts.
 -module(macula_station_bootstrap_tier_seed_dial).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
 -define(DEFAULT_WAIT_MS, 3_000).
 
-tier()       -> seed_dial.
+strategy()   -> via_seed_dial.
 stagger_ms() -> 0.
 
--spec probe(macula_bootstrap_tier:probe_opts()) ->
-          macula_bootstrap_tier:probe_result().
-probe(Opts) ->
+-spec discover(macula_bootstrap_peer_discoverer:discover_opts()) ->
+          macula_bootstrap_peer_discoverer:discover_result().
+discover(Opts) ->
     WaitMs = maps:get(wait_ms, Opts, ?DEFAULT_WAIT_MS),
     timer:sleep(WaitMs),
     %% Always returns `{ok, _}'. Empty list is valid: a fresh-fleet
@@ -49,6 +49,6 @@ to_verified_peer(#{node_id := N, host := H, port := P}) ->
         node_id   => N,
         record    => undefined,
         addresses => [#{host => H, port => P, transport => quic}],
-        tier      => seed_dial,
+        strategy  => via_seed_dial,
         via       => ?MODULE
     }.

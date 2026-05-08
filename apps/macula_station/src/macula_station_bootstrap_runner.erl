@@ -28,7 +28,7 @@
 
 -type cfg() :: macula_bootstrap:station_config() | from_app_env.
 
--type result() :: {ok, #{peers   := [macula_bootstrap_tier:verified_peer()],
+-type result() :: {ok, #{peers   := [macula_bootstrap_peer_discoverer:verified_peer()],
                          summary := macula_station_bootstrap:ingest_summary()}}
                 | {error, no_tiers}
                 | {error, {bootstrap_failed, term()}}.

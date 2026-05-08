@@ -33,11 +33,11 @@
 %% hasn't returned in 200 ms, B begins in parallel rather than
 %% blocking on A's timeout.
 -module(macula_bootstrap_tier_b).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
--export_type([handshake_fun/0, probe_opts/0]).
+-export_type([handshake_fun/0, discover_opts/0]).
 
 -type handshake_fun() ::
         fun((SrcAddr :: inet:ip6_address(),
@@ -45,7 +45,7 @@
              ExpectedNodeId :: macula_identity:pubkey()) ->
               {ok, macula_record:record()} | {error, term()}).
 
--type probe_opts() :: #{
+-type discover_opts() :: #{
     udp_transport => module(),
     handshake_fun => handshake_fun(),
     timeout_ms    => pos_integer()
@@ -53,11 +53,11 @@
 
 -define(DEFAULT_TIMEOUT, 2_000).
 
-tier()       -> b.
+strategy()   -> via_mdns.
 stagger_ms() -> 200.
 
--spec probe(probe_opts()) -> macula_bootstrap_tier:probe_result().
-probe(Opts) ->
+-spec discover(discover_opts()) -> macula_bootstrap_peer_discoverer:discover_result().
+discover(Opts) ->
     UdpMod     = maps:get(udp_transport, Opts, macula_bootstrap_mdns_udp),
     Handshake  = maps:get(handshake_fun, Opts, fun not_configured/3),
     Timeout    = maps:get(timeout_ms,    Opts, ?DEFAULT_TIMEOUT),
@@ -118,7 +118,7 @@ to_peer(Record, #{src_addr := Src, port := Port}) ->
         record    => Record,
         addresses => [#{ {text, <<"ip">>}   => {text, ip_to_text(Src)},
                          {text, <<"port">>} => Port }],
-        tier      => b,
+        strategy  => via_mdns,
         via       => ?MODULE
     }.
 

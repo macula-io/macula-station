@@ -51,14 +51,14 @@ doh_end_to_end(#{fk := Fk}) ->
         Resolvers = [{?MODULE, ?URL1},
                      {?MODULE, ?URL2},
                      {?MODULE, ?URL3}],
-        {ok, Peers} = macula_bootstrap_tier_a:probe(
+        {ok, Peers} = macula_bootstrap_tier_a:discover(
                         #{resolvers     => Resolvers,
                           pubkeys       => [Fk],
                           corroboration => 2,
                           timeout_ms    => 1_000}),
         ?assertEqual(4, length(Peers)),
-        ?assert(lists:all(fun(#{tier := T, via := V}) ->
-                                  T =:= a andalso V =:= macula_bootstrap_tier_a
+        ?assert(lists:all(fun(#{strategy := S, via := V}) ->
+                                  S =:= via_doh andalso V =:= macula_bootstrap_tier_a
                           end, Peers))
     end.
 

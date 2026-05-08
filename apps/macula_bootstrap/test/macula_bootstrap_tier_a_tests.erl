@@ -137,8 +137,8 @@ verified_peer_shape(#{fk := Fk, seeds := Seeds, record := Record,
         ok = canned(?URL_B, Fk, {ok, Bytes}),
         {ok, [P | _]} = probe(default_resolvers(), [Fk], 2),
         #{node_id := NodeId, record := PeerRecord,
-          addresses := Addrs, tier := Tier, via := Via} = P,
-        ?assertEqual(a, Tier),
+          addresses := Addrs, strategy := Strategy, via := Via} = P,
+        ?assertEqual(via_doh, Strategy),
         ?assertEqual(macula_bootstrap_tier_a, Via),
         ?assertEqual(Record, PeerRecord),
         ?assert(is_list(Addrs)),
@@ -174,7 +174,7 @@ probe(Resolvers, Pubkeys, Threshold) ->
     probe(Resolvers, Pubkeys, Threshold, 1_000).
 
 probe(Resolvers, Pubkeys, Threshold, TimeoutMs) ->
-    macula_bootstrap_tier_a:probe(
+    macula_bootstrap_tier_a:discover(
       #{resolvers     => Resolvers,
         pubkeys       => Pubkeys,
         corroboration => Threshold,

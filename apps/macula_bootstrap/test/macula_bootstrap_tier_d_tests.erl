@@ -46,7 +46,7 @@ happy_single_chain(#{kp := Kp, fk := Fk}) ->
         macula_bootstrap_chain_fake:set(?BTC, Bytes),
         {ok, Peers} = probe([{?BTC, #{}}]),
         ?assertEqual(4, length(Peers)),
-        [d] = lists:usort([maps:get(tier, P) || P <- Peers])
+        [via_blockchain] = lists:usort([maps:get(strategy, P) || P <- Peers])
     end.
 
 no_chains_configured(_Ctx) ->
@@ -125,7 +125,7 @@ probe(Chains) ->
     probe(Chains, 500).
 
 probe(Chains, TimeoutMs) ->
-    macula_bootstrap_tier_d:probe(
+    macula_bootstrap_tier_d:discover(
       #{chains     => [{macula_bootstrap_chain_fake, ChainOpts#{label => L}}
                         || {L, ChainOpts} <- Chains],
         timeout_ms => TimeoutMs}).

@@ -48,9 +48,10 @@ decode_record_bytes(Bytes) when is_binary(Bytes) ->
 %% @doc Emit one `verified_peer()' per seed carried by an
 %% already-foundation-verified `foundation_seed_list' record.
 %%
-%% The caller stamps `Tier' (one of `a|b|c|d|e' per
-%% `macula_bootstrap_tier:tier()') and `Via' (the probe module name)
-%% so downstream routing-table ingestion can track provenance.
+%% The caller stamps `Strategy' (one of `via_doh | via_mdns |
+%% via_mainline_dht | via_blockchain | via_operator_paste' per
+%% `macula_bootstrap_peer_discoverer:strategy()') and `Via' (the strategy module
+%% name) so downstream routing-table ingestion can track provenance.
 %%
 %% Records of other types (or records whose payload omits `seeds')
 %% yield an empty list rather than crashing — defensive because the
@@ -58,20 +59,23 @@ decode_record_bytes(Bytes) when is_binary(Bytes) ->
 %% but foundation may publish record types we don't know how to
 %% enumerate seeds from.
 -spec peers_from_record(macula_record:record(),
-                        macula_bootstrap_tier:tier(),
+                        macula_bootstrap_peer_discoverer:strategy(),
                         module()) ->
-          [macula_bootstrap_tier:verified_peer()].
-peers_from_record(Record, Tier, Via) ->
+          [macula_bootstrap_peer_discoverer:verified_peer()].
+peers_from_record(Record, Strategy, Via) ->
     Payload = macula_record:payload(Record),
     Seeds   = maps:get({text, <<"seeds">>}, Payload, []),
-    [seed_to_peer(Record, Seed, Tier, Via) || Seed <- Seeds].
+    [seed_to_peer(Record, Seed, Strategy, Via) || Seed <- Seeds].
 
-seed_to_peer(Record, Seed, Tier, Via) ->
+seed_to_peer(Record, Seed, Strategy, Via) ->
     #{
         node_id      => maps:get({text, <<"node_id">>},   Seed),
         record       => Record,
         addresses    => maps:get({text, <<"addresses">>}, Seed, []),
-        tier         => Tier,
+        strategy     => Strategy,
         via          => Via,
+        %% Wire field `tier' on the foundation seed = station-class
+        %% tier (3|4); kept under `gateway_tier' to avoid name clash
+        %% with the discovery `strategy' field.
         gateway_tier => maps:get({text, <<"tier">>}, Seed, undefined)
     }.

@@ -29,27 +29,27 @@
 %% It enters the cascade last so faster tiers (A/B/C) aren't
 %% starved by chain-query latency.
 -module(macula_bootstrap_tier_d).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
--export_type([chain_spec/0, probe_opts/0]).
+-export_type([chain_spec/0, discover_opts/0]).
 
 -type chain_spec() :: {module(),
                        macula_bootstrap_chain_transport:chain_opts()}.
 
--type probe_opts() :: #{
+-type discover_opts() :: #{
     chains     => [chain_spec()],
     timeout_ms => pos_integer()
 }.
 
 -define(DEFAULT_TIMEOUT, 20_000).
 
-tier()       -> d.
+strategy()   -> via_blockchain.
 stagger_ms() -> 2_000.
 
--spec probe(probe_opts()) -> macula_bootstrap_tier:probe_result().
-probe(Opts) ->
+-spec discover(discover_opts()) -> macula_bootstrap_peer_discoverer:discover_result().
+discover(Opts) ->
     Chains  = maps:get(chains,     Opts, []),
     Timeout = maps:get(timeout_ms, Opts, ?DEFAULT_TIMEOUT),
     run(Chains, Timeout).
@@ -97,7 +97,7 @@ fetch_and_verify(Mod, ChainOpts, Timeout) ->
         fun(Record) -> macula_foundation:verify_record(Record) end,
         fun(Record) ->
                 {ok, macula_bootstrap_foundation:peers_from_record(
-                       Record, d, ?MODULE)}
+                       Record, via_blockchain, ?MODULE)}
         end
     ]).
 

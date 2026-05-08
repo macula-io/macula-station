@@ -38,13 +38,13 @@
 %% station gets `{error, no_transport}' rather than pretending to
 %% bootstrap without a DHT client.
 -module(macula_bootstrap_tier_c).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
--export_type([probe_opts/0]).
+-export_type([discover_opts/0]).
 
--type probe_opts() :: #{
+-type discover_opts() :: #{
     dht_transport := module(),
     pubkeys       => [macula_identity:pubkey()],
     timeout_ms    => pos_integer()
@@ -52,11 +52,11 @@
 
 -define(DEFAULT_TIMEOUT, 10_000).
 
-tier()       -> c.
+strategy()   -> via_mainline_dht.
 stagger_ms() -> 500.
 
--spec probe(probe_opts()) -> macula_bootstrap_tier:probe_result().
-probe(Opts) ->
+-spec discover(discover_opts()) -> macula_bootstrap_peer_discoverer:discover_result().
+discover(Opts) ->
     DhtMod  = maps:get(dht_transport, Opts, undefined),
     Pubkeys = maps:get(pubkeys,       Opts, macula_foundation:pubkeys()),
     Timeout = maps:get(timeout_ms,    Opts, ?DEFAULT_TIMEOUT),
@@ -110,7 +110,7 @@ fetch_and_verify(Mod, Pubkey, Timeout) ->
         fun(Record) -> macula_foundation:verify_record(Record) end,
         fun(Record) ->
                 {ok, macula_bootstrap_foundation:peers_from_record(
-                       Record, c, ?MODULE)}
+                       Record, via_mainline_dht, ?MODULE)}
         end
     ]).
 

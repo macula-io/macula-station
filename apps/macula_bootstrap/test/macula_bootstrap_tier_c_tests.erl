@@ -44,20 +44,20 @@ happy_path(#{kp := Kp, fk := Fk}) ->
         publish_seed_list(Kp, Fk, 4),
         {ok, Peers} = probe([Fk]),
         ?assertEqual(4, length(Peers)),
-        [c] = lists:usort([maps:get(tier, P) || P <- Peers])
+        [via_mainline_dht] = lists:usort([maps:get(strategy, P) || P <- Peers])
     end.
 
 no_transport(#{fk := Fk}) ->
     fun() ->
         ?assertEqual({error, no_transport},
-                     macula_bootstrap_tier_c:probe(
+                     macula_bootstrap_tier_c:discover(
                        #{pubkeys => [Fk], timeout_ms => 500}))
     end.
 
 no_pubkeys(_Ctx) ->
     fun() ->
         ?assertEqual({error, no_pubkeys},
-                     macula_bootstrap_tier_c:probe(
+                     macula_bootstrap_tier_c:discover(
                        #{dht_transport => macula_bootstrap_dht_fake,
                          pubkeys       => [],
                          timeout_ms    => 500}))
@@ -155,7 +155,7 @@ first_successful_pubkey_wins(#{kp := Kp, fk := Fk}) ->
 %%==================================================================
 
 probe(Pubkeys) ->
-    macula_bootstrap_tier_c:probe(
+    macula_bootstrap_tier_c:discover(
       #{dht_transport => macula_bootstrap_dht_fake,
         pubkeys       => Pubkeys,
         timeout_ms    => 500}).

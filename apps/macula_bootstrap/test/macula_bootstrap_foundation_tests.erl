@@ -40,12 +40,12 @@ decode_truthfully_returns_record_errors_test() ->
 %% peers_from_record
 %%==================================================================
 
-peers_from_seed_list_stamps_tier_and_via_test() ->
+peers_from_seed_list_stamps_strategy_and_via_test() ->
     Record = sample_record(),
     Peers  = macula_bootstrap_foundation:peers_from_record(
-               Record, c, macula_bootstrap_tier_c),
+               Record, via_mainline_dht, macula_bootstrap_tier_c),
     ?assert(length(Peers) > 0),
-    [?assertEqual(c, maps:get(tier, P)) || P <- Peers],
+    [?assertEqual(via_mainline_dht, maps:get(strategy, P)) || P <- Peers],
     [?assertEqual(macula_bootstrap_tier_c, maps:get(via, P)) || P <- Peers],
     [?assertEqual(Record, maps:get(record, P)) || P <- Peers].
 
@@ -56,7 +56,7 @@ peers_from_record_preserves_seed_node_ids_test() ->
     Record = macula_record:sign(
                macula_record:foundation_seed_list(Fk, Seeds), Kp),
     Peers = macula_bootstrap_foundation:peers_from_record(
-              Record, a, macula_bootstrap_tier_a),
+              Record, via_doh, macula_bootstrap_tier_a),
     Expected = lists:sort([maps:get(node_id, S) || S <- Seeds]),
     Got      = lists:sort([maps:get(node_id, P) || P <- Peers]),
     ?assertEqual(Expected, Got).

@@ -1,7 +1,7 @@
 %% @doc Hecate Bootstrap — five-tier cascade orchestrator.
 %%
 %% Facade for the Phase 6 bootstrap cascade. Accepts an ordered list
-%% of tier probe modules (implementing `macula_bootstrap_tier') and
+%% of strategy modules (implementing `macula_bootstrap_peer_discoverer') and
 %% cascade options, runs probes in parallel with staggered starts
 %% per Part 5 §3, and returns the first tier's verified peers that
 %% reach the `min_peers' threshold.
@@ -15,7 +15,7 @@
 %% {ok, Peers} = macula_bootstrap:cascade(Tiers, #{min_peers => 3}).
 %% '''
 %%
-%% Peers are `macula_bootstrap_tier:verified_peer()' maps — signature
+%% Peers are `macula_bootstrap_peer_discoverer:verified_peer()' maps — signature
 %% and expiry have already been checked by the yielding tier. The
 %% caller feeds them into the DHT routing table (`macula_dht:observe/2')
 %% and subsequent discovery walks from there.
@@ -30,7 +30,7 @@
 -export_type([tier_spec/0, cascade_opts/0, cascade_result/0,
               station_config/0, run_error/0]).
 
--type tier_spec() :: {module(), macula_bootstrap_tier:probe_opts()}.
+-type tier_spec() :: {module(), macula_bootstrap_peer_discoverer:discover_opts()}.
 
 -type cascade_opts() :: #{
     %% `0' is a valid value: the seed_dial tier may yield an empty
@@ -42,7 +42,7 @@
 }.
 
 -type cascade_result() ::
-        {ok, [macula_bootstrap_tier:verified_peer()]}
+        {ok, [macula_bootstrap_peer_discoverer:verified_peer()]}
       | {error, cascade_failed | timeout}.
 
 %% Config shape consumed by `run/0,1'. The same shape lives behind
@@ -61,7 +61,7 @@
 %% options from `application:get_env(macula_bootstrap, _)' and runs
 %% the cascade. Intended to be called once during station boot;
 %% returned peers feed `macula_dht:observe/2'.
--spec run() -> {ok, [macula_bootstrap_tier:verified_peer()]}
+-spec run() -> {ok, [macula_bootstrap_peer_discoverer:verified_peer()]}
              | {error, run_error()}.
 run() ->
     run(#{
@@ -74,7 +74,7 @@ run() ->
 %% the station builds its config at runtime (different per-realm) or
 %% when tests supply deterministic tier lists.
 -spec run(station_config() | map()) ->
-          {ok, [macula_bootstrap_tier:verified_peer()]}
+          {ok, [macula_bootstrap_peer_discoverer:verified_peer()]}
         | {error, run_error()}.
 run(#{tiers := []}) ->
     {error, no_tiers};
@@ -124,7 +124,7 @@ probe_worker(Parent, Mod, ProbeOpts, Stagger) ->
         0 -> ok;
         N -> timer:sleep(N)
     end,
-    Parent ! {probe_result, self(), Mod:probe(ProbeOpts)}.
+    Parent ! {probe_result, self(), Mod:discover(ProbeOpts)}.
 
 %%------------------------------------------------------------------
 %% Result collection

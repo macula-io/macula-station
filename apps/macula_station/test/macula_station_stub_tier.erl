@@ -1,9 +1,9 @@
-%% @doc Deterministic bootstrap tier stub for integration tests.
+%% @doc Deterministic peer-discovery stub for integration tests.
 %%
-%% Implements `macula_bootstrap_tier' so `macula_bootstrap:run/0,1'
-%% can drive it. The probe returns the peers stashed in the tier
-%% options map, letting tests feed exact verified_peer() records
-%% into the cascade without network I/O.
+%% Implements `macula_bootstrap_peer_discoverer' so `macula_bootstrap:run/0,1'
+%% can drive it. `discover/1' returns the peers stashed in the
+%% strategy's options map, letting tests feed exact verified_peer()
+%% records into the cascade without network I/O.
 %%
 %% Usage:
 %% ```
@@ -13,17 +13,17 @@
 %%                                    cascade_opts => #{min_peers => 1}}).
 %% '''
 -module(macula_station_stub_tier).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 -export([stub_peer/1, stub_peers/1]).
 
-tier() -> a.
+strategy()   -> via_doh.
 stagger_ms() -> 0.
 
-probe(#{peers := Peers}) -> {ok, Peers};
-probe(#{error := Err})   -> {error, Err};
-probe(_)                 -> {ok, []}.
+discover(#{peers := Peers}) -> {ok, Peers};
+discover(#{error := Err})   -> {error, Err};
+discover(_)                 -> {ok, []}.
 
 %%==================================================================
 %% Peer constructors — convenience for tests.
@@ -34,7 +34,7 @@ stub_peer(NodeId) when is_binary(NodeId), byte_size(NodeId) =:= 32 ->
         node_id   => NodeId,
         record    => fake_record(NodeId),
         addresses => [],
-        tier      => a,
+        strategy  => via_doh,
         via       => ?MODULE
     }.
 

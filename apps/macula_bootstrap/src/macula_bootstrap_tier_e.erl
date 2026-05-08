@@ -17,15 +17,15 @@
 %%
 %% Reference: plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md §8.
 -module(macula_bootstrap_tier_e).
--behaviour(macula_bootstrap_tier).
+-behaviour(macula_bootstrap_peer_discoverer).
 
--export([tier/0, stagger_ms/0, probe/1]).
+-export([strategy/0, stagger_ms/0, discover/1]).
 
-tier() -> e.
+strategy() -> via_operator_paste.
 
 stagger_ms() -> 0.
 
-probe(Opts) ->
+discover(Opts) ->
     collect(maps:get(peer_urls, Opts, [])).
 
 collect([])   -> {error, no_urls};
@@ -41,7 +41,7 @@ accumulate({ok, Record, Addrs}, Rest, Acc) ->
         node_id   => macula_record:key(Record),
         record    => Record,
         addresses => Addrs,
-        tier      => e,
+        strategy  => via_operator_paste,
         via       => ?MODULE
     },
     collect(Rest, [Peer | Acc]);
