@@ -130,6 +130,20 @@
     %% `{close, replaced_by_newer_handshake}' and the entry is
     %% replaced. Cleared from this map on DOWN.
     peers       :: #{macula_identity:pubkey() => {reference(), pid()}},
+    %% Conn → Worker pid for stray-event forwarding. macula_peering's
+    %% accept path spawns the worker first then transfers QUIC
+    %% ownership. Between `{quic, new_conn, Conn, _}' arriving here
+    %% and `controlling_process(Conn, WorkerPid)' completing, any
+    %% subsequent `{quic, new_stream, _, #{conn => Conn}}' message
+    %% the QUIC NIF dispatches lands in OUR mailbox (the listener
+    %% still owned the conn at dispatch time). The pre-fix
+    %% `handle_info(_, S)' wildcard dropped them silently and the
+    %% worker waited forever for a stream — verified live across
+    %% the fleet (every station accumulated tens of stuck workers,
+    %% all with `peer_node_id = undefined' and `buf_size = 0').
+    %% Forwarding the stray frames to the right worker closes the
+    %% race without changing the SDK's accept signature.
+    conn_to_worker = #{} :: #{macula_transport:connection() => pid()},
     rejected    :: non_neg_integer()
 }).
 
@@ -170,14 +184,15 @@ on_listen({ok, Listener}, Opts) ->
     ok = macula_transport:accept(Listener),
     Cap = application:get_env(macula_station, peering_cap_per_identity,
                               ?DEFAULT_PEERING_CAP),
-    {ok, #state{listener    = Listener,
-                listen_addr = derive_addr(Opts),
-                opts        = Opts,
-                cap         = Cap,
-                handshaking = #{},
-                connected   = #{},
-                peers       = #{},
-                rejected    = 0}};
+    {ok, #state{listener       = Listener,
+                listen_addr    = derive_addr(Opts),
+                opts           = Opts,
+                cap            = Cap,
+                handshaking    = #{},
+                connected      = #{},
+                peers          = #{},
+                conn_to_worker = #{},
+                rejected       = 0}};
 on_listen({error, Reason}, _Opts) ->
     {stop, {listen_failed, Reason}}.
 
@@ -202,10 +217,28 @@ handle_info({quic, new_conn, Conn, _Info}, S) ->
     on_new_conn(Conn, over_capacity(S), S);
 handle_info({macula_peering, handshake_complete, WorkerPid, PeerNodeId}, S) ->
     {noreply, on_handshake_complete(WorkerPid, PeerNodeId, S)};
-handle_info({'DOWN', Ref, process, _Pid, _Reason}, S) ->
-    {noreply, drop_ref(Ref, S)};
+handle_info({'DOWN', Ref, process, Pid, _Reason}, S) ->
+    {noreply, drop_ref(Ref, Pid, S)};
+%% Stray QUIC events for an accepted conn that the listener still
+%% briefly owned at dispatch time. Forward to the worker the SDK
+%% spawned for this Conn. Without this clause the wildcard below
+%% silently dropped them and the worker waited the full
+%% handshake_timeout (30s) for a stream that already arrived.
+handle_info({quic, new_stream, _Stream, #{conn := Conn}} = Msg,
+            #state{conn_to_worker = M} = S) ->
+    forward_stray_quic(maps:find(Conn, M), Msg),
+    {noreply, S};
+handle_info({quic, closed, Conn, _Detail} = Msg,
+            #state{conn_to_worker = M} = S) ->
+    forward_stray_quic(maps:find(Conn, M), Msg),
+    {noreply, S#state{conn_to_worker = maps:remove(Conn, M)}};
 handle_info(_Msg, S) ->
     {noreply, S}.
+
+forward_stray_quic({ok, Pid}, Msg) when is_pid(Pid) ->
+    Pid ! Msg, ok;
+forward_stray_quic(_, _Msg) ->
+    ok.
 
 terminate(_Reason, #state{listener = L}) ->
     _ = catch macula_transport:close_listener(L),
@@ -305,24 +338,29 @@ on_new_conn(Conn, true, #state{listener = L, listen_addr = Addr,
 on_new_conn(Conn, false, S) ->
     {noreply, accept_conn(Conn, S)}.
 
-accept_conn(Conn, #state{opts = Opts, listener = L, handshaking = HS} = S) ->
-    NewHS = on_peering_accept(macula_peering:accept(Conn, peering_opts(Opts)),
-                              HS),
+accept_conn(Conn, #state{opts = Opts, listener = L, handshaking = HS,
+                          conn_to_worker = CW} = S) ->
+    {NewHS, NewCW} = on_peering_accept(
+                       macula_peering:accept(Conn, peering_opts(Opts)),
+                       Conn, HS, CW),
     %% Re-arm the listener for the next inbound connection. Ignoring
     %% the result is safe: on a broken listener we would receive no
     %% further `new_conn' messages; supervisor restart re-binds.
     _ = macula_transport:accept(L),
-    S#state{handshaking = NewHS}.
+    S#state{handshaking = NewHS, conn_to_worker = NewCW}.
 
 %% Monitor the spawned peering worker so we can clean up when it dies
 %% (handshake fail, GOODBYE drain, peer close, or caller-initiated stop).
 %% The monitor ref doubles as the map key. New workers always start in
 %% `handshaking'; on `handshake_complete' they migrate to `connected'.
-on_peering_accept({ok, WorkerPid}, HS) when is_pid(WorkerPid) ->
+%% Also stamp Conn → WorkerPid so any stray QUIC events that landed in
+%% our mailbox before `controlling_process' transferred ownership get
+%% forwarded to the right worker.
+on_peering_accept({ok, WorkerPid}, Conn, HS, CW) when is_pid(WorkerPid) ->
     Ref = erlang:monitor(process, WorkerPid),
-    HS#{Ref => WorkerPid};
-on_peering_accept({error, _}, HS) ->
-    HS.
+    {HS#{Ref => WorkerPid}, CW#{Conn => WorkerPid}};
+on_peering_accept({error, _}, _Conn, HS, CW) ->
+    {HS, CW}.
 
 %% Worker emitted `{macula_peering, handshake_complete, ConnPid,
 %% PeerNodeId}' — move it from `handshaking' to `connected' and
@@ -383,14 +421,21 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
 %% any `peers' entry whose monitor ref matches — covers both the
 %% normal case (worker exited after replacement) and the race where
 %% the DOWN arrives before `handshake_complete' wrote a fresh entry.
-drop_ref(Ref, #state{handshaking = HS, connected = C, peers = P} = S0) ->
+%% Also scrub any `conn_to_worker' entries pointing at this Pid so
+%% the stray-event forwarder doesn't relay to a dead worker.
+drop_ref(Ref, Pid, #state{handshaking = HS, connected = C, peers = P,
+                          conn_to_worker = CW} = S0) ->
     S = drop_ref_in(maps:is_key(Ref, HS), Ref, HS, C, S0),
-    S#state{peers = drop_peer_by_ref(Ref, P)}.
+    S#state{peers = drop_peer_by_ref(Ref, P),
+            conn_to_worker = drop_conns_for_pid(Pid, CW)}.
 
 drop_ref_in(true, Ref, HS, _C, S) ->
     S#state{handshaking = maps:remove(Ref, HS)};
 drop_ref_in(false, Ref, _HS, C, S) ->
     S#state{connected = maps:remove(Ref, C)}.
+
+drop_conns_for_pid(Pid, CW) ->
+    maps:filter(fun(_Conn, P) -> P =/= Pid end, CW).
 
 %% Remove only the entry whose monitor ref matches. A peer that has
 %% already been replaced by a newer worker has a different ref under
