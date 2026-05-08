@@ -88,7 +88,7 @@ apply_bootstrap_env(#station_cfg{discoverers = [],
 apply_bootstrap_env(#station_cfg{discoverers = [],
                                  outbound_peers = [_ | _]}) ->
     application:set_env(macula_bootstrap, discoverers,
-                        [{macula_station_bootstrap_tier_seed_dial,
+                        [{macula_station_via_seed_dial,
                           #{wait_ms => 3_000}}]),
     %% min_peers => 0 so the cascade accepts an empty via_seed_dial
     %% result. First-boot stations whose siblings aren't up yet need

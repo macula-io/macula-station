@@ -22,7 +22,7 @@
 %%
 %% Tier seed_dial enters the cascade at zero stagger — outbound link
 %% workers are already up by the time the cascade starts.
--module(macula_station_bootstrap_tier_seed_dial).
+-module(macula_station_via_seed_dial).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).

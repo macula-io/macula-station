@@ -1,7 +1,7 @@
--module(macula_station_bootstrap_tier_seed_dial_tests).
+-module(macula_station_via_seed_dial_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--define(TIER, macula_station_bootstrap_tier_seed_dial).
+-define(TIER, macula_station_via_seed_dial).
 
 %%==================================================================
 %% Probe surface

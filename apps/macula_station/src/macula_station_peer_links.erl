@@ -8,7 +8,7 @@
 %%
 %% Cross-relay fabric modules (`bloom_exchange', `peering_router',
 %% `relay_ping') and the `seed_dial' bootstrap tier
-%% (`macula_station_bootstrap_tier_seed_dial') query the registry for
+%% (`macula_station_via_seed_dial') query the registry for
 %% the list of live peers.
 %%
 %% == Registration lifecycle ==
@@ -109,7 +109,7 @@ connected_hostnames() ->
     [Host || #{host := Host} <- verified_peers()].
 
 %% @doc Snapshot of links that have completed the CONNECT/HELLO
-%% handshake. Used by `macula_station_bootstrap_tier_seed_dial' to
+%% handshake. Used by `macula_station_via_seed_dial' to
 %% feed the cascade with peers learnt from outbound dials.
 -spec verified_peers() -> [verified_peer()].
 verified_peers() ->
