@@ -489,8 +489,22 @@ on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId) ->
 on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid) ->
     ok;
 on_advertise_match(true, R, Realm, Proc, Adv, ConnPid) ->
-    macula_remote_advertise_registry:register(
-      R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}).
+    %% First-write-wins — a direct daemon ADVERTISE registers for
+    %% real; subsequent gossip echoes from peer stations (the same
+    %% (Realm, Proc) bouncing around the partial mesh via
+    %% peering_router's timer-based propagation) hit the existing
+    %% entry and skip. Without this guard a gossip echo would
+    %% overwrite the direct entry's daemon conn_pid with a peer-
+    %% station conn_pid, and CALL forwarding would bounce around
+    %% the mesh until the deadline expired instead of hitting the
+    %% real handler.
+    case macula_remote_advertise_registry:lookup(R, Realm, Proc) of
+        {ok, _Existing} ->
+            ok;
+        {error, not_found} ->
+            macula_remote_advertise_registry:register(
+              R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid})
+    end.
 
 on_unadvertise_match(false, _R, _Realm, _Proc) ->
     ok;
