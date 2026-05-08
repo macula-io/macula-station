@@ -1,4 +1,4 @@
--module(macula_bootstrap_tier_c_tests).
+-module(macula_bootstrap_via_mainline_dht_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%==================================================================
@@ -24,7 +24,7 @@ tier_c_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    macula_bootstrap_dht_fake:init(),
+    macula_bootstrap_via_mainline_dht_fake:init(),
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
@@ -32,7 +32,7 @@ setup() ->
 
 cleanup(_Ctx) ->
     application:unset_env(macula_record, foundation_pubkeys),
-    macula_bootstrap_dht_fake:reset(),
+    macula_bootstrap_via_mainline_dht_fake:reset(),
     ok.
 
 %%==================================================================
@@ -50,15 +50,15 @@ happy_path(#{kp := Kp, fk := Fk}) ->
 no_transport(#{fk := Fk}) ->
     fun() ->
         ?assertEqual({error, no_transport},
-                     macula_bootstrap_tier_c:discover(
+                     macula_bootstrap_via_mainline_dht:discover(
                        #{pubkeys => [Fk], timeout_ms => 500}))
     end.
 
 no_pubkeys(_Ctx) ->
     fun() ->
         ?assertEqual({error, no_pubkeys},
-                     macula_bootstrap_tier_c:discover(
-                       #{dht_transport => macula_bootstrap_dht_fake,
+                     macula_bootstrap_via_mainline_dht:discover(
+                       #{dht_transport => macula_bootstrap_via_mainline_dht_fake,
                          pubkeys       => [],
                          timeout_ms    => 500}))
     end.
@@ -72,9 +72,9 @@ wrong_pubkey_in_dht_item(#{kp := Kp, fk := Fk}) ->
                    macula_record:foundation_seed_list(Fk, sample_seeds(2)),
                    Kp),
         DnsPacket = pkarr_dns(macula_record:encode(Record)),
-        Item = macula_bootstrap_bep44:sign(1, DnsPacket, OtherKp),
-        macula_bootstrap_dht_fake:set(
-          macula_bootstrap_bep44:target_id(Fk), Item),
+        Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, DnsPacket, OtherKp),
+        macula_bootstrap_via_mainline_dht_fake:set(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
@@ -84,35 +84,35 @@ bad_bep44_signature(#{kp := Kp, fk := Fk}) ->
                    macula_record:foundation_seed_list(Fk, sample_seeds(2)),
                    Kp),
         DnsPacket = pkarr_dns(macula_record:encode(Record)),
-        GoodItem = macula_bootstrap_bep44:sign(1, DnsPacket, Kp),
+        GoodItem = macula_bootstrap_via_mainline_dht_bep44:sign(1, DnsPacket, Kp),
         %% Tamper with the value AFTER signing.
         BadItem = GoodItem#{value := <<DnsPacket/binary, "garbage">>},
-        macula_bootstrap_dht_fake:set(
-          macula_bootstrap_bep44:target_id(Fk), BadItem),
+        macula_bootstrap_via_mainline_dht_fake:set(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), BadItem),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
 bad_pkarr_dns_packet(#{kp := Kp, fk := Fk}) ->
     fun() ->
-        Item = macula_bootstrap_bep44:sign(1, <<"not a dns packet">>, Kp),
-        macula_bootstrap_dht_fake:set(
-          macula_bootstrap_bep44:target_id(Fk), Item),
+        Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, <<"not a dns packet">>, Kp),
+        macula_bootstrap_via_mainline_dht_fake:set(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
 pkarr_with_no_txt(#{kp := Kp, fk := Fk}) ->
     fun() ->
         EmptyPkarr = build_dns_packet([]),
-        Item = macula_bootstrap_bep44:sign(1, EmptyPkarr, Kp),
-        macula_bootstrap_dht_fake:set(
-          macula_bootstrap_bep44:target_id(Fk), Item),
+        Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, EmptyPkarr, Kp),
+        macula_bootstrap_via_mainline_dht_fake:set(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
 dht_get_mutable_failure_falls_through(#{fk := Fk}) ->
     fun() ->
-        macula_bootstrap_dht_fake:fail(
-          macula_bootstrap_bep44:target_id(Fk), dht_unreachable),
+        macula_bootstrap_via_mainline_dht_fake:fail(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), dht_unreachable),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
@@ -126,12 +126,12 @@ record_not_signed_by_foundation(#{fk := Fk}) ->
                    macula_record:foundation_seed_list(
                      ImpPub, sample_seeds(2)), ImpKp),
         DnsPacket = pkarr_dns(macula_record:encode(Record)),
-        Item = macula_bootstrap_bep44:sign(1, DnsPacket, ImpKp),
+        Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, DnsPacket, ImpKp),
         %% Target at Fk but item pubkey is ImpPub — wrong_pubkey path.
         %% Test that even if we aligned the item (substitute Fk as
         %% the mutable-item pubkey), inner record is rejected.
-        macula_bootstrap_dht_fake:set(
-          macula_bootstrap_bep44:target_id(Fk), Item),
+        macula_bootstrap_via_mainline_dht_fake:set(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item),
         ?assertEqual({error, all_failed}, probe([Fk]))
     end.
 
@@ -144,8 +144,8 @@ first_successful_pubkey_wins(#{kp := Kp, fk := Fk}) ->
         application:set_env(macula_record, foundation_pubkeys,
                             [OtherFk, Fk]),
         publish_seed_list(Kp, Fk, 3),
-        macula_bootstrap_dht_fake:fail(
-          macula_bootstrap_bep44:target_id(OtherFk), no_item),
+        macula_bootstrap_via_mainline_dht_fake:fail(
+          macula_bootstrap_via_mainline_dht_bep44:target_id(OtherFk), no_item),
         {ok, Peers} = probe([OtherFk, Fk]),
         ?assertEqual(3, length(Peers))
     end.
@@ -155,8 +155,8 @@ first_successful_pubkey_wins(#{kp := Kp, fk := Fk}) ->
 %%==================================================================
 
 probe(Pubkeys) ->
-    macula_bootstrap_tier_c:discover(
-      #{dht_transport => macula_bootstrap_dht_fake,
+    macula_bootstrap_via_mainline_dht:discover(
+      #{dht_transport => macula_bootstrap_via_mainline_dht_fake,
         pubkeys       => Pubkeys,
         timeout_ms    => 500}).
 
@@ -169,9 +169,9 @@ publish_seed_list(Kp, Fk, N) ->
                macula_record:foundation_seed_list(Fk, sample_seeds(N)),
                Kp),
     DnsPacket = pkarr_dns(macula_record:encode(Record)),
-    Item = macula_bootstrap_bep44:sign(1, DnsPacket, Kp),
-    macula_bootstrap_dht_fake:set(
-      macula_bootstrap_bep44:target_id(Fk), Item).
+    Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, DnsPacket, Kp),
+    macula_bootstrap_via_mainline_dht_fake:set(
+      macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item).
 
 pkarr_dns(RecordBytes) ->
     %% Split the record bytes across 200-byte TXT character-strings.

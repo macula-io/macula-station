@@ -4,7 +4,7 @@
 %% the wire format of every BitTorrent DHT RPC; BEP 44's signature
 %% layer also signs over a bencoded tuple. The codec is pure,
 %% deterministic, and has no dependency on the DHT transport — it is
-%% consumed by `macula_bootstrap_bep44' and any test harness that
+%% consumed by `macula_bootstrap_via_mainline_dht_bep44' and any test harness that
 %% needs to build or inspect BT-DHT packets.
 %%
 %% == Type mapping ==
@@ -18,7 +18,7 @@
 %%
 %% Decode produces the same mapping; dictionaries come back as maps
 %% with binary keys.
--module(macula_bootstrap_bencode).
+-module(macula_bootstrap_via_mainline_dht_bencode).
 
 -export([encode/1, decode/1]).
 

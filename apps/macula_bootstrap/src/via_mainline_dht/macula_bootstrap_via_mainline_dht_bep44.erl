@@ -33,7 +33,7 @@
 %% target = SHA-1(pubkey)              (no salt)
 %% target = SHA-1(pubkey || salt)      (with salt)
 %% '''
--module(macula_bootstrap_bep44).
+-module(macula_bootstrap_via_mainline_dht_bep44).
 
 -export([target_id/1, target_id/2,
          signed_payload/2, signed_payload/3,

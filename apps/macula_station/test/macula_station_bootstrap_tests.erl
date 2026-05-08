@@ -27,7 +27,7 @@ spec_gateway_tier_3_maps_to_t3_test() ->
     ?assertEqual(t3, maps:get(tier, Spec)).
 
 spec_gateway_tier_4_maps_to_t3_test() ->
-    Peer = (peer(<<4:256>>, via_mainline_dht, macula_bootstrap_tier_c))#{gateway_tier => 4},
+    Peer = (peer(<<4:256>>, via_mainline_dht, macula_bootstrap_via_mainline_dht))#{gateway_tier => 4},
     Spec = macula_station_bootstrap:to_entry_spec(Peer),
     ?assertEqual(t3, maps:get(tier, Spec)).
 
@@ -117,7 +117,7 @@ ingest_preserves_count_across_cascade_tiers_test_() ->
          fun() ->
              Peers = [peer(rand_id(), via_doh, macula_bootstrap_via_doh),
                       peer(rand_id(), via_mdns, macula_bootstrap_via_mdns),
-                      peer(rand_id(), via_mainline_dht, macula_bootstrap_tier_c),
+                      peer(rand_id(), via_mainline_dht, macula_bootstrap_via_mainline_dht),
                       peer(rand_id(), via_blockchain, macula_bootstrap_tier_d),
                       peer(rand_id(), via_operator_paste, macula_bootstrap_via_operator_paste)],
              Summary = macula_station_bootstrap:ingest(Dht, Peers),

@@ -1,9 +1,9 @@
-%% @doc In-memory `macula_bootstrap_dht_transport' for tests.
+%% @doc In-memory `macula_bootstrap_via_mainline_dht_transport' for tests.
 %%
 %% Canned results keyed by target id. Tests install an item via
 %% `set/2'; tier_c looks it up via the behaviour callback.
--module(macula_bootstrap_dht_fake).
--behaviour(macula_bootstrap_dht_transport).
+-module(macula_bootstrap_via_mainline_dht_fake).
+-behaviour(macula_bootstrap_via_mainline_dht_transport).
 
 -export([init/0, reset/0, set/2, fail/2, get_mutable/2]).
 

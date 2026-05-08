@@ -54,7 +54,7 @@ init_per_testcase(_Case, Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     macula_bootstrap_via_doh_fake:init(),
     macula_bootstrap_via_mdns_fake:init(),
-    macula_bootstrap_dht_fake:init(),
+    macula_bootstrap_via_mainline_dht_fake:init(),
     macula_bootstrap_chain_fake:init(),
     macula_bootstrap_http_fake:init(),
     Cfg.
@@ -63,7 +63,7 @@ end_per_testcase(_Case, _Cfg) ->
     application:unset_env(macula_record, foundation_pubkeys),
     macula_bootstrap_via_doh_fake:reset(),
     macula_bootstrap_via_mdns_fake:reset(),
-    macula_bootstrap_dht_fake:reset(),
+    macula_bootstrap_via_mainline_dht_fake:reset(),
     macula_bootstrap_chain_fake:reset(),
     macula_bootstrap_http_fake:reset(),
     ok.
@@ -305,9 +305,9 @@ tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
                macula_record:foundation_seed_list(
                  Fk, tier_c_seeds(5)), Kp),
     DnsPacket = tier_c_pkarr_dns(macula_record:encode(Record)),
-    Item = macula_bootstrap_bep44:sign(1, DnsPacket, Kp),
-    macula_bootstrap_dht_fake:set(
-      macula_bootstrap_bep44:target_id(Fk), Item),
+    Item = macula_bootstrap_via_mainline_dht_bep44:sign(1, DnsPacket, Kp),
+    macula_bootstrap_via_mainline_dht_fake:set(
+      macula_bootstrap_via_mainline_dht_bep44:target_id(Fk), Item),
     Tiers = [
         {macula_bootstrap_via_doh,
          #{resolvers => [], pubkeys => [Fk],
@@ -315,8 +315,8 @@ tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
         {macula_bootstrap_via_mdns,
          #{udp_transport => macula_bootstrap_via_mdns_fake,
            timeout_ms    => 500}},
-        {macula_bootstrap_tier_c,
-         #{dht_transport => macula_bootstrap_dht_fake,
+        {macula_bootstrap_via_mainline_dht,
+         #{dht_transport => macula_bootstrap_via_mainline_dht_fake,
            pubkeys       => [Fk],
            timeout_ms    => 500}}
     ],
@@ -428,8 +428,8 @@ full_cascade_tiers(Fk, Opts) ->
     TierDChains  = maps:get(tier_d_chains,  Opts, []),
     TierEUrls    = maps:get(tier_e_urls,    Opts, []),
     DhtTransport = case TierCWorking of
-                       true  -> macula_bootstrap_dht_fake;
-                       false -> macula_bootstrap_dht_fake
+                       true  -> macula_bootstrap_via_mainline_dht_fake;
+                       false -> macula_bootstrap_via_mainline_dht_fake
                    end,
     [
         {macula_bootstrap_via_doh,
@@ -438,7 +438,7 @@ full_cascade_tiers(Fk, Opts) ->
         {macula_bootstrap_via_mdns,
          #{udp_transport => macula_bootstrap_via_mdns_fake,
            timeout_ms    => 200}},
-        {macula_bootstrap_tier_c,
+        {macula_bootstrap_via_mainline_dht,
          #{dht_transport => DhtTransport,
            pubkeys       => [Fk],
            timeout_ms    => 200}},

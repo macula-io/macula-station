@@ -11,11 +11,11 @@
 %%
 %% For each `FoundationPubkey':
 %% <ol>
-%%   <li>`macula_bootstrap_bep44:target_id/1' — derive SHA-1 target.</li>
+%%   <li>`macula_bootstrap_via_mainline_dht_bep44:target_id/1' — derive SHA-1 target.</li>
 %%   <li>`DhtMod:get_mutable/2' — fetch signed item (may block up to
 %%       `timeout_ms').</li>
 %%   <li>Item pubkey must match the one we asked about.</li>
-%%   <li>`macula_bootstrap_bep44:verify/1' — Ed25519 over BEP 44
+%%   <li>`macula_bootstrap_via_mainline_dht_bep44:verify/1' — Ed25519 over BEP 44
 %%       payload shape.</li>
 %%   <li>Item's `value' is a DNS packet; concat every TXT
 %%       character-string into a binary.</li>
@@ -34,10 +34,10 @@
 %% == Transport ==
 %%
 %% Takes a `dht_transport' module implementing
-%% `macula_bootstrap_dht_transport'. No default: a misconfigured
+%% `macula_bootstrap_via_mainline_dht_transport'. No default: a misconfigured
 %% station gets `{error, no_transport}' rather than pretending to
 %% bootstrap without a DHT client.
--module(macula_bootstrap_tier_c).
+-module(macula_bootstrap_via_mainline_dht).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).
@@ -100,7 +100,7 @@ collect(N, Tag, Deadline) ->
 %%------------------------------------------------------------------
 
 fetch_and_verify(Mod, Pubkey, Timeout) ->
-    Target = macula_bootstrap_bep44:target_id(Pubkey),
+    Target = macula_bootstrap_via_mainline_dht_bep44:target_id(Pubkey),
     chain([
         fun() -> Mod:get_mutable(Target, Timeout) end,
         fun(Item)   -> check_pubkey(Item, Pubkey) end,
@@ -118,7 +118,7 @@ check_pubkey(#{pubkey := Pk} = Item, Pk) -> {ok, Item};
 check_pubkey(_Item, _Expected)           -> {error, wrong_pubkey}.
 
 check_bep44(Item) ->
-    case macula_bootstrap_bep44:verify(Item) of
+    case macula_bootstrap_via_mainline_dht_bep44:verify(Item) of
         ok              -> {ok, Item};
         {error, _} = E  -> E
     end.
