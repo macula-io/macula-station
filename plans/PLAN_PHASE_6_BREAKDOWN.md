@@ -1,11 +1,11 @@
 # Phase 6 — Bootstrap Cascade: Session Breakdown
 
 **Parent plan:** `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §11
-**Spec:** `PLAN_MACULA_V2_PART5_BOOTSTRAP.md` §3–§8 (five-tier cascade),
+**Spec:** `PLAN_MACULA_V2_PART5_BOOTSTRAP.md` §3–§8 (peer-discovery cascade),
           `PLAN_MACULA_V2_PART6_PROTOCOL.md` §9.14–§9.17 (foundation records).
 **Status:** In progress — 6.1 + 6.2 shipped 2026-04-14.
 
-## Session 6.1 — SDK foundation records + orchestrator + Tier E (shipped)
+## Session 6.1 — SDK foundation records + orchestrator + via_operator_paste (shipped)
 
 **Scope:** End-to-end cascade with the operator-paste tier wired,
 plus the foundation trust anchor every other tier ultimately
@@ -21,7 +21,7 @@ verifies against.
   - `pubkeys/0` resolves from `application:get_env(macula_record,
     foundation_pubkeys, _)`; falls back to five deterministic SHA-256
     placeholder pubkeys (no private key exists — production firmware
-    MUST override before any Tier A record is consumed).
+    MUST override before any via_doh record is consumed).
   - `verify_record/1` enforces `type ∈ {0x0D..0x10}` + signer-trust
     + envelope signature + expiry.
   - `live_pubkeys/0` distinguishes operator-supplied from placeholder.
@@ -30,30 +30,30 @@ verifies against.
 - `macula_bootstrap` cascade orchestrator: ordered tier list, per-tier
   stagger, deadline, first-tier-to-meet-`min_peers` wins, remaining
   workers cancelled.
-- `macula_bootstrap_tier` behaviour: `tier/0`, `stagger_ms/0`,
+- `macula_bootstrap_peer_discoverer` behaviour: `tier/0`, `stagger_ms/0`,
   `probe/1 -> {ok, [verified_peer()]} | {error, _}`.
-- `macula_bootstrap_peer_url` codec: `macula-peer:<base64url(cbor{r,a})>`
+- `macula_bootstrap_via_operator_paste_peer_url` codec: `macula-peer:<base64url(cbor{r,a})>`
   — signed `node_record` + transport hints.
-- `macula_bootstrap_tier_e`: zero-stagger, decodes operator-pasted
+- `macula_bootstrap_via_operator_paste`: zero-stagger, decodes operator-pasted
   URLs, tolerant of bad URLs in a paste.
 
-+CT suite `macula_phase6_SUITE` covers Tier E happy path, cascade
++CT suite `macula_phase6_SUITE` covers via_operator_paste happy path, cascade
 fall-through to a working tier, and foundation trust-boundary
 (trusted vs untrusted signer, wrong record type rejected).
 
-## Session 6.2 — Tier A scaffold + DoH corroboration logic (shipped)
+## Session 6.2 — via_doh scaffold + DoH corroboration logic (shipped)
 
-**Scope:** Tier A orchestration and signature verification, with
+**Scope:** via_doh orchestration and signature verification, with
 network I/O abstracted behind a behaviour so unit tests can drive
 the corroboration logic without DoH endpoints.
 
 **Files added:**
-- `macula_bootstrap_resolver` — behaviour with one callback,
+- `macula_bootstrap_via_doh_resolver_behaviour` — behaviour with one callback,
   `resolve(Url, FoundationKey, Opts) -> {ok, RecordBytes} | {error, _}`.
   Resolvers MUST return raw bytes; the orchestrator owns decoding,
   signer-trust, expiry, and storage-key checks (a single trusted
   resolver would be a trust-anchor failure mode).
-- `macula_bootstrap_tier_a` — zero-stagger probe.
+- `macula_bootstrap_via_doh` — zero-stagger probe.
   - Spawns one worker per `(Pubkey, Resolver)` pair in parallel.
   - Tallies replies by `{Pubkey, raw bytes}`; any group reaching
     `corroboration` (default 2) is accepted.
@@ -65,15 +65,15 @@ the corroboration logic without DoH endpoints.
     the corroborated `foundation_seed_list` record as its anchor.
 
 **Test side:**
-- `macula_bootstrap_tier_a_fake` — ETS-backed in-memory resolver;
+- `macula_bootstrap_via_doh_fake` — ETS-backed in-memory resolver;
   honours `{sleep, Ms, Reply}` so timeout behaviour can be exercised.
-- `macula_bootstrap_tier_a_tests` — 9 eunit cases:
+- `macula_bootstrap_via_doh_tests` — 9 eunit cases:
   threshold met / unmet, single-hijack outvoted, untrusted signer
   rejected, wrong-storage-key rejected, no-resolvers, no-pubkeys,
   verified-peer shape, slow resolver doesn't block.
 - `macula_phase6_SUITE` adds two CT cases:
-  Tier A wins on corroborated bytes; Tier A under-quorum cascades
-  to Tier E.
+  via_doh wins on corroborated bytes; via_doh under-quorum cascades
+  to via_operator_paste.
 
 **State of green** (2026-04-14, post-6.2):
 - 437 station eunit / 25 station CT / xref / dialyzer all clean.
@@ -81,16 +81,16 @@ the corroboration logic without DoH endpoints.
 ## Session 6.3 — DoH codec + concrete resolver (shipped 2026-04-15)
 
 **Scope:** pure RFC 8484 codec, concrete `inets:httpc`-backed resolver
-implementing `macula_bootstrap_resolver`, and the base32 codec needed
+implementing `macula_bootstrap_via_doh_resolver_behaviour`, and the base32 codec needed
 to derive PKARR zone labels. Anycast probe split out to a later
 session (6.3.5) to keep this scope tight.
 
 **Files added:**
-- `macula_bootstrap_base32` — RFC 4648 canonical base32, lowercase
+- `macula_bootstrap_via_doh_base32` — RFC 4648 canonical base32, lowercase
   unpadded output, case-insensitive decode. A 32-byte pubkey encodes
   to exactly 52 chars (fits the 63-char DNS-label limit); trailing
   sub-byte bit fragments on decode are discarded deterministically.
-- `macula_bootstrap_doh` — pure codec + resolver core.
+- `macula_bootstrap_via_doh_resolver` — pure codec + resolver core.
   - `query_domain(Pubkey, ZoneBase)` → `"_pkarr.<52b32>.<zone>"`
     (lowercase Erlang string, what `inet_dns' wants).
   - `build_query/1,2` → DoH `application/dns-message` binary via
@@ -102,27 +102,27 @@ session (6.3.5) to keep this scope tight.
     are typed atoms + `{rcode, N}` / `{http, Reason}`.
   - `resolve/4` composes the codec with a caller-supplied `SendFun`
     `(Url, Body) -> {ok, RespBody} | {error, _}`.
-- `macula_bootstrap_doh_http` — thin concrete resolver: reads
+- `macula_bootstrap_via_doh_http` — thin concrete resolver: reads
   `doh_zone_base` from app env (default `<<"macula.io">>`), delegates
-  to `macula_bootstrap_doh:resolve/4` with an `httpc`-backed send fun
+  to `macula_bootstrap_via_doh_resolver:resolve/4` with an `httpc`-backed send fun
   that POSTs `application/dns-message` and maps HTTP status to
   `{ok, Body} | {error, {http_status, Code, Phrase}} | {error, _}`.
 - `inets` + `ssl` added to `macula_bootstrap.app.src` applications.
 
 **Test coverage:**
-- `macula_bootstrap_base32_tests` — RFC 4648 vectors, random-input
+- `macula_bootstrap_via_doh_base32_tests` — RFC 4648 vectors, random-input
   round-trips, 52-char fits-in-label invariant, case-insensitive
   decode, bad-char rejection. 20 cases.
-- `macula_bootstrap_doh_tests` — 29 cases covering query_domain
+- `macula_bootstrap_via_doh_resolver_tests` — 29 cases covering query_domain
   (zero-key, random-key round-trip, string zones), build_query
   (encoding shape, random-id range), parse_response (single-string,
   multi-string concat, multi-RR concat, case-insensitive name match,
   id mismatch, QR=false, NXDOMAIN, REFUSED, no_txt_answer, wrong
   domain, garbage bytes), and resolve/4 (happy path, http-error
   wrapping, zone_base override, parse-error propagation).
-- `macula_bootstrap_tier_a_doh_tests` — integration: a module that
-  implements `macula_bootstrap_resolver` by running the real codec
-  with a canned HTTP transport, proving Tier A + DoH + foundation
+- `macula_bootstrap_via_doh_integration_tests` — integration: a module that
+  implements `macula_bootstrap_via_doh_resolver_behaviour` by running the real codec
+  with a canned HTTP transport, proving via_doh + DoH + foundation
   record pipeline all compose. Exercises multi-chunk TXT splitting
   (records split into 200-byte chars-strings).
 
@@ -133,7 +133,7 @@ session (6.3.5) to keep this scope tight.
 
 - `macula_bootstrap_anycast` probe: parallel QUIC handshake against
   the foundation-published anycast prefix `2001:...:macula:a::/48';
-  any reachable peer becomes an additional Tier A resolver target
+  any reachable peer becomes an additional via_doh resolver target
   (corroboration prevents BGP-hijack).
 - Requires RPKI verification of the announcing AS to be useful;
   validation path TBD (likely defer to a Part 2 §3.5 follow-up).
@@ -141,11 +141,11 @@ session (6.3.5) to keep this scope tight.
 ## Session 6.3.6 — Network-integrated gated CT (planned)
 
 - `macula_bootstrap_doh_SUITE` skipped without `MACULA_DOH_ENABLE=1`;
-  exercises `macula_bootstrap_doh_http' against Cloudflare 1.1.1.1,
+  exercises `macula_bootstrap_via_doh_http' against Cloudflare 1.1.1.1,
   Quad9 9.9.9.9, Mullvad, with a test record actually published to
   a throwaway domain.
 
-## Session 6.4 — Tier B mDNS probe (shipped 2026-04-15)
+## Session 6.4 — via_mdns mDNS probe (shipped 2026-04-15)
 
 **Scope:** query side of link-local mDNS bootstrap. Publish/announce
 side (running an mDNS responder for steady-state operation) splits
@@ -153,7 +153,7 @@ into a separate Phase 6.4.x follow-up — the probe path is the piece
 needed for cold-boot cascade.
 
 **Files added:**
-- `macula_bootstrap_mdns` — pure codec.
+- `macula_bootstrap_via_mdns_query` — pure codec.
   - `service_name/0`, `multicast_group/0`, `multicast_port/0` —
     well-known `_macula._udp.local`, `ff02::fb`, `5353`.
   - `build_query/0,1,2` — DNS `any` query over standard DNS wire
@@ -164,13 +164,13 @@ needed for cold-boot cascade.
     (case-insensitive) and decodes TXT key-value pairs
     (`node_id=<64 hex>`, `port=<1..65535>`, `tier=<0..4>`). Drops
     malformed rows silently.
-- `macula_bootstrap_mdns_transport` behaviour — single callback
+- `macula_bootstrap_via_mdns_transport` behaviour — single callback
   `query(QueryBin, TimeoutMs) -> [{SrcAddr, PacketBin}]`.
-- `macula_bootstrap_mdns_udp` — concrete `gen_udp` implementation:
+- `macula_bootstrap_via_mdns_udp` — concrete `gen_udp` implementation:
   inet6 socket, `multicast_ttl=1`, `multicast_loop=false`, sends to
   `[ff02::fb]:5353`, collects unicast replies until deadline.
   (Scope-id handling for link-local peers tracked as 6.4.x.)
-- `macula_bootstrap_tier_b` — probe module (200 ms stagger per
+- `macula_bootstrap_via_mdns` — probe module (200 ms stagger per
   Part 5 §3). Two pluggable dependencies:
   - `udp_transport` (module implementing the behaviour).
   - `handshake_fun(SrcAddr, Port, ExpectedNodeId)
@@ -185,17 +185,17 @@ needed for cold-boot cascade.
     peer collapse).
 
 **Test coverage:**
-- `macula_bootstrap_mdns_tests` — 23 eunit cases (constants, query
+- `macula_bootstrap_via_mdns_query_tests` — 23 eunit cases (constants, query
   shape, empty/garbage parse, answer map, TXT extraction,
   case-insensitive name match, drop missing/bad fields, range checks
   for port + tier).
-- `macula_bootstrap_tier_b_tests` — 8 eunit cases (happy path, no
+- `macula_bootstrap_via_mdns_tests` — 8 eunit cases (happy path, no
   replies, handshake failure, identity mismatch, expired record,
   malformed TXT skipped alongside good one, dedup, default handshake
   rejects everything). Fake transport: ETS-backed
-  `macula_bootstrap_mdns_fake`.
+  `macula_bootstrap_via_mdns_fake`.
 - `macula_phase6_SUITE` adds one CT case:
-  tier_b wins cascade when tier_a has no resolvers (Tier B's 200 ms
+  via_mdns wins cascade when via_doh has no resolvers (via_mdns's 200 ms
   stagger does not block it; three handshake-corroborated peers
   pass the min_peers=3 threshold).
 
@@ -204,18 +204,18 @@ needed for cold-boot cascade.
 
 ## Session 6.4.x — mDNS responder (shipped 2026-04-15)
 
-**Scope:** advertise side of Tier B — steady-state service so peers'
+**Scope:** advertise side of via_mdns — steady-state service so peers'
 probes find us. Link-local scope-id plumbing split to 6.4.y
 (multi-interface fan-out remains on the to-do list).
 
 **Files added:**
-- `macula_bootstrap_mdns:build_advertisement/2` — pure fn mapping an
+- `macula_bootstrap_via_mdns_query:build_advertisement/2` — pure fn mapping an
   incoming query + our `node_info` to response bytes or `ignore`.
   Filters: QR=1 (don't echo responses), non-service name, unsupported
   qtype, garbage bytes. TXT answer carries the exact same
   `node_id=hex/port/tier` triple that the probe side decodes.
   Transaction id is echoed.
-- `macula_bootstrap_mdns_responder` — gen_server owning the UDP
+- `macula_bootstrap_via_mdns_responder` — gen_server owning the UDP
   socket. Pluggable `socket_opener` opt (tests bind an ephemeral
   loopback port; production joins `[ff02::fb]:5353`, which may
   conflict with avahi). `silent=true` keeps the socket bound but
@@ -234,21 +234,21 @@ xref / dialyzer clean.
 
 - Per-interface fan-out: one responder per interface, each bound
   with `{multicast_if, IfAddr}`.
-- Scope-id plumbing through tier_b candidate records so link-local
+- Scope-id plumbing through via_mdns candidate records so link-local
   peer addresses remain reachable from the routing table.
 
-## Session 6.5 — Tier C Mainline DHT bridge (shipped 2026-04-15)
+## Session 6.5 — via_mainline_dht Mainline DHT bridge (shipped 2026-04-15)
 
-**Scope:** pure codecs + Tier C probe with pluggable DHT transport.
+**Scope:** pure codecs + via_mainline_dht probe with pluggable DHT transport.
 The actual Kademlia-over-UDP BT-DHT client lives in 6.5.x — we ship
 everything a production transport will need to plug in cleanly.
 
 **Files added:**
-- `macula_bootstrap_bencode` — BEP 3 bencode codec. Integers, byte
+- `macula_bootstrap_via_mainline_dht_bencode` — BEP 3 bencode codec. Integers, byte
   strings, lists, dicts (binary keys, sorted on encode).
   Deterministic: encoding two equal maps produces byte-identical
   output regardless of insertion order.
-- `macula_bootstrap_bep44` — mutable-item envelope.
+- `macula_bootstrap_via_mainline_dht_bep44` — mutable-item envelope.
   - `target_id/1,2` — SHA-1 of pubkey [+ salt] per BEP 44 §2.
   - `signed_payload/2,3` — exact BEP 44 §1 wire shape
     `3:seqi<seq>e1:v<bencoded-value>` (and the salt-prefixed
@@ -258,11 +258,11 @@ everything a production transport will need to plug in cleanly.
     (production uses FROST threshold).
   - `verify/1` — shape check (32-byte pubkey, 64-byte sig, seq≥0)
     then Ed25519 verify over the BEP 44 payload.
-- `macula_bootstrap_dht_transport` behaviour — single callback
+- `macula_bootstrap_via_mainline_dht_transport` behaviour — single callback
   `get_mutable(TargetId, TimeoutMs) -> {ok, item()} | {error, _}`.
-- `macula_bootstrap_tier_c` — probe (500 ms stagger). For each
+- `macula_bootstrap_via_mainline_dht` — probe (500 ms stagger). For each
   foundation pubkey in parallel: derive target id → DHT get →
-  verify item.pubkey matches → `macula_bootstrap_bep44:verify/1` →
+  verify item.pubkey matches → `macula_bootstrap_via_mainline_dht_bep44:verify/1` →
   decode inner DNS packet → concatenate every TXT character-string
   → `macula_record:decode/1` → `macula_foundation:verify_record/1`
   → emit seeds as verified peers. First successful pubkey wins;
@@ -270,19 +270,19 @@ everything a production transport will need to plug in cleanly.
   (`{error, no_transport}`).
 
 **Tests — 27 new eunit + 1 CT:**
-- `macula_bootstrap_bencode_tests` (44 cases across encode/decode/
+- `macula_bootstrap_via_mainline_dht_bencode_tests` (44 cases across encode/decode/
   round-trip/canonicalisation/error-paths).
-- `macula_bootstrap_bep44_tests` (13 cases: target_id vectors,
+- `macula_bootstrap_via_mainline_dht_bep44_tests` (13 cases: target_id vectors,
   signed_payload shape including BEP 44's published example, sign+
   verify round-trip with and without salt, tampered value/seq/pubkey
   rejected, salt mismatch rejected, malformed shape rejected).
-- `macula_bootstrap_tier_c_tests` (10 cases with ETS-backed
-  `macula_bootstrap_dht_fake`): happy path, no_transport,
+- `macula_bootstrap_via_mainline_dht_tests` (10 cases with ETS-backed
+  `macula_bootstrap_via_mainline_dht_fake`): happy path, no_transport,
   no_pubkeys, wrong pubkey in DHT item, tampered BEP 44 signature,
   non-DNS value, PKARR with no TXT, DHT get failure, record not
   signed by foundation, multi-pubkey first-success wins.
-- `macula_phase6_SUITE` gains tier_c cascade-winner case when Tiers
-  A and B are effectively down.
+- `macula_phase6_SUITE` gains via_mainline_dht cascade-winner case when
+  via_doh and via_mdns are effectively down.
 
 **State of green (post-6.5):** 598 station eunit / 27 station CT /
 xref / dialyzer clean.
@@ -294,20 +294,20 @@ xref / dialyzer clean.
 - Multi-node redundancy: query ≥8 nodes, prefer highest seq.
 - Rate limiting per Mainline DHT operator policy.
 
-## Session 6.6 — Tier D blockchain anchor (shipped 2026-04-15)
+## Session 6.6 — via_blockchain blockchain anchor (shipped 2026-04-15)
 
 **Scope:** chain-agnostic probe + behaviour. Concrete Bitcoin
 OP_RETURN + Ethereum contract-event adapters deferred to 6.6.x; we
-keep tier_d identical in shape to the others so a later session can
+keep via_blockchain identical in shape to the others so a later session can
 drop in real block-explorer HTTP clients (or light-client libs)
 against a stable interface.
 
 **Files added:**
-- `macula_bootstrap_chain_transport` behaviour — single callback
+- `macula_bootstrap_via_blockchain_transport` behaviour — single callback
   `latest_anchor(chain_opts(), TimeoutMs) -> {ok, Bytes} | {error, _}'.
   Bytes MUST be a `macula_record:encode/1' envelope of a
-  foundation-signed record so Tier D verification matches Tier A.
-- `macula_bootstrap_tier_d` — probe (2000 ms stagger per Part 5 §3).
+  foundation-signed record so via_blockchain verification matches via_doh.
+- `macula_bootstrap_via_blockchain` — probe (2000 ms stagger per Part 5 §3).
   Parallel `latest_anchor' across every configured chain, first
   successful anchor wins the cascade, failures fall through, no
   chains = hard `{error, no_chains}'. Pipeline: fetch → safe_decode
@@ -319,8 +319,8 @@ malformed input rather than returning `{error, _}'. All three tiers
 now wrap the decode call in a trust-boundary try/catch so a single
 bad response cannot crash a worker and time the tier out.
 
-**Tests — 8 new eunit + 1 CT case (tier_d wins cascade):**
-- `macula_bootstrap_tier_d_tests`: happy-single-chain, no-chains,
+**Tests — 8 new eunit + 1 CT case (via_blockchain wins cascade):**
+- `macula_bootstrap_via_blockchain_tests`: happy-single-chain, no-chains,
   all-chains-fail, first-successful-chain-wins, slow-chain-does-
   not-block, untrusted-signer-rejected, garbage-bytes-rejected
   (exercises the new safe_decode path), expired-record-rejected.
@@ -329,7 +329,7 @@ bad response cannot crash a worker and time the tier out.
 ## Session 6.6.x — Real chain adapters (shipped 2026-04-15)
 
 **Scope:** Ethereum JSON-RPC and Bitcoin Esplora adapters, both
-implementing `macula_bootstrap_chain_transport' and both using a
+implementing `macula_bootstrap_via_blockchain_transport' and both using a
 new shared HTTP abstraction so unit tests plug in canned responses
 without real network I/O. Gated real-endpoint CT deferred until
 foundation has actually published testnet anchors to probe.
@@ -342,7 +342,7 @@ foundation has actually published testnet anchors to probe.
   thin translator from httpc's 4-tuple result to the behaviour's
   `{ok, Body} | {error, _}'. HTTP non-200 becomes
   `{error, {http_status, Code, Phrase}}'.
-- `macula_bootstrap_chain_eth_jsonrpc` — reads latest
+- `macula_bootstrap_via_blockchain_eth_jsonrpc` — reads latest
   `AnchorPublished(bytes)' event from a foundation contract via
   `eth_getLogs'. Pure codec fully unit-tested: `build_request/3'
   (JSON-RPC request shape), `parse_response/1' (picks highest
@@ -350,7 +350,7 @@ foundation has actually published testnet anchors to probe.
   (32-byte offset + 32-byte length + padded payload). Ethereum has
   effectively no log-size limit so the event carries the full
   `macula_record:encode/1' envelope directly.
-- `macula_bootstrap_chain_esplora` — reads latest foundation
+- `macula_bootstrap_via_blockchain_esplora` — reads latest foundation
   anchor pointer from Blockstream/Esplora `/address/<addr>/txs'.
   Bitcoin's 80-byte OP_RETURN limit requires a pointer scheme:
   `"MCLA" magic (4 bytes) | SHA-256 hash (32 bytes) | URL (≤44
@@ -359,19 +359,19 @@ foundation has actually published testnet anchors to probe.
   anchor bytes. Any mismatch or missing marker falls through.
 
 **Tests — 29 new eunit + 1 CT case:**
-- `macula_bootstrap_chain_eth_jsonrpc_tests` (15): request shape,
+- `macula_bootstrap_via_blockchain_eth_jsonrpc_tests` (15): request shape,
   JSON round-trip, no-logs, rpc error, bad json, happy path,
   highest-block wins, missing data, bad hex, bad ABI
   (zero-length, short header, claimed length exceeds payload),
   plus full `latest_anchor/2' end-to-end with canned HTTP +
   http-error propagation.
-- `macula_bootstrap_chain_esplora_tests` (14): OP_RETURN raw push,
+- `macula_bootstrap_via_blockchain_esplora_tests` (14): OP_RETURN raw push,
   OP_PUSHDATA1, non-our-marker rejected, non-op-return script,
   empty-URL rejected, trailing-null trim, vout filtering,
   missing-vout, full end-to-end (happy, no-matching-tx,
   hash-mismatch-rejected, URL-fetch-error, bad-esplora-json).
 - `macula_phase6_SUITE` gains `tier_d_eth_adapter_end_to_end` —
-  Tier D wired with the real `macula_bootstrap_chain_eth_jsonrpc'
+  via_blockchain wired with the real `macula_bootstrap_via_blockchain_eth_jsonrpc'
   adapter using `macula_bootstrap_http_fake' for transport;
   proves the full foundation-record pipeline (RPC → ABI decode →
   macula_record → foundation verify → verified peers) end-to-end.
@@ -395,7 +395,7 @@ supervisor child controlled by application env.
 
 **Files added:**
 - `macula_bootstrap_sup' — `one_for_one' supervisor. Conditional
-  single child: `macula_bootstrap_mdns_responder' spawned only when
+  single child: `macula_bootstrap_via_mdns_responder' spawned only when
   `application:get_env(macula_bootstrap, responder, disabled)' is
   a map of responder opts. Default-disabled matters because the
   real responder binds UDP 5353 which conflicts with `avahi-daemon'
@@ -418,8 +418,8 @@ supervisor child controlled by application env.
 - Application: `ensure_all_started' + `stop' round-trip registers
   + unregisters the supervisor.
 - `run/1': `no_tiers' for empty-list and missing-key configs;
-  explicit Tier E config yields three Tier E peers.
-- `run/0': reads Tier E config from app env and runs; empty env
+  explicit via_operator_paste config yields three via_operator_paste peers.
+- `run/0': reads via_operator_paste config from app env and runs; empty env
   returns `no_tiers'.
 
 All under `with_trapped_exits' wrappers to survive linked-sup
@@ -444,7 +444,7 @@ want the cascade.
 **Files added:**
 - `macula_station_bootstrap`:
   - `to_entry_spec/1` — pure. Maps
-    `macula_bootstrap_tier:verified_peer()' →
+    `macula_bootstrap_peer_discoverer:verified_peer()' →
     `macula_dht_entry:spec()' with defaults for metadata the
     cascade doesn't carry (`asn => 0', `country => <<"??">>').
     Foundation-seed peers map `gateway_tier' 3|4 → `t3'; everyone
@@ -457,7 +457,7 @@ want the cascade.
 **Upstream tweak:**
 - `macula_bootstrap_foundation:peers_from_record/3` now surfaces
   the seed's `tier' field as `gateway_tier` on the
-  verified_peer. `macula_bootstrap_tier:verified_peer()' type
+  verified_peer. `macula_bootstrap_peer_discoverer:verified_peer()' type
   gains the optional `gateway_tier => 3 | 4 | undefined' key so
   downstream consumers (like `to_entry_spec/1`) can distinguish
   foundation gateways from leaf stations.
@@ -465,11 +465,11 @@ want the cascade.
 **Tests — 12 new eunit:**
 - `to_entry_spec`: defaults for unknown metadata, address
   preservation, gateway_tier 3 / 4 / undefined → correct DHT tier,
-  Tier B / E peers default to t0.
+  via_mdns / E peers default to t0.
 - `ingest`: empty list → zero summary; five new peers all
   `admitted`; duplicate peer `touched` on second observe; foundation
   seed gateway_tier=4 results in DHT entry with tier=t3; peers from
-  every cascade tier ingest successfully.
+  every cascade strategy ingest successfully.
 
 **State of green (post-6.10):** 668 station eunit / 31 station CT /
 xref / dialyzer clean.
@@ -485,23 +485,23 @@ _Summary     = macula_station_bootstrap:ingest(Dht, Peers),
 
 ## Session 6.7 — Acceptance suite (shipped 2026-04-15)
 
-**Scope:** phase6_SUITE expanded to exercise the full 5-tier cascade
+**Scope:** phase6_SUITE expanded to exercise the full peer-discovery cascade
 with all fakes wired. Real-network timing bars (Part 5 §11.3)
 deferred to the gated network suite — fakes resolve in milliseconds
 regardless of scenario.
 
 **New CT cases:**
-- `full_cascade_all_tiers_down_returns_failure' — every tier fails
+- `full_cascade_all_tiers_down_returns_failure' — every strategy fails
   (no resolvers, no mDNS, no DHT item, chains fail, no peer paste).
   Cascade returns `{error, _}'.
-- `full_cascade_under_time_budget' — only Tier E has peers; the
+- `full_cascade_under_time_budget' — only via_operator_paste has peers; the
   other four stagger-in, fail quickly, E wins. Whole cascade
   completes in < 2 s (vs the 60 s §11.3 budget) — proof that the
   cascade's fall-through is efficient even when all automated tiers
   miss.
 
-Real-network timing bars (§11.3) — Tier A < 2 s, Tier B < 3 s,
-Tier C < 10 s, Tier D < 30 s, full cascade < 60 s — require
+Real-network timing bars (§11.3) — via_doh < 2 s, via_mdns < 3 s,
+via_mainline_dht < 10 s, via_blockchain < 30 s, full cascade < 60 s — require
 live-network probes and ship with the 6.3.6 / 6.4.y / 6.5.x / 6.6.x
 gated suites.
 
@@ -510,16 +510,16 @@ CT / xref / dialyzer clean.
 
 ## Phase 6 summary (as of 2026-04-15)
 
-All five cascade tiers have their orchestration + verification
+All five cascade strategies have their orchestration + verification
 layers shipped with pluggable transport behaviours:
 
 | Tier | Source        | Module                        | Status |
 | ---- | ------------- | ----------------------------- | ------ |
-| A    | DoH PKARR     | `macula_bootstrap_tier_a'     | ✅     |
-| B    | mDNS LAN      | `macula_bootstrap_tier_b'     | ✅     |
-| C    | Mainline DHT  | `macula_bootstrap_tier_c'     | ✅     |
-| D    | Blockchain    | `macula_bootstrap_tier_d'     | ✅     |
-| E    | Operator paste| `macula_bootstrap_tier_e'     | ✅     |
+| A    | DoH PKARR     | `macula_bootstrap_via_doh'     | ✅     |
+| B    | mDNS LAN      | `macula_bootstrap_via_mdns'     | ✅     |
+| C    | Mainline DHT  | `macula_bootstrap_via_mainline_dht'     | ✅     |
+| D    | Blockchain    | `macula_bootstrap_via_blockchain'     | ✅     |
+| E    | Operator paste| `macula_bootstrap_via_operator_paste'     | ✅     |
 
 All verification flows terminate at `macula_foundation:verify_record/1'
 — the DHT, chain, DoH resolver, and mDNS responder are all
@@ -535,10 +535,10 @@ Remaining work (gated network suites + real transports):
 ## Session 6.8 — `macula_bootstrap_foundation` refactor (shipped 2026-04-15)
 
 **Scope:** consolidate the "safe decode → verify foundation → emit
-peers" trust boundary that Tiers A, C, and D were each hand-rolling
-independently. Reduces duplicated code and establishes a single
-trust-boundary surface so future real-network adapters plug into
-one well-tested helper.
+peers" trust boundary that via_doh, via_mainline_dht, and
+via_blockchain were each hand-rolling independently. Reduces
+duplicated code and establishes a single trust-boundary surface so
+future real-network adapters plug into one well-tested helper.
 
 **Files added:**
 - `macula_bootstrap_foundation`:
@@ -551,13 +551,13 @@ one well-tested helper.
     for non-seed-list record types (defensive).
 
 **Refactored callers:**
-- `macula_bootstrap_tier_a` — `decode_and_verify/2' now delegates
+- `macula_bootstrap_via_doh` — `decode_and_verify/2' now delegates
   to `foundation:decode_record_bytes/1'; `peers_from/1' is now a
-  one-liner forwarding to `foundation:peers_from_record/3'. Tier A's
+  one-liner forwarding to `foundation:peers_from_record/3'. via_doh's
   storage-key integrity check remains tier-local.
-- `macula_bootstrap_tier_c` — same pattern; BEP 44 signature + DHT
+- `macula_bootstrap_via_mainline_dht` — same pattern; BEP 44 signature + DHT
   pubkey-match checks remain tier-local.
-- `macula_bootstrap_tier_d` — same pattern.
+- `macula_bootstrap_via_blockchain` — same pattern.
 
 **Tests:** 12 new eunit for the helper (round-trip, garbage variants,
 malformed CBOR, non-macula CBOR envelope, peer stamping, seed field

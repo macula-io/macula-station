@@ -231,7 +231,7 @@ Canonical definitions. Where a term could be confused with V1 usage, V1's meanin
 
 | System | Role in V2 | Lesson |
 |--------|-----------|--------|
-| **BitTorrent Mainline DHT** | Tier C bootstrap bridge | Kademlia at internet scale for 20+ years |
+| **BitTorrent Mainline DHT** | via_mainline_dht bootstrap bridge | Kademlia at internet scale for 20+ years |
 | **Iroh / Number 0** | Closest production analog | QUIC + PKARR + home-relay pattern |
 | **IPFS Amino DHT** | What NOT to do | 30–40% record loss rate is what we engineer against |
 | **I2P netDb floodfill** | Reference for relay-tier-as-discovery | Tier-based discovery layer |
@@ -376,7 +376,7 @@ The design is ready to execute when every box below is checked.
 - [x] Part 2 — Topology (5 tiers, NodeId semantics, addresses, diversity axes).
 - [x] Part 3 — Discovery & Routing (S/Kademlia, source routing, overlay).
 - [x] Part 4 — Lifecycle & Resilience (7 pillars, SWIM-Lifeguard, failure taxonomy).
-- [x] Part 5 — Bootstrap & Governance (5-tier cascade, governance layers).
+- [x] Part 5 — Bootstrap & Governance (peer-discovery cascade, governance layers).
 - [x] Part 6 — Wire Protocol Catalog (frames, records, signing, error codes).
 - [x] Part 7 — Implementation Plan (repo layout, modules, 8 phases).
 - [x] Part 8 — Verification (pyramid, pillar-as-property, chaos, burn-in).

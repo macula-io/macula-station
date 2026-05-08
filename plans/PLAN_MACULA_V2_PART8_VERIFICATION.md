@@ -294,11 +294,11 @@ Multi-station, single-BEAM-VM. Each station is a separate OTP release running as
 ### 6.7 Phase-6 integration
 
 `phase6_SUITE.erl`:
-- `cold_boot_tier_a/1`: <2s.
-- `cold_boot_tier_b_only/1`: disable A, <3s.
-- `cold_boot_tier_c_only/1`: disable A+B, <10s.
-- `cold_boot_tier_d_only/1`: disable A+B+C, <30s.
-- `cold_boot_tier_e/1`: CLI import peer, successful.
+- `cold_boot_via_doh/1`: <2s.
+- `cold_boot_via_mdns_only/1`: disable via_doh, <3s.
+- `cold_boot_via_mainline_dht_only/1`: disable via_doh + via_mdns, <10s.
+- `cold_boot_via_blockchain_only/1`: disable via_doh + via_mdns + via_mainline_dht, <30s.
+- `cold_boot_via_operator_paste/1`: CLI import peer, successful.
 - `doh_hijack_corroboration/1`: one DoH returns malicious, two honest: station uses honest.
 
 ---
@@ -394,11 +394,11 @@ Adversaries are the threat model. Each scenario in `THREAT_MODEL_MACULA.md` has 
 
 ### 8.5 DoS on bootstrap
 
-**Scenario:** Adversary DDoSes all DoH resolvers for Tier A.
+**Scenario:** Adversary DDoSes all DoH resolvers for via_doh.
 
 **Harness:** toxiproxy blackholes all listed DoH resolver IPs.
 
-**Acceptance:** Station falls through to Tier B/C/D; bootstrap completes under SLA.
+**Acceptance:** Station falls through to via_mdns/C/D; bootstrap completes under SLA.
 
 ### 8.6 Forged foundation seed
 
@@ -461,7 +461,7 @@ Derived from Part 4 §9 tier SLAs and Part 3 lookup success rates:
 
 | Metric | V2.0 MVP | Year 1 | Rationale |
 |--------|----------|--------|-----------|
-| Cold-boot Tier A | <2 s | <1 s | Bootstrap cascade |
+| Cold-boot via_doh | <2 s | <1 s | Bootstrap cascade |
 | DHT lookup p50 intra-EU | <80 ms | <50 ms | Part 4 §9 Tier S |
 | DHT lookup p95 intra-EU | <200 ms | <150 ms | Same |
 | Cross-relay CALL p95 | <200 ms | <150 ms | Part 7 Phase 4 accept |
@@ -526,7 +526,7 @@ Cross-reference of Part 7 phase gates to Part 8 artefacts:
 | 3 | `macula_dht` | P1-3, P6 (DHT ops); diversity invariants | DHT frames; 17 record types | `phase3_SUITE` with N=100 sim | Custody churn | — | — |
 | 4 | `macula_routing` | P4; source-header integrity | Source-route bytes | `phase4_SUITE` | Mid-path kill; clock skew | — | — |
 | 5 | `macula_overlay` | CRDT convergence | PUBLISH/SUBSCRIBE/EVENT | `phase5_SUITE` | Realm partition heal | — | — |
-| 6 | `macula_bootstrap` (each tier) | Cascade fallback | Foundation records | `phase6_SUITE` | Cascade-level DoS | DoH hijack, forged seed | — |
+| 6 | `macula_bootstrap` (each strategy) | Cascade fallback | Foundation records | `phase6_SUITE` | Cascade-level DoS | DoH hijack, forged seed | — |
 | 7 | Gaps found during 1–6 | All pillars composition | Fuzz 100k | Full multi-phase | Full suite | Sybil 10k + eclipse 50% + Byzantine + replay | 24h + 72h + adversarial |
 | 8 | Regression on Phase 7 | — | — | mesh_chat resilience 5 scenarios | — | — | Production 72h observation |
 

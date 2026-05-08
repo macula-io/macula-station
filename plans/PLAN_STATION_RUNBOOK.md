@@ -65,19 +65,19 @@ four.
 
 Cascade coverage against these categories:
 
-- **Tier A (DoH + PKARR)** — universal primary. Works for any
+- **via_doh (DoH + PKARR)** — universal primary. Works for any
   station with outbound HTTPS. Onboards a fresh operator with no
   prior knowledge of peers.
-- **Tier B (mDNS)** — on-prem + small DC + telco where stations
+- **via_mdns (mDNS)** — on-prem + small DC + telco where stations
   are link-local-adjacent. Irrelevant to hyperscaler DC
   (multicast filtered) and hobbyist single-station setups.
-- **Tier C (BT-DHT)** — censorship-resistance across every
+- **via_mainline_dht (BT-DHT)** — censorship-resistance across every
   category. Any environment that blocks DoH + DNS but not
   BitTorrent.
-- **Tier D (chain anchors)** — deepest censorship resistance.
+- **via_blockchain (chain anchors)** — deepest censorship resistance.
   Blocking the mechanism costs a nation-state blocking public
   chain RPC mirrors.
-- **Tier E (operator paste)** — universal manual override + the
+- **via_operator_paste (operator paste)** — universal manual override + the
   only mechanism for airgapped labs.
 
 ### 2.3 The simulation rig — where we run tests today
@@ -245,30 +245,30 @@ JSON schema.
     ]},
     {macula_bootstrap, [
         {tiers, [
-            {macula_bootstrap_tier_a, #{
+            {macula_bootstrap_via_doh, #{
                 resolvers => [
-                    {macula_bootstrap_doh_http, <<"https://1.1.1.1/dns-query">>},
-                    {macula_bootstrap_doh_http, <<"https://9.9.9.9/dns-query">>},
-                    {macula_bootstrap_doh_http, <<"https://doh.mullvad.net/dns-query">>}
+                    {macula_bootstrap_via_doh_http, <<"https://1.1.1.1/dns-query">>},
+                    {macula_bootstrap_via_doh_http, <<"https://9.9.9.9/dns-query">>},
+                    {macula_bootstrap_via_doh_http, <<"https://doh.mullvad.net/dns-query">>}
                 ],
                 corroboration => 2, timeout_ms => 1500}},
-            {macula_bootstrap_tier_b, #{
+            {macula_bootstrap_via_mdns, #{
                 handshake_fun => fun macula_peering:handshake_and_record/3,
                 timeout_ms    => 2000}},
-            {macula_bootstrap_tier_c, #{
+            {macula_bootstrap_via_mainline_dht, #{
                 dht_transport => macula_bootstrap_dht_udp,   %% when 6.5.x lands
                 timeout_ms    => 10_000}},
-            {macula_bootstrap_tier_d, #{
+            {macula_bootstrap_via_blockchain, #{
                 chains => [
-                    {macula_bootstrap_chain_eth_jsonrpc,
+                    {macula_bootstrap_via_blockchain_eth_jsonrpc,
                      #{endpoint => <<"https://eth.llamarpc.com">>,
                        contract => <<"0x…foundation…">>,
                        topic    => <<"0x…AnchorPublished…">>}},
-                    {macula_bootstrap_chain_esplora,
+                    {macula_bootstrap_via_blockchain_esplora,
                      #{base_url => <<"https://blockstream.info/api">>,
                        address  => <<"bc1q…foundation…">>}}],
                 timeout_ms => 20_000}},
-            {macula_bootstrap_tier_e, #{
+            {macula_bootstrap_via_operator_paste, #{
                 peer_urls => []       %% CLI-added as needed
             }}
         ]},
@@ -360,7 +360,7 @@ Every important event emits a structured log line:
 ```
 2026-04-15T13:42:01 info macula_bootstrap:cascade/2 started
     tiers=[a,b,c,d,e] min_peers=3 timeout_ms=60000
-2026-04-15T13:42:02 info macula_bootstrap_tier_a:probe/1 returned
+2026-04-15T13:42:02 info macula_bootstrap_via_doh:probe/1 returned
     peers=20 corroboration_hit=true
 2026-04-15T13:42:02 info macula_station_bootstrap:ingest/2 summary
     observed=20 admitted=20 touched=0 replaced=0 rejected=0
@@ -372,8 +372,8 @@ Log levels:
   SWIM state changes.
 - `notice': interesting but non-critical (rare duplicate pubkey
   observed, DHT bucket full).
-- `warning': degraded but functional (Tier A failed, fell through
-  to Tier B).
+- `warning': degraded but functional (via_doh failed, fell through
+  to via_mdns).
 - `error': something broke (`cascade_failed', SWIM confirmed_failed
   on self, QUIC listener crashed).
 - `critical': crash loop, unrecoverable (identity file unreadable,
@@ -492,17 +492,17 @@ to logger + updates Prometheus gauges.
 2. `journalctl --user -u hecate-daemon --since "10 minutes ago" |
    grep macula_bootstrap'.
 3. Identify which tier failed:
-   - Tier A failure likely means DoH resolvers unreachable or
+   - via_doh failure likely means DoH resolvers unreachable or
      foundation pubkey mismatch. Run:
      ```
      curl -s 'https://1.1.1.1/dns-query?name=_pkarr.<b32>.macula.io&type=TXT' \
          -H 'accept: application/dns-message'
      ```
-   - Tier B silent: check mDNS with `avahi-browse -a' or `dns-sd -B'.
+   - via_mdns silent: check mDNS with `avahi-browse -a' or `dns-sd -B'.
      Is port 5353 reachable? Are peers announcing?
-   - Tier C silent: foundation may not have published BEP 44 items
+   - via_mainline_dht silent: foundation may not have published BEP 44 items
      yet (6.6.y / 6.3.6 blockers).
-   - Tier D silent: confirm `MACULA_ETH_ENABLE=1' / `MACULA_BTC_ENABLE=1'
+   - via_blockchain silent: confirm `MACULA_ETH_ENABLE=1' / `MACULA_BTC_ENABLE=1'
      and endpoints reachable with `curl'.
 4. Manual recovery: add operator peer URL:
    ```
@@ -571,9 +571,9 @@ to logger + updates Prometheus gauges.
 ### 6.7 "Cascade times out"
 
 1. Check `cascade_opts.timeout_ms' in sys.config — default 60 s.
-2. If Tier D is in the list and no testnet anchor is live, Tier D
+2. If via_blockchain is in the list and no testnet anchor is live, via_blockchain
    spends 20 s waiting before falling through. Either disable
-   Tier D in the station's tier list OR set its `timeout_ms' to
+   via_blockchain in the station's tier list OR set its `timeout_ms' to
    something short (~2 s) so the cascade moves on quickly.
 3. Run cascade with extra logging:
    ```
@@ -660,11 +660,11 @@ Acceptance bars (Phase 2/3 style):
 
 Start a station on the laptop with `responder: #{node_id=>…,
 port=>7443, tier=>0}'. Start a second station on another laptop
-on the same Wi-Fi. Both should appear to each other via Tier B
+on the same Wi-Fi. Both should appear to each other via via_mdns
 within seconds. Useful to confirm the mDNS responder is sane before
 the beam cluster tests it with synthetic fakes.
 
-### 7.6 Relay-box interaction (Tier C real Mainline DHT)
+### 7.6 Relay-box interaction (via_mainline_dht real Mainline DHT)
 
 Once 6.5.x is in, a beam-cluster station can actually query the
 public Mainline DHT to fetch foundation-published PKARR records.

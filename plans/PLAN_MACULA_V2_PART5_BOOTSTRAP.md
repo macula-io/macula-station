@@ -10,13 +10,13 @@
 
 ## 1. Purpose of this Part
 
-A station with no prior contacts must reliably find its way into the mesh. The naive approach — hard-code one anchor — collapses if the anchor is seized, DDoSed, or BGP-hijacked. V2's bootstrap is **a multi-tier cascade**: five independent discovery paths, any one of which suffices to find honest peers.
+A station with no prior contacts must reliably find its way into the mesh. The naive approach — hard-code one anchor — collapses if the anchor is seized, DDoSed, or BGP-hijacked. V2's bootstrap is **a multi-strategy cascade**: five independent discovery paths, any one of which suffices to find honest peers.
 
 Governance is the twin problem. Who signs the parameters that tell a station the current crypto-puzzle difficulty? Who authorises a new realm? Who promotes a station to T3 gateway status? Governance answers must avoid two failure modes: centralisation (one actor can freeze the network) and chaos (no authority, adversary wins by impersonation).
 
 Part 5 answers:
 
-1. **How does a cold-boot station find honest peers, resiliently?** — §3–§8 (five-tier cascade).
+1. **How does a cold-boot station find honest peers, resiliently?** — §3–§8 (peer-discovery cascade).
 2. **How does a station declare itself a gateway?** — §9 (gateway admission).
 3. **How does a new realm come into existence?** — §10 (realm admission).
 4. **How are protocol parameters (crypto-puzzle difficulty, tRepublish interval, foundation seed list) signed and rotated?** — §12.
@@ -39,7 +39,7 @@ It lacks:
 
 Bootstrap solves this — without requiring a fixed central authority, without requiring prior presence, and without collapsing if any single discovery mechanism is compromised.
 
-**Design rule:** any single tier of the cascade must suffice to reach the mesh. Failure of N-1 tiers degrades recovery speed, not possibility.
+**Design rule:** any single strategy of the cascade must suffice to reach the mesh. Failure of N-1 tiers degrades recovery speed, not possibility.
 
 ---
 
@@ -47,52 +47,52 @@ Bootstrap solves this — without requiring a fixed central authority, without r
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│ Tier A — Foundation anchors                                   │
+│ via_doh — Foundation anchors                                  │
 │   Fast, centralised, trusts foundation keys                   │
 │   DoH → PKARR lookup of well-known NodeIds                    │
 │   Anycast-reachable T4s + a small set of T3s                  │
 └───────────────────────────────────────────────────────────────┘
-        │ fallback if A unreachable
+        │ fallback if via_doh unreachable
         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ Tier B — Local network discovery                              │
+│ via_mdns — Local network discovery                            │
 │   mDNS/DNS-SD on link-local IPv6                              │
 │   Finds peers on same LAN or same home network                │
 └───────────────────────────────────────────────────────────────┘
-        │ fallback if B empty
+        │ fallback if via_mdns empty
         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ Tier C — Mainline DHT bridge                                  │
+│ via_mainline_dht — Mainline DHT bridge                        │
 │   PKARR-compatible records reachable from BitTorrent DHT      │
 │   Resolves well-known identity keys via public infrastructure │
 └───────────────────────────────────────────────────────────────┘
-        │ fallback if C unreachable
+        │ fallback if via_mainline_dht unreachable
         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ Tier D — Blockchain anchor (optional, slow)                   │
+│ via_blockchain — Blockchain anchor (optional, slow)           │
 │   Signed seed record on Bitcoin/Ethereum L1 (OP_RETURN)       │
 │   Immutable, jurisdiction-resistant, high-latency             │
 └───────────────────────────────────────────────────────────────┘
-        │ fallback if D unreachable
+        │ fallback if via_blockchain unreachable
         ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ Tier E — Social / out-of-band                                 │
+│ via_operator_paste — Social / out-of-band                     │
 │   Operator pastes a peer QR code, signed URL, business card   │
 │   Manual but unreseizable                                     │
 └───────────────────────────────────────────────────────────────┘
 ```
 
 Cascade invariants:
-- Tiers probed in order A → B → C → D → E with parallelism (start B at 200 ms of A not responding; start C at 500 ms; etc.).
-- First tier that yields ≥3 verifiable peers satisfies bootstrap.
+- Strategies probed in order via_doh → via_mdns → via_mainline_dht → via_blockchain → via_operator_paste with parallelism (start via_mdns at 200 ms of via_doh not responding; start via_mainline_dht at 500 ms; etc.).
+- First strategy that yields ≥3 verifiable peers satisfies bootstrap.
 - Every verified peer feeds the routing table immediately; subsequent discovery walks the DHT (Part 3) from there.
 - Bootstrap target: <60 s to "first successful DHT lookup" under Tier S; <5 min under Tier 3.
 
 ---
 
-## 4. Tier A — Foundation anchors
+## 4. via_doh — Foundation anchors
 
-### 4.1 What Tier A is
+### 4.1 What via_doh is
 
 Foundation-operated T4 stations (Part 2 §3.5) + a publicly-listed set of T3s. Their NodeIds and addresses are published as **signed PKARR records** reachable via:
 
@@ -112,17 +112,17 @@ Fresh station bootstraps by:
 
 If foundation threshold-key is compromised:
 - Adversary signs a malicious seed list.
-- Station following Tier A only gets adversary peers.
+- Station following via_doh only gets adversary peers.
 - **But:** signed records carry `valid_from` + `valid_until`. Old records held in station's cache survive compromise.
-- Tiers B/C/D/E are independent; station still reaches honest peers via fallback.
+- via_mdns / via_mainline_dht / via_blockchain / via_operator_paste are independent; station still reaches honest peers via fallback.
 
 If DoH resolvers collude or are DDoSed:
-- Station falls through to Tier B within 500 ms.
+- Station falls through to via_mdns within 500 ms.
 - Anycast IPv6 is a third path that is independent of DoH.
 
 ### 4.3 DoH resolver selection
 
-Station queries ≥3 resolvers in parallel with different operators (Cloudflare, Quad9, Mullvad, NextDNS, …). Any two corroborating results suffice. Single-resolver answer treated as low-confidence; triggers Tier B/C in parallel.
+Station queries ≥3 resolvers in parallel with different operators (Cloudflare, Quad9, Mullvad, NextDNS, …). Any two corroborating results suffice. Single-resolver answer treated as low-confidence; triggers via_mdns / via_mainline_dht in parallel.
 
 ### 4.4 Anycast
 
@@ -132,7 +132,7 @@ BGP-hijack resistance: every T4 announcement is RPKI-signed (Part 2 §3.5). Hija
 
 ---
 
-## 5. Tier B — Local network discovery
+## 5. via_mdns — Local network discovery
 
 ### 5.1 mDNS / DNS-SD on link-local IPv6
 
@@ -146,7 +146,7 @@ _macula._udp.local
 
 Fresh station sends mDNS query for `_macula._udp.local` on its local segment. Responses corroborate each other; at least one signed `node_record` over QUIC confirms the peer is legitimate.
 
-### 5.2 When Tier B wins
+### 5.2 When via_mdns wins
 
 - Home network with a prior-installed station (the operator's existing node).
 - Same LAN as other stations (coop space, cluster).
@@ -164,7 +164,7 @@ Multi-LAN SMB environments can configure a `.local.`-resolving unicast resolver 
 
 ---
 
-## 6. Tier C — Mainline DHT bridge
+## 6. via_mainline_dht — Mainline DHT bridge
 
 ### 6.1 What it is
 
@@ -201,7 +201,7 @@ Adversary publishing malicious PKARR records at the same public keys is blocked 
 
 ---
 
-## 7. Tier D — Blockchain anchor
+## 7. via_blockchain — Blockchain anchor
 
 ### 7.1 What it is
 
@@ -216,7 +216,7 @@ Fresh station bootstraps:
 ```
 1. Fetch most recent OP_RETURN tagged with foundation marker (via public block explorers, multiple independent).
 2. Parse & verify signature against foundation's multi-sig key (m-of-n FROST).
-3. Extract seed list; resolve each seed's endpoint via Tier A/C as a follow-up.
+3. Extract seed list; resolve each seed's endpoint via via_doh/C as a follow-up.
 ```
 
 ### 7.2 Why it works
@@ -228,9 +228,9 @@ Blockchain is:
 
 Latency: minutes (block confirmation) for writes. Reads are fast (archive nodes).
 
-### 7.3 When Tier D wins
+### 7.3 When via_blockchain wins
 
-Pathological scenarios where Tiers A/B/C are all blocked:
+Pathological scenarios where via_doh, via_mdns, and via_mainline_dht are all blocked:
 - State-actor DNS blockade including DoH.
 - Mainline DHT under coordinated eclipse (expensive, not impossible).
 - Local network has no other stations and internet-DNS is filtered.
@@ -257,7 +257,7 @@ If foundation's blockchain-writing key is compromised, adversary publishes malic
 
 ---
 
-## 8. Tier E — Social / out-of-band
+## 8. via_operator_paste — Social / out-of-band
 
 ### 8.1 What it is
 
@@ -275,13 +275,13 @@ hecate bootstrap add-peer <signed-url-or-QR-contents>
 
 Signature verification ensures the peer is who they claim. Subsequent DHT lookups walk from there.
 
-### 8.2 When Tier E wins
+### 8.2 When via_operator_paste wins
 
-The network is fully partitioned (cataclysm, internet blackout); operators exchange identities physically. Tier E is the floor — it works even in air-gapped scenarios if two devices can exchange bits once.
+The network is fully partitioned (cataclysm, internet blackout); operators exchange identities physically. via_operator_paste is the floor — it works even in air-gapped scenarios if two devices can exchange bits once.
 
-### 8.3 Tier E is a feature, not a workaround
+### 8.3 via_operator_paste is a feature, not a workaround
 
-Tier E normalises operator sovereignty. An operator can refuse all other tiers and configure their station to bootstrap *only* from named peers — a deliberate cliquish configuration for high-trust realms.
+via_operator_paste normalises operator sovereignty. An operator can refuse all other tiers and configure their station to bootstrap *only* from named peers — a deliberate cliquish configuration for high-trust realms.
 
 ---
 
@@ -412,7 +412,7 @@ Bootstrap is the highest-value attack window: a new station has no prior state t
 | Attack | Defence |
 |--------|---------|
 | Forged foundation seed list | Foundation threshold key (m-of-n FROST); embedded pubkey in firmware; signature verification mandatory. |
-| DoH hijack | Use ≥3 independent DoH providers; require ≥2 corroborate; fall through to Tier B/C. |
+| DoH hijack | Use ≥3 independent DoH providers; require ≥2 corroborate; fall through to via_mdns/C. |
 | mDNS spoofing | Still must present signed `node_record` over QUIC; spoofer needs valid signature, which they don't have. |
 | Mainline DHT poisoning | PKARR records are Ed25519-signed; adversary can't forge. |
 | Firmware tamper | Signed firmware (reproducible builds + foundation signature); TPM-verified boot where available. |
@@ -425,7 +425,7 @@ First-boot (empty cache) is most vulnerable. Mitigation: shipped firmware includ
 
 ### 11.4 Bootstrap observation
 
-Stations report bootstrap metrics: which tier succeeded, how long it took, how many peers verified. Foundation monitoring aggregates. Sudden drop in Tier A success across fleet ⇒ investigation.
+Stations report bootstrap metrics: which tier succeeded, how long it took, how many peers verified. Foundation monitoring aggregates. Sudden drop in via_doh success across fleet ⇒ investigation.
 
 ---
 
@@ -460,7 +460,7 @@ Stations accept a new version iff `version > current` AND `valid_until > now` AN
 
 Custodian key compromise ⇒ threshold rotation ceremony. Stations observe rotated-signer record signed by surviving quorum; cached old-key records remain valid until `valid_until`.
 
-Total foundation compromise (impossible under threshold, but model it): every V1 sign-able is revokable by publishing `valid_until: past`. Stations fall back to cascade Tier B/C/D/E. Long-term recovery: foundation re-bootstrap from Tier E (operator consensus).
+Total foundation compromise (impossible under threshold, but model it): every V1 sign-able is revokable by publishing `valid_until: past`. Stations fall back to cascade via_mdns/C/D/E. Long-term recovery: foundation re-bootstrap from via_operator_paste (operator consensus).
 
 ### 12.5 Non-signed protocol parameters
 
@@ -570,7 +570,7 @@ On HANDSHAKING (Part 4 §10), peers exchange protocol versions + capability bits
 
 ### 14.3 Deprecation
 
-Foundation announces deprecation of a version ≥ 6 months in advance. Stations are encouraged to update. Deprecated versions continue to function technically but may lose Tier A bootstrap preference.
+Foundation announces deprecation of a version ≥ 6 months in advance. Stations are encouraged to update. Deprecated versions continue to function technically but may lose via_doh bootstrap preference.
 
 ---
 
@@ -578,25 +578,25 @@ Foundation announces deprecation of a version ≥ 6 months in advance. Stations 
 
 ### 15.1 Happy path
 
-Fresh install. Tier A available. First DoH query returns foundation record in 150 ms; QUIC connects to T4 in 50 ms more; routing table populated from T4's FIND_NODE response within 400 ms. Bootstrap complete in ~600 ms.
+Fresh install. via_doh available. First DoH query returns foundation record in 150 ms; QUIC connects to T4 in 50 ms more; routing table populated from T4's FIND_NODE response within 400 ms. Bootstrap complete in ~600 ms.
 
-### 15.2 Tier A partial failure
+### 15.2 via_doh partial failure
 
 DoH resolver 1 (Cloudflare) returns wrong record (hijack attempt). Resolver 2 (Quad9) returns correct. Resolver 3 (Mullvad) returns correct. 2/3 corroborate ⇒ trusted. Slight latency hit (worst-resolver wait) but bootstrap succeeds in <2 s.
 
-### 15.3 Tier A complete failure, Tier B lucky hit
+### 15.3 via_doh complete failure, via_mdns lucky hit
 
-DoH unreachable (network incident). Station starts Tier B in parallel at 200 ms. mDNS on LAN returns a cached neighbour station. Signed QUIC handshake confirms. Bootstrap complete in ~800 ms.
+DoH unreachable (network incident). Station starts via_mdns in parallel at 200 ms. mDNS on LAN returns a cached neighbour station. Signed QUIC handshake confirms. Bootstrap complete in ~800 ms.
 
-### 15.4 Tiers A/B fail, Tier C succeeds
+### 15.4 via_doh + via_mdns fail, via_mainline_dht succeeds
 
 No DoH. No local stations. Mainline DHT query for foundation pubkey returns signed record at 3 s. Bootstrap in ~3.5 s.
 
-### 15.5 Tiers A/B/C fail, Tier D succeeds
+### 15.5 via_doh + via_mdns + via_mainline_dht fail, via_blockchain succeeds
 
 Internet blockade blocks all above. Station's operator has configured blockchain-anchor fetch via a satellite modem or neighbouring operator's relay. Quarterly seed list retrieved in 10 s. Bootstrap in ~12 s.
 
-### 15.6 All automated tiers fail, Tier E
+### 15.6 All automated tiers fail, via_operator_paste
 
 Full isolation. Operator scans a QR code from a neighbour operator's device. Bootstrap in manual time.
 
@@ -617,8 +617,8 @@ Full isolation. Operator scans a QR code from a neighbour operator's device. Boo
 
 Part 5 is complete when a reader can:
 
-1. Describe the **five-tier cascade** and what each tier defends against (§3–§8).
-2. Trace a **cold-boot sequence** under Tier A success (§15.1) and under Tier A + B + C failure (§15.4).
+1. Describe the **peer-discovery cascade** and what each strategy defends against (§3–§8).
+2. Trace a **cold-boot sequence** under via_doh success (§15.1) and under via_doh + B + C failure (§15.4).
 3. Explain how **foundation compromise does not collapse the network** (§4.2, §11, §12.4).
 4. State the **three-layer governance model** and name three things the foundation *cannot* do (§13.1).
 5. Walk through **new realm creation** (§10.1) and **new realm admission-to-member** (§10.2).

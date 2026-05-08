@@ -134,7 +134,7 @@ SWIM server (seeded from DHT).
   returning `{ok, pid()} | {error, not_started}` via
   `whereis/1` on the registered names.
 - `macula_station_stub_tier` (test) — deterministic
-  `macula_bootstrap_tier` implementation for unit tests.
+  `macula_bootstrap_peer_discoverer` implementation for unit tests.
 - Tests: `macula_station_bootstrap_runner_tests` (4 cases: happy
   path, `no_tiers`, cascade_failed wrapping, app-env read) and
   `macula_station_app_tests` (4 cases: disabled env yields empty sup,
@@ -664,7 +664,7 @@ macula_station_app
 
 macula_bootstrap_app
 └── macula_bootstrap_sup (one_for_one)
-    └── macula_bootstrap_mdns_responder (worker if configured)
+    └── macula_bootstrap_via_mdns_responder (worker if configured)
 ```
 
 Startup order enforced by `macula_station_sup`'s child list (strict
@@ -731,8 +731,8 @@ landed; pipeline green across every session.**
       <br>*Verified by `macula_station_admin_tests`
       (GET /status) + `macula_station_app_tests` full-runtime boot.*
 - [ ] A second station on the same LAN joins the first one via
-      Tier B mDNS within 5 s.
-      <br>*Deferred: needs live mDNS responder (Tier B real-network
+      via_mdns mDNS within 5 s.
+      <br>*Deferred: needs live mDNS responder (via_mdns real-network
       adapter) — tracked in `PLAN_DEFERRED_WORK.md`.*
 - [ ] Cold boot on beam cluster (4 nodes) converges (cascade + DHT
       + SWIM + overlay) within 60 s.

@@ -129,7 +129,7 @@ Default tier for a fresh Hecate Station out of the box is T0. Higher tiers requi
 **Additional role obligations (on top of T1).**
 - Cross-metro / intra-country routing — if the source-computed path requires crossing metros within DE, a T2 typically carries the middle hop.
 - **Country-prefix bucket anchor** in tier-diverse routing tables — at least one T2 per country is expected to be reachable.
-- **Serve as stable T0/T1 bootstrap peer** for fresh stations in its country (bootstrap cascade Tier B; Part 5).
+- **Serve as stable T0/T1 bootstrap peer** for fresh stations in its country (bootstrap cascade via_mdns; Part 5).
 - Publish a **country-topology snapshot** (count of T0/T1 by ISP prefix) for foundation monitoring.
 
 **Not obligated.**
@@ -156,7 +156,7 @@ Default tier for a fresh Hecate Station out of the box is T0. Higher tiers requi
 
 **Additional role obligations (on top of T2).**
 - **Cross-country Europe backbone** — source-computed paths spanning distant countries (PT ↔ FI, IE ↔ GR) typically include one T3 hop.
-- **Anycast DNS PKARR** — T3s serve the `_pkarr.{anycast-label}` lookup for bootstrap cascade Tier A.
+- **Anycast DNS PKARR** — T3s serve the `_pkarr.{anycast-label}` lookup for bootstrap cascade via_doh.
 - **Mainline DHT bridging** — T3s run reciprocal Mainline DHT nodes that make Macula PKARR records discoverable from BitTorrent-DHT-speaking clients.
 - **Foundation monitoring data sink** — publish observability streams (DHT health snapshots, SWIM anomalies) to foundation-signed topics.
 
@@ -187,7 +187,7 @@ Default tier for a fresh Hecate Station out of the box is T0. Higher tiers requi
 - Sign the **monthly foundation seed list** (a rolling snapshot of recommended bootstrap stations).
 - Sign the **foundation trust list** of realms (purely informational).
 - Publish **foundation-signed DHT health reports** (anomaly alerts).
-- Serve the **first-tier bootstrap cascade** (Tier A in Part 5 §3.1).
+- Serve the **first-tier bootstrap cascade** (via_doh in Part 5 §3.1).
 
 **Hard limits.**
 - Foundation holds *no* authority over realm-internal state.

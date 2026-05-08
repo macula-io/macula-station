@@ -431,7 +431,7 @@ V1 bug #4: peer CONNECT `endpoint` was relay-assigned, not caller-assigned; retr
 
 | Tier | Trigger conditions | Expected behaviour | Latency p95 | Success rate | In V2.0? |
 |------|--------------------|--------------------|-------------|--------------|----------|
-| **S** (Peacetime) | Normal. No country-level outage. Foundation reachable. Bootstrap cascade Tier A fastest. | Full feature set. Cross-realm federation responsive. All pillars fully active. | <50 ms cross-EU | >99.99% | ✅ |
+| **S** (Peacetime) | Normal. No country-level outage. Foundation reachable. Bootstrap cascade via_doh fastest. | Full feature set. Cross-realm federation responsive. All pillars fully active. | <50 ms cross-EU | >99.99% | ✅ |
 | **1** (Partial) | One country degraded (DoS, fiber cut, BGP hijack). Foundation reachable. T3s in other countries fine. | Realms in affected country fall back to in-country T1/T2. Cross-country routing uses adjacent T3. SWIM declares affected peers suspect quickly. | <150 ms | >99% | ✅ |
 | **2** (Multi-region) | 2+ countries simultaneously under attack. Foundation possibly partially unreachable. | Best-effort ordering; clients see longer retries. HyParView reconfigures around failed peers. Realm membership queries favour cached replicas. | <500 ms | >95% | ✅ |
 | **3** (Severe) | Only Tier-D (social / blockchain) bootstrap works; most T3/T4 down. Foundation bootstrap list signed months ago. | Stations operate on last-known-good replicas. Record writes queue for eventual publication. Realms operate read-mostly. Signed receipts for CALL requests. | Minutes — hours | Eventually-delivered | Phase 7 hardening |
@@ -443,7 +443,7 @@ No central declaration. Every station *infers* its own tier from observables:
 
 - Foundation reachable (DoH-PKARR resolvable)? → candidate S.
 - SWIM view shows >30% of tier-same peers `confirmed_failed` in the last hour? → candidate 1 or 2.
-- Bootstrap Tier A (foundation anchor) timing out repeatedly? → candidate 2 or 3.
+- Bootstrap via_doh (foundation anchor) timing out repeatedly? → candidate 2 or 3.
 - Zero successful CALL in last 30 s? → candidate 3.
 
 The station publishes its current tier in `_macula.health.self_tier`. Realms aggregate this across their member stations to infer realm-level tier.
@@ -586,7 +586,7 @@ A record whose owner hasn't republished within tExpire is orphaned. Custodians p
 ```
 1. Load encrypted StationId from disk (TPM-sealed or passphrase-derived).
 2. Probe IPv6 reachability; derive ASN; assemble candidate node_record.
-3. Resolve bootstrap cascade (Part 5) — Tier A → B → C → D.
+3. Resolve bootstrap cascade (Part 5) — via_doh → via_mdns → via_mainline_dht → via_blockchain.
 4. Establish first k peer connections via S/Kademlia FIND_NODE of self.
 5. Join SWIM group(s) — tier-same country, tier-adjacent bridging.
 6. Publish node_record to DHT; publish gateway_capability if applicable.

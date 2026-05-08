@@ -87,7 +87,7 @@ macula-station/
 │   ├── macula_swim/                % SWIM-Lifeguard member
 │   ├── macula_routing/             % path computation + source-route forwarding
 │   ├── macula_handler/             % CALL dispatch registry, single-provider, heartbeat
-│   ├── macula_bootstrap/           % 5-tier cascade orchestrator
+│   ├── macula_bootstrap/           % peer-discovery cascade orchestrator
 │   ├── hecate_overlay/             % HyParView + Plumtree (intra-realm)
 │   └── hecate_realm/               % realm directory cache
 ├── plans/                          % PLAN_MACULA_V2_*.md (mirrored)
@@ -163,7 +163,7 @@ No cycles. SDK never depends on station; station depends only on SDK.
 | `macula_routing:compute_paths/3` | Suurballe k=3 disjoint (Part 3 §6.3) |
 | `macula_frame:verify_source_route/2` | Source-route header parse + verify (Part 6 §11.2) |
 | `macula_routing:forward/2` | Per-hop forwarding (Part 6 §11.2) |
-| `macula_bootstrap:cascade/1` | 5-tier cascade (Part 5 §3) |
+| `macula_bootstrap:cascade/1` | peer-discovery cascade (Part 5 §3) |
 | `hecate_overlay:join_realm/2` | HyParView join |
 | `hecate_overlay:publish/3`, `subscribe/3` | Plumtree push-lazy |
 | `hecate_realm:endorse_member/3`, `verify_endorsement/2` | Realm admission |
@@ -360,25 +360,25 @@ Realm of 20 stations converges on OR-Set add/remove in <1 s via Plumtree.
 
 ### 11.1 Deliverable
 
-Cold-boot station bootstraps via any single tier of the 5-tier cascade in <60 s.
+Cold-boot station bootstraps via any single tier of the peer-discovery cascade in <60 s.
 
 ### 11.2 Tasks
 
 1. `macula_bootstrap` orchestrator.
-2. Tier A — DoH resolver integration (≥3 resolvers); anycast IPv6 probe.
-3. Tier B — mDNS `_macula._udp.local` advertise + listen.
-4. Tier C — Mainline DHT bridge integration (BitTorrent DHT client library).
-5. Tier D — Bitcoin + Ethereum anchor readers (light-client libs).
-6. Tier E — CLI `hecate bootstrap add-peer <signed-url>`.
+2. via_doh — DoH resolver integration (≥3 resolvers); anycast IPv6 probe.
+3. via_mdns — mDNS `_macula._udp.local` advertise + listen.
+4. via_mainline_dht — Mainline DHT bridge integration (BitTorrent DHT client library).
+5. via_blockchain — Bitcoin + Ethereum anchor readers (light-client libs).
+6. via_operator_paste — CLI `hecate bootstrap add-peer <signed-url>`.
 7. Firmware-embedded foundation pubkeys (5, multi-custodian).
 8. Parameter-record fetching + verification (Part 6 §9.14-§9.16).
 
 ### 11.3 Acceptance
 
-- Cold boot Tier A: <2 s to first DHT lookup.
-- Cold boot Tier B only (A disabled): <3 s.
-- Cold boot Tier C only: <10 s.
-- Cold boot Tier D only: <30 s.
+- Cold boot via_doh: <2 s to first DHT lookup.
+- Cold boot via_mdns only (A disabled): <3 s.
+- Cold boot via_mainline_dht only: <10 s.
+- Cold boot via_blockchain only: <30 s.
 - Full cascade attempted under adversarial drop: succeeds in <60 s.
 
 ### 11.4 Expected duration
@@ -566,8 +566,8 @@ Async-checkpoint cadence (Q3 decision): human review at each phase gate; no cale
 | Suurballe implementation bugs | Medium; Phase 4 stalls | Cross-check against literature test cases; property-test with path-validity oracle |
 | Lifeguard parameters wrong for residential hardware | Medium; false positives in lab | Phase 2 calibration; Q O16 revisits |
 | Mainline DHT library not mature on BEAM | Low; Phase 6 slips | Fallback: Rust NIF wrapping libp2p-kad; rebuild if needed |
-| Blockchain anchor library lag | Low; Phase 6 Tier D slips | Hand-crafted light-client path via block-explorer JSON APIs |
-| Foundation FROST key ceremony delay | Medium; Phase 6 Tier A/B partial | Use simple Ed25519 with key rotation until FROST ceremony complete; foundation-issued deprecation window |
+| Blockchain anchor library lag | Low; Phase 6 via_blockchain slips | Hand-crafted light-client path via block-explorer JSON APIs |
+| Foundation FROST key ceremony delay | Medium; Phase 6 via_doh/B partial | Use simple Ed25519 with key rotation until FROST ceremony complete; foundation-issued deprecation window |
 
 ---
 

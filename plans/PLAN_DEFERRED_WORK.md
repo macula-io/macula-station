@@ -28,7 +28,7 @@ Cross-reference:
 
 ## 1. Phase 6 real-network adapters (us-blocked vs foundation-ops-blocked)
 
-All five cascade tiers ship with pluggable transport behaviours and
+All five cascade strategies ship with pluggable transport behaviours and
 canned-fake CI coverage. The concrete adapters against real networks
 below are the last Phase-6 items. Some are blocked on foundation
 operational infrastructure; others are self-contained sub-projects
@@ -36,11 +36,11 @@ we can ship when convenient.
 
 | # | Item | Files | Blocker | Owner | Trigger |
 |---|------|-------|---------|-------|---------|
-| 6.3.5 | IPv6 anycast Tier-A probe (Part 5 §4.4) — parallel QUIC handshake against the foundation's `/48' anycast prefix; reachable endpoints feed Tier A as extra resolver targets | new `macula_bootstrap_anycast` | Foundation must allocate + RPKI-sign a `/48' and announce from ≥2 custodians' ASNs | Foundation ops | "Start 6.3.5 — anycast probe" (after foundation confirms prefix) |
+| 6.3.5 | IPv6 anycast Tier-A probe (Part 5 §4.4) — parallel QUIC handshake against the foundation's `/48' anycast prefix; reachable endpoints feed via_doh as extra resolver targets | new `macula_bootstrap_anycast` | Foundation must allocate + RPKI-sign a `/48' and announce from ≥2 custodians' ASNs | Foundation ops | "Start 6.3.5 — anycast probe" (after foundation confirms prefix) |
 | 6.3.6 | Gated DoH CT against real resolvers (Cloudflare / Quad9 / Mullvad) | `macula_bootstrap_doh_SUITE` | Foundation must publish signed PKARR records under `_pkarr.<b32>.macula.io' zone | Foundation ops | "Start 6.3.6 — gated DoH" (after PKARR zone live) |
 | 6.4.y | Link-local scope-id + multi-interface mDNS fan-out (Part 5 §5) | Probe fan-out + interface enumeration shipped 2026-04-15 (Sprint C). Remaining: per-interface responder sup + real-network validation against a multi-NIC host. | None (unblocked) | Us | "Finish 6.4.y — responder fan-out" |
 | 6.5.x | Real Mainline DHT UDP client (BEP 5 + BEP 44 `get`) | new `macula_bootstrap_dht_udp` | None (unblocked) — 500-1000 LOC sub-project; choose Erlang-native or Rust NIF | Us | "Start 6.5.x — BT-DHT UDP client" |
-| 6.6.y | Gated CT against real Electrum/Esplora + Infura/Ankr | `macula_bootstrap_chain_SUITE` | Foundation must publish Bitcoin OP_RETURN + Ethereum `AnchorPublished' events on testnet | Foundation ops | "Start 6.6.y — gated chain CT" (after testnet anchors published) |
+| 6.6.y | Gated CT against real Electrum/Esplora + Infura/Ankr | `macula_bootstrap_via_blockchain_SUITE` | Foundation must publish Bitcoin OP_RETURN + Ethereum `AnchorPublished' events on testnet | Foundation ops | "Start 6.6.y — gated chain CT" (after testnet anchors published) |
 
 **Sub-project sizing:**
 - 6.5.x is big — minimal Mainline DHT client needs routing table
@@ -91,7 +91,7 @@ Scope per `PLAN_MACULA_V2_PART7_IMPLEMENTATION.md` §12.
 | 7.1 | Chaos test suite — node kills, network partitions, clock skew, BGP simulation. ✅ Primitive harness shipped 2026-04-15 (Sprint D) — see `test/fleet_chaos.erl'. Remaining: partition / clock-skew / BGP-sim primitives need iptables + time-travel tooling at the fleet level. | O34 (harness tooling: PropEr native + custom) |
 | 7.2 | Sybil flood — 10 000 adversary NodeIds across 3 ASes, measure bucket diversity | — |
 | 7.3 | Eclipse simulation — adversary controls 50% of target's routing table, measure lookup degradation | — |
-| 7.4 | Adaptive crypto-puzzle difficulty (foundation-signed parameter bumps via Tier A/C/D re-fetch) | O1 (puzzle difficulty policy) |
+| 7.4 | Adaptive crypto-puzzle difficulty (foundation-signed parameter bumps via via_doh/C/D re-fetch) | O1 (puzzle difficulty policy) |
 | 7.5 | 24-h burn-in on 10-station lab fleet | O39 (burn-in duration — 72 h minimum, 7 d if schedule permits) |
 | 7.6 | Tier-3 SLA behaviour elicitation (limited T4 reachability) | O14 |
 | 7.7 | Security review of every signed-record path | O23 (firmware signing), O33 (sigstore) |
