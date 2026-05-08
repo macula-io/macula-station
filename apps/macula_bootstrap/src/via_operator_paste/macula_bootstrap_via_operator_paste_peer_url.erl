@@ -28,7 +28,7 @@
 %% (the peer proves possession of the NodeId private key there).
 %%
 %% Reference: plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md §8.
--module(macula_bootstrap_peer_url).
+-module(macula_bootstrap_via_operator_paste_peer_url).
 
 -export([encode/2, decode/1]).
 

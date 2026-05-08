@@ -74,7 +74,7 @@ end_per_testcase(_Case, _Cfg) ->
 
 tier_e_yields_three_peers(_Cfg) ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
-    Tiers = [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
+    Tiers = [{macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}],
     {ok, Peers} = macula_bootstrap:cascade(Tiers, #{min_peers => 3}),
     3 = length(Peers),
     Ids = [maps:get(node_id, P) || P <- Peers],
@@ -95,7 +95,7 @@ cascade_falls_through_to_working_tier(_Cfg) ->
         Tiers = [
             {macula_phase6_broken_a, #{}},
             {macula_phase6_broken_b, #{}},
-            {macula_bootstrap_tier_e, #{peer_urls => Urls}}
+            {macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}
         ],
         {ok, Peers} = macula_bootstrap:cascade(
                         Tiers, #{min_peers => 3, timeout_ms => 2000}),
@@ -206,7 +206,7 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
            pubkeys       => [Fk],
            corroboration => 2,
            timeout_ms    => 500}},
-        {macula_bootstrap_tier_e, #{peer_urls => Urls}}
+        {macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}
     ],
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 2000}),
@@ -447,7 +447,7 @@ full_cascade_tiers(Fk, Opts) ->
                             CO#{label => Label}}
                            || {Label, CO} <- TierDChains],
            timeout_ms => 500}},
-        {macula_bootstrap_tier_e,
+        {macula_bootstrap_via_operator_paste,
          #{peer_urls => TierEUrls}}
     ].
 
@@ -456,7 +456,7 @@ phase6_signed_url() ->
     Record = macula_record:sign(
                macula_record:node_record(
                  macula_identity:public(Kp), [], 0), Kp),
-    macula_bootstrap_peer_url:encode(Record, []).
+    macula_bootstrap_via_operator_paste_peer_url:encode(Record, []).
 
 %%---------------------------------------------------------------------
 %% Tier D via real Ethereum JSON-RPC adapter (with canned HTTP)
@@ -553,7 +553,7 @@ signed_url() ->
                macula_record:node_record(
                  macula_identity:public(Kp), [], 0),
                Kp),
-    macula_bootstrap_peer_url:encode(Record, []).
+    macula_bootstrap_via_operator_paste_peer_url:encode(Record, []).
 
 signed_seed_list_bytes(Kp, Fk, N) ->
     Seeds = [#{node_id   => crypto:strong_rand_bytes(32),

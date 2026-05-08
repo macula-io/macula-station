@@ -44,7 +44,7 @@ spec_tier_b_peer_defaults_t0_test() ->
     ?assertEqual(t0, maps:get(tier, Spec)).
 
 spec_tier_e_peer_defaults_t0_test() ->
-    Peer = peer(<<7:256>>, via_operator_paste, macula_bootstrap_tier_e),
+    Peer = peer(<<7:256>>, via_operator_paste, macula_bootstrap_via_operator_paste),
     Spec = macula_station_bootstrap:to_entry_spec(Peer),
     ?assertEqual(t0, maps:get(tier, Spec)).
 
@@ -119,7 +119,7 @@ ingest_preserves_count_across_cascade_tiers_test_() ->
                       peer(rand_id(), via_mdns, macula_bootstrap_tier_b),
                       peer(rand_id(), via_mainline_dht, macula_bootstrap_tier_c),
                       peer(rand_id(), via_blockchain, macula_bootstrap_tier_d),
-                      peer(rand_id(), via_operator_paste, macula_bootstrap_tier_e)],
+                      peer(rand_id(), via_operator_paste, macula_bootstrap_via_operator_paste)],
              Summary = macula_station_bootstrap:ingest(Dht, Peers),
              ?assertEqual(5, maps:get(observed, Summary)),
              ?assertEqual(5, maps:get(admitted, Summary))

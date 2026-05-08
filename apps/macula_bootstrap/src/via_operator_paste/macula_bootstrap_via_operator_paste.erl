@@ -1,7 +1,7 @@
 %% @doc Tier E — social / out-of-band peer ingestion.
 %%
 %% The last-resort cascade tier (Part 5 §8). Operator supplies one or
-%% more signed peer URLs (see `macula_bootstrap_peer_url'); each URL
+%% more signed peer URLs (see `macula_bootstrap_via_operator_paste_peer_url'); each URL
 %% is decoded and signature-verified. Verified peers are returned to
 %% the orchestrator.
 %%
@@ -16,7 +16,7 @@
 %% </ul>
 %%
 %% Reference: plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md §8.
--module(macula_bootstrap_tier_e).
+-module(macula_bootstrap_via_operator_paste).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).
@@ -34,7 +34,7 @@ collect(Urls) -> collect(Urls, []).
 collect([], [])    -> {error, all_urls_invalid};
 collect([], Acc)   -> {ok, lists:reverse(Acc)};
 collect([U | Rest], Acc) ->
-    accumulate(macula_bootstrap_peer_url:decode(U), Rest, Acc).
+    accumulate(macula_bootstrap_via_operator_paste_peer_url:decode(U), Rest, Acc).
 
 accumulate({ok, Record, Addrs}, Rest, Acc) ->
     Peer = #{

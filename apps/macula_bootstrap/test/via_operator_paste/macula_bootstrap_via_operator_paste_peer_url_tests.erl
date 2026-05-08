@@ -1,5 +1,5 @@
-%% EUnit tests for macula_bootstrap_peer_url.
--module(macula_bootstrap_peer_url_tests).
+%% EUnit tests for macula_bootstrap_via_operator_paste_peer_url.
+-module(macula_bootstrap_via_operator_paste_peer_url_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -9,7 +9,7 @@
 
 roundtrip_empty_hints_test() ->
     {Url, OrigRecord} = build_url([]),
-    {ok, Decoded, Addrs} = macula_bootstrap_peer_url:decode(Url),
+    {ok, Decoded, Addrs} = macula_bootstrap_via_operator_paste_peer_url:decode(Url),
     ?assertEqual([], Addrs),
     ?assertEqual(macula_record:key(OrigRecord), macula_record:key(Decoded)),
     ?assertEqual(macula_record:version(OrigRecord),
@@ -27,7 +27,7 @@ roundtrip_with_address_hints_test() ->
         {text, <<"kind">>} => {text, <<"fallback">>}
     },
     {Url, _Rec} = build_url([Addr1, Addr2]),
-    {ok, _Decoded, Addrs} = macula_bootstrap_peer_url:decode(Url),
+    {ok, _Decoded, Addrs} = macula_bootstrap_via_operator_paste_peer_url:decode(Url),
     ?assertEqual(2, length(Addrs)),
     [A1, A2] = Addrs,
     ?assertEqual({text, <<"2a02::1">>}, maps:get({text, <<"v6">>}, A1)),
@@ -43,11 +43,11 @@ scheme_prefix_is_present_test() ->
 
 decode_bad_scheme_test() ->
     ?assertEqual({error, bad_scheme},
-                 macula_bootstrap_peer_url:decode(<<"http://nope">>)).
+                 macula_bootstrap_via_operator_paste_peer_url:decode(<<"http://nope">>)).
 
 decode_malformed_base64_test() ->
     ?assertEqual({error, bad_base64},
-                 macula_bootstrap_peer_url:decode(
+                 macula_bootstrap_via_operator_paste_peer_url:decode(
                    <<"macula-peer:!!!not-base64!!!">>)).
 
 decode_non_cbor_payload_test() ->
@@ -55,7 +55,7 @@ decode_non_cbor_payload_test() ->
     Nonsense = base64:encode(<<"this is not CBOR at all">>,
                              #{mode => urlsafe, padding => false}),
     Url = <<"macula-peer:", Nonsense/binary>>,
-    ?assertMatch({error, _}, macula_bootstrap_peer_url:decode(Url)).
+    ?assertMatch({error, _}, macula_bootstrap_via_operator_paste_peer_url:decode(Url)).
 
 decode_wrong_record_type_test() ->
     %% Build an endorsement record (type 0x05) and wrap it — should
@@ -68,16 +68,16 @@ decode_wrong_record_type_test() ->
           RealmId, #{realm => RealmId, member_node => Member,
                      roles => [<<"member">>]}),
         AdminKp),
-    Url = macula_bootstrap_peer_url:encode(Endorsement, []),
+    Url = macula_bootstrap_via_operator_paste_peer_url:encode(Endorsement, []),
     ?assertEqual({error, wrong_type},
-                 macula_bootstrap_peer_url:decode(Url)).
+                 macula_bootstrap_via_operator_paste_peer_url:decode(Url)).
 
 decode_rejects_tampered_record_test() ->
     {Url, _} = build_url([]),
     %% Flip a byte in the middle of the base64 body.
     <<Prefix:20/binary, Byte:8, Rest/binary>> = Url,
     Flipped = <<Prefix/binary, (Byte bxor 1):8, Rest/binary>>,
-    Result = macula_bootstrap_peer_url:decode(Flipped),
+    Result = macula_bootstrap_via_operator_paste_peer_url:decode(Flipped),
     ?assertMatch({error, _}, Result).
 
 decode_rejects_expired_record_test() ->
@@ -85,10 +85,10 @@ decode_rejects_expired_record_test() ->
     R = macula_record:node_record(macula_identity:public(Kp), [], 0,
                                   #{ttl_ms => 1}),
     Signed = macula_record:sign(R, Kp),
-    Url = macula_bootstrap_peer_url:encode(Signed, []),
+    Url = macula_bootstrap_via_operator_paste_peer_url:encode(Signed, []),
     timer:sleep(5),
     ?assertEqual({error, expired},
-                 macula_bootstrap_peer_url:decode(Url)).
+                 macula_bootstrap_via_operator_paste_peer_url:decode(Url)).
 
 %%------------------------------------------------------------------
 %% Helpers
@@ -99,4 +99,4 @@ build_url(Addrs) ->
     Record = macula_record:sign(
         macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
-    {macula_bootstrap_peer_url:encode(Record, Addrs), Record}.
+    {macula_bootstrap_via_operator_paste_peer_url:encode(Record, Addrs), Record}.

@@ -10,7 +10,7 @@
 %%
 %% ```
 %% Discoverers = [
-%%   {macula_bootstrap_tier_e, #{peer_urls => [Url1, Url2, Url3]}}
+%%   {macula_bootstrap_via_operator_paste, #{peer_urls => [Url1, Url2, Url3]}}
 %% ],
 %% {ok, Peers} = macula_bootstrap:cascade(Discoverers, #{min_peers => 3}).
 %% '''

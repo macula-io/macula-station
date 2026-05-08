@@ -250,7 +250,7 @@ decode_outbound_peer(#{<<"host">> := Host, <<"port">> := Port})
 to_bin(B) when is_binary(B) -> B;
 to_bin(L) when is_list(L)   -> list_to_binary(L).
 
-%% JSON discoverer shape: [{"module": "macula_bootstrap_tier_e",
+%% JSON discoverer shape: [{"module": "macula_bootstrap_via_operator_paste",
 %%                          "opts":   {"peer_urls": ["quic://...", ...]}}, ...]
 decode_discoverers_json(L) when is_list(L) ->
     [decode_discoverer_json(D) || D <- L].

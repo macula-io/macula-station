@@ -74,7 +74,7 @@ run_with_missing_tiers_key_returns_no_tiers_test() ->
 run_from_explicit_config_reaches_tier_e_test() ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
     Cfg = #{
-        discoverers => [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
+        discoverers => [{macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}],
         cascade_opts => #{min_peers => 3, timeout_ms => 500}
     },
     {ok, Peers} = macula_bootstrap:run(Cfg),
@@ -83,7 +83,7 @@ run_from_explicit_config_reaches_tier_e_test() ->
 
 run_from_application_env_test() ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
-    Tiers = [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
+    Tiers = [{macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}],
     ok = set_env(discoverers, Tiers),
     ok = set_env(cascade_opts, #{min_peers => 3, timeout_ms => 500}),
     try
@@ -141,4 +141,4 @@ signed_url() ->
     Record = macula_record:sign(
                macula_record:node_record(
                  macula_identity:public(Kp), [], 0), Kp),
-    macula_bootstrap_peer_url:encode(Record, []).
+    macula_bootstrap_via_operator_paste_peer_url:encode(Record, []).

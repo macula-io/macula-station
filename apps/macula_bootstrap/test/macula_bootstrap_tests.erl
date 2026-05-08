@@ -21,19 +21,19 @@ empty_cascade_fails_test() ->
 
 tier_e_single_cascade_succeeds_test() ->
     Urls = [url() || _ <- lists:seq(1, 3)],
-    Tiers = [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
+    Tiers = [{macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}],
     {ok, Peers} = macula_bootstrap:cascade(Tiers, #{min_peers => 3}),
     ?assertEqual(3, length(Peers)).
 
 tier_e_below_min_peers_fails_test() ->
     %% Only one verified peer but min_peers=3.
-    Tiers = [{macula_bootstrap_tier_e, #{peer_urls => [url()]}}],
+    Tiers = [{macula_bootstrap_via_operator_paste, #{peer_urls => [url()]}}],
     ?assertEqual({error, cascade_failed},
                  macula_bootstrap:cascade(Tiers,
                      #{min_peers => 3, timeout_ms => 500})).
 
 tier_e_no_urls_fails_test() ->
-    Tiers = [{macula_bootstrap_tier_e, #{}}],
+    Tiers = [{macula_bootstrap_via_operator_paste, #{}}],
     ?assertEqual({error, cascade_failed},
                  macula_bootstrap:cascade(Tiers,
                      #{min_peers => 3, timeout_ms => 500})).
@@ -51,7 +51,7 @@ fast_probe_preempts_slow_probe_test() ->
     register_fake_tier(slow_tier, 500, {ok, fake_peers(SlowUrls)}),
     try
         Tiers = [{slow_tier, #{}},
-                 {macula_bootstrap_tier_e, #{peer_urls => FastUrls}}],
+                 {macula_bootstrap_via_operator_paste, #{peer_urls => FastUrls}}],
         Start = erlang:monotonic_time(millisecond),
         {ok, Peers} = macula_bootstrap:cascade(Tiers, #{min_peers => 3}),
         Elapsed = erlang:monotonic_time(millisecond) - Start,
@@ -69,7 +69,7 @@ failing_probes_fall_through_to_working_probe_test() ->
         Tiers = [
             {broken_a, #{}},
             {broken_b, #{}},
-            {macula_bootstrap_tier_e, #{peer_urls => Urls}}
+            {macula_bootstrap_via_operator_paste, #{peer_urls => Urls}}
         ],
         {ok, Peers} = macula_bootstrap:cascade(Tiers,
                           #{min_peers => 3, timeout_ms => 1000}),
@@ -136,13 +136,13 @@ url() ->
     Record = macula_record:sign(
         macula_record:node_record(macula_identity:public(Kp), [], 0),
         Kp),
-    macula_bootstrap_peer_url:encode(Record, []).
+    macula_bootstrap_via_operator_paste_peer_url:encode(Record, []).
 
 fake_peers(Urls) ->
     [fake_peer(U) || U <- Urls].
 
 fake_peer(Url) ->
-    {ok, Record, Addrs} = macula_bootstrap_peer_url:decode(Url),
+    {ok, Record, Addrs} = macula_bootstrap_via_operator_paste_peer_url:decode(Url),
     #{
         node_id   => macula_record:key(Record),
         record    => Record,
