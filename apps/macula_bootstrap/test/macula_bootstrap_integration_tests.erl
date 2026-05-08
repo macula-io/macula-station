@@ -66,7 +66,7 @@ app_ensure_all_started_and_stop_test() ->
 %%==================================================================
 
 run_with_no_tiers_returns_no_tiers_test() ->
-    ?assertEqual({error, no_tiers}, macula_bootstrap:run(#{tiers => []})).
+    ?assertEqual({error, no_tiers}, macula_bootstrap:run(#{discoverers => []})).
 
 run_with_missing_tiers_key_returns_no_tiers_test() ->
     ?assertEqual({error, no_tiers}, macula_bootstrap:run(#{})).
@@ -74,7 +74,7 @@ run_with_missing_tiers_key_returns_no_tiers_test() ->
 run_from_explicit_config_reaches_tier_e_test() ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
     Cfg = #{
-        tiers => [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
+        discoverers => [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
         cascade_opts => #{min_peers => 3, timeout_ms => 500}
     },
     {ok, Peers} = macula_bootstrap:run(Cfg),
@@ -84,18 +84,18 @@ run_from_explicit_config_reaches_tier_e_test() ->
 run_from_application_env_test() ->
     Urls = [signed_url() || _ <- lists:seq(1, 3)],
     Tiers = [{macula_bootstrap_tier_e, #{peer_urls => Urls}}],
-    ok = set_env(tiers, Tiers),
+    ok = set_env(discoverers, Tiers),
     ok = set_env(cascade_opts, #{min_peers => 3, timeout_ms => 500}),
     try
         {ok, Peers} = macula_bootstrap:run(),
         ?assertEqual(3, length(Peers))
     after
-        unset_env(tiers),
+        unset_env(discoverers),
         unset_env(cascade_opts)
     end.
 
 run_empty_env_returns_no_tiers_test() ->
-    ok = unset_env(tiers),
+    ok = unset_env(discoverers),
     ok = unset_env(cascade_opts),
     ?assertEqual({error, no_tiers}, macula_bootstrap:run()).
 

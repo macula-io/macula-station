@@ -26,7 +26,7 @@ runner_ingests_cascade_peers_test_() ->
 runner_no_tiers_is_verbatim_test_() ->
     {setup, fun start_dht/0, fun stop_dht/1, fun({Dht}) ->
         fun() ->
-            Cfg = #{tiers => [], cascade_opts => #{}},
+            Cfg = #{discoverers => [], cascade_opts => #{}},
             ?assertEqual({error, no_tiers},
                          macula_station_bootstrap_runner:run(Dht, Cfg)),
             ?assertEqual(0, macula_dht:size(Dht))
@@ -43,7 +43,7 @@ runner_cascade_failure_is_wrapped_test_() ->
             %% Tier returns an error → cascade never crosses min_peers →
             %% orchestrator returns cascade_failed → runner wraps.
             Tiers = [{macula_station_stub_tier, #{error => boom}}],
-            Cfg   = #{tiers => Tiers,
+            Cfg   = #{discoverers => Tiers,
                       cascade_opts => #{min_peers => 1, timeout_ms => 500}},
             ?assertMatch({error, {bootstrap_failed, _}},
                          macula_station_bootstrap_runner:run(Dht, Cfg)),
@@ -60,14 +60,14 @@ runner_reads_application_env_test_() ->
         fun() ->
             Peers = macula_station_stub_tier:stub_peers(2),
             Tiers = [{macula_station_stub_tier, #{peers => Peers}}],
-            application:set_env(macula_bootstrap, tiers, Tiers),
+            application:set_env(macula_bootstrap, discoverers, Tiers),
             application:set_env(macula_bootstrap, cascade_opts,
                                 #{min_peers => 1}),
             try
                 {ok, #{summary := #{admitted := 2}}} =
                     macula_station_bootstrap_runner:run(Dht)
             after
-                application:unset_env(macula_bootstrap, tiers),
+                application:unset_env(macula_bootstrap, discoverers),
                 application:unset_env(macula_bootstrap, cascade_opts)
             end
         end
@@ -88,6 +88,6 @@ stop_dht({Dht}) ->
 
 stub_cfg(Peers) ->
     #{
-        tiers => [{macula_station_stub_tier, #{peers => Peers}}],
+        discoverers => [{macula_station_stub_tier, #{peers => Peers}}],
         cascade_opts => #{min_peers => 1, timeout_ms => 500}
     }.

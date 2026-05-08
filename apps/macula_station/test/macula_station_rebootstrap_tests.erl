@@ -194,7 +194,7 @@ fixture(#{min := Min, window := Window}, InitialPeers) ->
     RbCfg = #rebootstrap_cfg{min_viable_peers = Min,
                              check_period_ms  = 60_000,
                              partition_window_ms = Window},
-    Cfg   = #{tiers => [{macula_station_stub_tier,
+    Cfg   = #{discoverers => [{macula_station_stub_tier,
                          #{peers => macula_station_stub_tier:stub_peers(1)}}],
               cascade_opts => #{min_peers => 1, timeout_ms => 500}},
     {ok, Rb} = macula_station_rebootstrap:start_link(#{

@@ -301,7 +301,7 @@ boot_station_on_peer(PeerPid, DataDir, KeyFile, Cert, KeyP, Port) ->
     %% dir as this module; it is on the peer's code path because we
     %% pass code:get_path() to the peer.
     StubPeers = peer:call(PeerPid, macula_station_stub_tier, stub_peers, [1]),
-    Set(macula_bootstrap, tiers,
+    Set(macula_bootstrap, discoverers,
         [{macula_station_stub_tier, #{peers => StubPeers}}]),
     Set(macula_bootstrap, cascade_opts,
         #{min_peers => 1, timeout_ms => 5000}),

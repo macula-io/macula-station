@@ -63,15 +63,16 @@
     %% default radius (typically ~1200m).
     power_m         = undefined :: pos_integer() | undefined,
     %% Optional bootstrap block — translated into `macula_bootstrap'
-    %% application env (`tiers' + `cascade_opts') by the app callback
-    %% before the boot pipeline runs. Without this, the cascade has no
-    %% sources and the station refuses to boot with `{error, no_tiers}'.
-    bootstrap_tiers        = [] :: [{atom(), map()}],
+    %% application env (`discoverers' + `cascade_opts') by the app
+    %% callback before the boot pipeline runs. Without this, the
+    %% cascade has no sources and the station refuses to boot with
+    %% `{error, no_tiers}'.
+    discoverers            = [] :: [{atom(), map()}],
     bootstrap_cascade_opts = #{} :: map(),
     %% Outbound peer URLs the station dials at boot.
     %% `macula_station_outbound_links_sup' spawns one
     %% `macula_station_outbound_link' worker per entry; the
-    %% `seed_dial' bootstrap tier then reads the verified
+    %% `via_seed_dial' peer-discoverer then reads the verified
     %% peers from `macula_station_peer_links'. Empty list
     %% means no outbound dial (the station only accepts inbound).
     outbound_peers         = [] :: [#{host := binary(),

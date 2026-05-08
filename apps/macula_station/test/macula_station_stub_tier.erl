@@ -9,7 +9,7 @@
 %% ```
 %% Peers = [stub_peer(<<1:256>>), stub_peer(<<2:256>>), ...],
 %% Tiers = [{macula_station_stub_tier, #{peers => Peers}}],
-%% {ok, Out} = macula_bootstrap:run(#{tiers => Tiers,
+%% {ok, Out} = macula_bootstrap:run(#{discoverers => Tiers,
 %%                                    cascade_opts => #{min_peers => 1}}).
 %% '''
 -module(macula_station_stub_tier).

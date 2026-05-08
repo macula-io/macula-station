@@ -54,7 +54,7 @@ happy_path_boots_full_runtime_test_() ->
             Peers = macula_station_stub_tier:stub_peers(3),
             try
                 set_station_env(Dir),
-                set_bootstrap_tiers(Peers),
+                set_discoverers(Peers),
                 {ok, Sup} = macula_station_app:start(normal, []),
                 {ok, DhtPid}      = macula_station:dht(),
                 {ok, SwimPid}     = macula_station:swim(),
@@ -81,7 +81,7 @@ cache_and_rebootstrap_children_start_when_configured_test_() ->
             Peers = macula_station_stub_tier:stub_peers(1),
             try
                 set_station_env(Dir),
-                set_bootstrap_tiers(Peers),
+                set_discoverers(Peers),
                 application:set_env(macula_station, cache, #{
                     path => filename:join(Dir, "cache"),
                     flush_period_ms => 60_000
@@ -123,7 +123,7 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
              Peers = macula_station_stub_tier:stub_peers(1),
              try
                  set_station_env(Dir),
-                 set_bootstrap_tiers(Peers),
+                 set_discoverers(Peers),
                  {ok, Sup} = macula_station_app:start(normal, []),
                  {ok, Dht}  = macula_station:dht(),
                  {ok, Swim} = macula_station:swim(),
@@ -170,7 +170,7 @@ no_tiers_aborts_boot_test_() ->
             try
                 set_station_env(Dir),
                 %% No tiers in bootstrap env.
-                application:set_env(macula_bootstrap, tiers, []),
+                application:set_env(macula_bootstrap, discoverers, []),
                 ?assertEqual({error, no_tiers},
                              macula_station_app:start(normal, [])),
                 drain_exit_signals(),
@@ -196,7 +196,7 @@ warm_boot_preserves_identity_test_() ->
             Peers = macula_station_stub_tier:stub_peers(1),
             try
                 set_station_env(Dir),
-                set_bootstrap_tiers(Peers),
+                set_discoverers(Peers),
                 {ok, Sup1}       = macula_station_app:start(normal, []),
                 {ok, DhtPid1}    = macula_station:dht(),
                 Self1            = macula_dht:self_id(DhtPid1),
@@ -225,7 +225,7 @@ reset_env() ->
     {ok, _} = application:ensure_all_started(macula),
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
                capabilities, cache, rebootstrap, admin],
-    Boot    = [tiers, cascade_opts],
+    Boot    = [discoverers, cascade_opts],
     Saved = [{S, station, application:get_env(macula_station, S)} || S <- Station]
           ++ [{B, bootstrap, application:get_env(macula_bootstrap, B)} || B <- Boot],
     [application:unset_env(macula_station, K) || K <- Station],
@@ -274,9 +274,9 @@ free_port() ->
     ok = gen_udp:close(S),
     Port.
 
-set_bootstrap_tiers(Peers) ->
+set_discoverers(Peers) ->
     Tiers = [{macula_station_stub_tier, #{peers => Peers}}],
-    application:set_env(macula_bootstrap, tiers, Tiers),
+    application:set_env(macula_bootstrap, discoverers, Tiers),
     application:set_env(macula_bootstrap, cascade_opts,
                         #{min_peers => 1, timeout_ms => 2000}).
 

@@ -92,7 +92,7 @@ setup_app() ->
     Peers = macula_station_stub_tier:stub_peers(1),
     Saved = clear_env(),
     set_station_env(Dir),
-    application:set_env(macula_bootstrap, tiers,
+    application:set_env(macula_bootstrap, discoverers,
                         [{macula_station_stub_tier, #{peers => Peers}}]),
     application:set_env(macula_bootstrap, cascade_opts,
                         #{min_peers => 1, timeout_ms => 1000}),
@@ -135,7 +135,7 @@ http_decode(Other) ->
 clear_env() ->
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
                realms, capabilities, cache, rebootstrap, admin],
-    Boot    = [tiers, cascade_opts],
+    Boot    = [discoverers, cascade_opts],
     Saved = [{K, station, application:get_env(macula_station, K)} || K <- Station]
          ++ [{K, bootstrap, application:get_env(macula_bootstrap, K)} || K <- Boot],
     [application:unset_env(macula_station, K) || K <- Station],

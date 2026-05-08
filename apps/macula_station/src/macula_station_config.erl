@@ -234,7 +234,7 @@ build_record_from_json(M) ->
         lat                    = to_number_or_undef(maps:get(<<"lat">>,   Geo, undefined)),
         lng                    = to_number_or_undef(maps:get(<<"lng">>,   Geo, undefined)),
         power_m                = to_pos_int_or_undef(maps:get(<<"power_m">>, Geo, undefined)),
-        bootstrap_tiers        = decode_tiers_json(maps:get(<<"tiers">>,        Bootstrap, [])),
+        discoverers            = decode_discoverers_json(maps:get(<<"discoverers">>, Bootstrap, [])),
         bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{})),
         outbound_peers         = decode_outbound_peers(maps:get(<<"outbound_peers">>, M, []))
     }.
@@ -250,17 +250,17 @@ decode_outbound_peer(#{<<"host">> := Host, <<"port">> := Port})
 to_bin(B) when is_binary(B) -> B;
 to_bin(L) when is_list(L)   -> list_to_binary(L).
 
-%% JSON tier shape: [{"module": "macula_bootstrap_tier_e",
-%%                    "opts":   {"peer_urls": ["quic://...", ...]}}, ...]
-decode_tiers_json(L) when is_list(L) ->
-    [decode_tier_json(T) || T <- L].
+%% JSON discoverer shape: [{"module": "macula_bootstrap_tier_e",
+%%                          "opts":   {"peer_urls": ["quic://...", ...]}}, ...]
+decode_discoverers_json(L) when is_list(L) ->
+    [decode_discoverer_json(D) || D <- L].
 
-decode_tier_json(#{<<"module">> := ModBin} = T) ->
+decode_discoverer_json(#{<<"module">> := ModBin} = D) ->
     Mod  = binary_to_atom(ModBin, utf8),
-    Opts = decode_atom_keyed(maps:get(<<"opts">>, T, #{})),
+    Opts = decode_atom_keyed(maps:get(<<"opts">>, D, #{})),
     {Mod, Opts}.
 
-%% Convert binary-keyed JSON map to atom-keyed map. Tier opts +
+%% Convert binary-keyed JSON map to atom-keyed map. Discoverer opts +
 %% cascade opts are read by Erlang code that expects atom keys
 %% (`peer_urls', `min_peers', `timeout_ms', etc). The source modules
 %% may not be loaded yet at boot time, so we cannot use

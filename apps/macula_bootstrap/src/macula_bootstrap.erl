@@ -9,10 +9,10 @@
 %% == Example ==
 %%
 %% ```
-%% Tiers = [
+%% Discoverers = [
 %%   {macula_bootstrap_tier_e, #{peer_urls => [Url1, Url2, Url3]}}
 %% ],
-%% {ok, Peers} = macula_bootstrap:cascade(Tiers, #{min_peers => 3}).
+%% {ok, Peers} = macula_bootstrap:cascade(Discoverers, #{min_peers => 3}).
 %% '''
 %%
 %% Peers are `macula_bootstrap_peer_discoverer:verified_peer()' maps — signature
@@ -27,16 +27,17 @@
 
 -export([cascade/1, cascade/2, run/0, run/1]).
 
--export_type([tier_spec/0, cascade_opts/0, cascade_result/0,
+-export_type([discoverer_spec/0, cascade_opts/0, cascade_result/0,
               station_config/0, run_error/0]).
 
--type tier_spec() :: {module(), macula_bootstrap_peer_discoverer:discover_opts()}.
+-type discoverer_spec() ::
+        {module(), macula_bootstrap_peer_discoverer:discover_opts()}.
 
 -type cascade_opts() :: #{
-    %% `0' is a valid value: the seed_dial tier may yield an empty
-    %% list on first boot of a fresh fleet. The cascade must accept
-    %% that and let boot proceed so the listener comes up and
-    %% siblings can dial back in.
+    %% `0' is a valid value: via_seed_dial may yield an empty list
+    %% on first boot of a fresh fleet. The cascade must accept that
+    %% and let boot proceed so the listener comes up and siblings
+    %% can dial back in.
     min_peers  => non_neg_integer(),
     timeout_ms => non_neg_integer()
 }.
@@ -48,7 +49,7 @@
 %% Config shape consumed by `run/0,1'. The same shape lives behind
 %% `application:get_all_env(macula_bootstrap)' when `run/0' is used.
 -type station_config() :: #{
-    tiers        := [tier_spec()],
+    discoverers  := [discoverer_spec()],
     cascade_opts => cascade_opts()
 }.
 
@@ -57,74 +58,74 @@
 -define(DEFAULT_MIN_PEERS,  3).
 -define(DEFAULT_TIMEOUT_MS, 60_000).
 
-%% @doc Station-level entry point. Reads the tier list and cascade
-%% options from `application:get_env(macula_bootstrap, _)' and runs
-%% the cascade. Intended to be called once during station boot;
-%% returned peers feed `macula_dht:observe/2'.
+%% @doc Station-level entry point. Reads the discoverer list and
+%% cascade options from `application:get_env(macula_bootstrap, _)'
+%% and runs the cascade. Intended to be called once during station
+%% boot; returned peers feed `macula_dht:observe/2'.
 -spec run() -> {ok, [macula_bootstrap_peer_discoverer:verified_peer()]}
              | {error, run_error()}.
 run() ->
     run(#{
-        tiers        => application:get_env(macula_bootstrap, tiers, []),
+        discoverers  => application:get_env(macula_bootstrap, discoverers, []),
         cascade_opts => application:get_env(macula_bootstrap, cascade_opts,
                                             #{})
     }).
 
 %% @doc Variant of `run/0' taking an explicit config map — useful when
 %% the station builds its config at runtime (different per-realm) or
-%% when tests supply deterministic tier lists.
+%% when tests supply deterministic discoverer lists.
 -spec run(station_config() | map()) ->
           {ok, [macula_bootstrap_peer_discoverer:verified_peer()]}
         | {error, run_error()}.
-run(#{tiers := []}) ->
+run(#{discoverers := []}) ->
     {error, no_tiers};
-run(#{tiers := Tiers} = Cfg) when is_list(Tiers) ->
+run(#{discoverers := Discoverers} = Cfg) when is_list(Discoverers) ->
     Opts = maps:get(cascade_opts, Cfg, #{}),
-    cascade(Tiers, Opts);
+    cascade(Discoverers, Opts);
 run(_Cfg) ->
     {error, no_tiers}.
 
 %% @doc Run the cascade with default options (min 3 peers, 60s deadline).
--spec cascade([tier_spec()]) -> cascade_result().
-cascade(Tiers) -> cascade(Tiers, #{}).
+-spec cascade([discoverer_spec()]) -> cascade_result().
+cascade(Discoverers) -> cascade(Discoverers, #{}).
 
 %% @doc Run the cascade.
 %%
-%% `Tiers' is the ordered list of probe modules to attempt. Each
-%% probe runs in its own linked process, starting at
+%% `Discoverers' is the ordered list of strategy modules to attempt.
+%% Each probe runs in its own linked process, starting at
 %% `Module:stagger_ms()' milliseconds after cascade start. The
 %% orchestrator returns as soon as any probe yields at least
 %% `min_peers' verified peers; remaining probes are cancelled.
--spec cascade([tier_spec()], cascade_opts()) -> cascade_result().
+-spec cascade([discoverer_spec()], cascade_opts()) -> cascade_result().
 cascade([], _Opts) ->
     {error, cascade_failed};
-cascade(Tiers, Opts) when is_list(Tiers) ->
+cascade(Discoverers, Opts) when is_list(Discoverers) ->
     MinPeers  = maps:get(min_peers,  Opts, ?DEFAULT_MIN_PEERS),
     Timeout   = maps:get(timeout_ms, Opts, ?DEFAULT_TIMEOUT_MS),
     Deadline  = erlang:monotonic_time(millisecond) + Timeout,
-    Workers   = start_probes(Tiers),
+    Workers   = start_probes(Discoverers),
     collect(Workers, #{}, MinPeers, Deadline).
 
 %%------------------------------------------------------------------
 %% Probe workers
 %%------------------------------------------------------------------
 
-start_probes(Tiers) ->
-    [start_probe(Mod, ProbeOpts) || {Mod, ProbeOpts} <- Tiers].
+start_probes(Discoverers) ->
+    [start_probe(Mod, DiscoverOpts) || {Mod, DiscoverOpts} <- Discoverers].
 
-start_probe(Mod, ProbeOpts) ->
+start_probe(Mod, DiscoverOpts) ->
     Parent = self(),
     Stagger = Mod:stagger_ms(),
     {Pid, Ref} = spawn_monitor(
-        fun() -> probe_worker(Parent, Mod, ProbeOpts, Stagger) end),
+        fun() -> probe_worker(Parent, Mod, DiscoverOpts, Stagger) end),
     #{mod => Mod, pid => Pid, ref => Ref}.
 
-probe_worker(Parent, Mod, ProbeOpts, Stagger) ->
+probe_worker(Parent, Mod, DiscoverOpts, Stagger) ->
     case Stagger of
         0 -> ok;
         N -> timer:sleep(N)
     end,
-    Parent ! {probe_result, self(), Mod:discover(ProbeOpts)}.
+    Parent ! {probe_result, self(), Mod:discover(DiscoverOpts)}.
 
 %%------------------------------------------------------------------
 %% Result collection

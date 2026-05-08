@@ -152,7 +152,7 @@ setup_app() ->
     Dir       = make_tmpdir(),
     CacheDir  = filename:join(Dir, "cache"),
     set_station_env(Dir),
-    application:set_env(macula_bootstrap, tiers,
+    application:set_env(macula_bootstrap, discoverers,
         [{macula_station_stub_tier,
           #{peers => macula_station_stub_tier:stub_peers(1)}}]),
     application:set_env(macula_bootstrap, cascade_opts,
@@ -191,7 +191,7 @@ tombstone(Kp, Reason) ->
 clear_env() ->
     Station = [data_dir, identity_file, bind, port, certfile, keyfile,
                realms, capabilities, cache, rebootstrap, admin],
-    Boot    = [tiers, cascade_opts],
+    Boot    = [discoverers, cascade_opts],
     Saved = [{K, station, application:get_env(macula_station, K)} || K <- Station]
          ++ [{K, bootstrap, application:get_env(macula_bootstrap, K)} || K <- Boot],
     [application:unset_env(macula_station, K) || K <- Station],

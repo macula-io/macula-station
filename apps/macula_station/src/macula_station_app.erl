@@ -74,22 +74,23 @@ boot_cfg(SupPid, {ok, Cfg}) ->
 
 %% Push the JSON-supplied bootstrap config into `macula_bootstrap'
 %% application env so `macula_bootstrap:run/0' picks it up. When the
-%% JSON has `outbound_peers' but no explicit `bootstrap.tiers', the
-%% station defaults to a single `seed_dial' tier that probes the
-%% peer-links registry — the typical fleet bootstrap config.
+%% JSON has `outbound_peers' but no explicit `bootstrap.discoverers',
+%% the station defaults to a single `via_seed_dial' discoverer that
+%% probes the peer-links registry — the typical fleet bootstrap
+%% config.
 %%
-%% Skipped entirely when neither outbound_peers nor explicit tiers
-%% are configured (CT path with tiers set in sys.config or
-%% `application:set_env/3' elsewhere).
-apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
+%% Skipped entirely when neither outbound_peers nor explicit
+%% discoverers are configured (CT path with discoverers set in
+%% sys.config or `application:set_env/3' elsewhere).
+apply_bootstrap_env(#station_cfg{discoverers = [],
                                  outbound_peers = []}) ->
     ok;
-apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
+apply_bootstrap_env(#station_cfg{discoverers = [],
                                  outbound_peers = [_ | _]}) ->
-    application:set_env(macula_bootstrap, tiers,
+    application:set_env(macula_bootstrap, discoverers,
                         [{macula_station_bootstrap_tier_seed_dial,
                           #{wait_ms => 3_000}}]),
-    %% min_peers => 0 so the cascade accepts an empty seed_dial
+    %% min_peers => 0 so the cascade accepts an empty via_seed_dial
     %% result. First-boot stations whose siblings aren't up yet need
     %% to come up anyway so the siblings can later dial in. The
     %% outbound link workers reconnect with backoff and SWIM /
@@ -97,9 +98,9 @@ apply_bootstrap_env(#station_cfg{bootstrap_tiers = [],
     application:set_env(macula_bootstrap, cascade_opts,
                         #{min_peers => 0, timeout_ms => 30_000}),
     ok;
-apply_bootstrap_env(#station_cfg{bootstrap_tiers = Tiers,
+apply_bootstrap_env(#station_cfg{discoverers = Discoverers,
                                  bootstrap_cascade_opts = Opts}) ->
-    application:set_env(macula_bootstrap, tiers, Tiers),
+    application:set_env(macula_bootstrap, discoverers, Discoverers),
     case map_size(Opts) of
         0 -> ok;
         _ -> application:set_env(macula_bootstrap, cascade_opts, Opts)
