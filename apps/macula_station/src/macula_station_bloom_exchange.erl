@@ -174,21 +174,35 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% Rebuild + broadcast
 %%====================================================================
 
-do_rebuild(#state{pubsub_registry = Reg, identity = Kp} = S) ->
-    Topics = safe_topics(Reg, Kp),
+do_rebuild(#state{pubsub_registry = Reg} = S) ->
+    Topics = safe_topics(Reg),
     BF = lists:foldl(fun macula_station_bloom:add/2,
                      macula_station_bloom:new(), Topics),
     BloomBin = macula_station_bloom:to_binary(BF),
     broadcast_filter(BloomBin),
     S#state{local_bloom = BloomBin}.
 
-%% Resolve the mesh-realm pubsub_server through the registry. Any
-%% failure (registry down, server gone) is treated as "no topics yet"
-%% and we'll retry on the next tick.
-safe_topics(Reg, Kp) ->
-    try hecate_pubsub_registry:register(Reg, ?MESH_REALM, Kp) of
-        {ok, ServerPid} ->
-            try hecate_pubsub_server:topics(ServerPid)
+%% Union of every locally-registered realm's topic set. The bloom is
+%% used by the cross-station forwarder to decide "does this peer care
+%% about a topic I'm about to publish on?" — that decision is realm-
+%% blind on the wire (the bloom carries topic strings only), so the
+%% bloom must include every topic ANY local realm has subscribers for.
+%% Pre-Gap-B versions only queried the mesh-realm server, which left
+%% the bloom empty for user-realm pubsub and made the forwarder skip
+%% every interested peer.
+%%
+%% Tolerates registry-down / per-server failures by emitting fewer
+%% topics that tick — the next rebuild reconciles.
+safe_topics(Reg) ->
+    Realms = try hecate_pubsub_registry:list_realms(Reg)
+             catch _:_ -> []
+             end,
+    lists:flatmap(fun(Realm) -> topics_for_realm(Reg, Realm) end, Realms).
+
+topics_for_realm(Reg, Realm) ->
+    try hecate_pubsub_registry:lookup(Reg, Realm) of
+        {ok, Server} ->
+            try hecate_pubsub_server:topics(Server)
             catch _:_ -> []
             end;
         _ -> []

@@ -644,11 +644,15 @@ bloom_exchange_child(#station_cfg{identity = Kp}) ->
     }.
 
 peering_router_child(#station_cfg{identity = Kp}, FwdSup) ->
+    %% No `realm' opt — the router enumerates every materialised realm
+    %% via `hecate_pubsub_registry:list_realms/1' on each tick and
+    %% reconciles forwarders + subscriptions per (Realm, Topic, Peer)
+    %% triple. Pre-Gap-B versions hard-coded ?MESH_REALM here, which
+    %% silently dropped every user-realm topic on the floor.
     Opts = #{
         pubsub_registry => whereis(hecate_pubsub_registry),
         identity        => Kp,
-        forwarder_sup   => FwdSup,
-        realm           => ?MESH_REALM
+        forwarder_sup   => FwdSup
     },
     #{
         id       => macula_station_peering_router,

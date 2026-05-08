@@ -2,28 +2,38 @@
 %%%
 %%% Drives the cross-relay pubsub plumbing V1 had built into
 %%% `macula_relay_peering' (`maybe_subscribe_on_peers' /
-%%% `maybe_unsubscribe_from_peers'). For each (Topic, Peer-station)
-%%% pair the router maintains:
+%%% `maybe_unsubscribe_from_peers'). For each (Realm, Topic, Peer-station)
+%%% triple the router maintains:
 %%%
 %%%   * an OUTBOUND forwarder process that joins the station-wide pg
 %%%     scope on `{relay_topic, Topic}' and forwards local publishes
-%%%     to that peer's station_link.
+%%%     to that peer's station_link with the matching realm.
 %%%
 %%%   * an INBOUND subscription on the peer's station_link so EVENT
 %%%     frames published by the peer flow into our local handler
 %%%     (which fans out to local subscribers on the matching topic).
 %%%
 %%% The router polls every `?TICK_MS' seconds (default 15s):
-%%%   1. asks the local pubsub_server for its current topics,
-%%%   2. asks `macula_station_peer_links:connections/0' for the live
+%%%   1. asks the registry for every materialised realm,
+%%%   2. for each realm, asks its pubsub_server for its current topics,
+%%%   3. asks `macula_station_peer_links:connections/0' for the live
 %%%      `[{Url, LinkPid}]' set,
-%%%   3. computes the desired (Topic, Peer) cross-product,
-%%%   4. diffs against the running set, starts/stops forwarders +
+%%%   4. computes the desired (Realm, Topic, Peer) cross-product,
+%%%   5. diffs against the running set, starts/stops forwarders +
 %%%      adds/drops subscriptions accordingly.
 %%%
 %%% V1 used local subscribe/unsubscribe events as the trigger; V2's
 %%% hecate_pubsub_server doesn't emit events on subscription change,
 %%% so we poll. Same convergence guarantee, slightly higher latency.
+%%%
+%%% **Multi-realm**: realms are first-class. The router enumerates
+%%% them via `hecate_pubsub_registry:list_realms/1'. Stations are
+%%% realm-agnostic infrastructure — the same router instance carries
+%%% gossip for every realm a connected daemon has subscribed to.
+%%% Mesh-protocol topics (`_mesh.bloom', `_mesh.station.*' etc.)
+%%% live in the all-zeros realm and are filtered out below; their
+%%% forwarding is `bloom_exchange's responsibility, and double-fan
+%%% would mess up gossip cadence.
 -module(macula_station_peering_router).
 -behaviour(gen_server).
 
@@ -33,29 +43,25 @@
 
 -define(TICK_MS, 15_000).
 
-%% Mesh-level events (presence + bloom gossip) live in the all-zeros
-%% realm. The router's local subscription lookup goes against the
-%% mesh-realm pubsub_server.
--define(MESH_REALM, <<0:256>>).
-
 -type opts() :: #{
     pubsub_registry := pid(),
     identity        := macula_identity:key_pair(),
-    forwarder_sup   := pid(),
-    realm           := <<_:256>>
+    forwarder_sup   := pid()
 }.
 
 -export_type([opts/0]).
+
+-type realm() :: <<_:256>>.
+-type triple() :: {realm(), Topic :: binary(), LinkPid :: pid()}.
 
 -record(state, {
     pubsub_registry :: pid(),
     identity        :: macula_identity:key_pair(),
     forwarder_sup   :: pid(),
-    realm           :: <<_:256>>,
-    %% Running forwarders keyed by `{Topic, LinkPid}'.
-    forwarders      :: #{{binary(), pid()} => pid()},
-    %% Active inbound subscriptions keyed by `{Topic, LinkPid}'.
-    subs            :: #{{binary(), pid()} => reference()},
+    %% Running forwarders keyed by `{Realm, Topic, LinkPid}'.
+    forwarders      :: #{triple() => pid()},
+    %% Active inbound subscriptions keyed by `{Realm, Topic, LinkPid}'.
+    subs            :: #{triple() => reference()},
     timer_ref       :: reference() | undefined
 }).
 
@@ -64,8 +70,7 @@
 %%====================================================================
 
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
-start_link(#{pubsub_registry := _, identity := _, forwarder_sup := _,
-             realm := _} = Opts) ->
+start_link(#{pubsub_registry := _, identity := _, forwarder_sup := _} = Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 -spec stop(pid()) -> ok.
@@ -86,7 +91,6 @@ init(Opts) ->
         pubsub_registry = maps:get(pubsub_registry, Opts),
         identity        = maps:get(identity, Opts),
         forwarder_sup   = maps:get(forwarder_sup, Opts),
-        realm           = maps:get(realm, Opts),
         forwarders      = #{},
         subs            = #{}
     },
@@ -116,37 +120,35 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %% Sync
 %%====================================================================
 
-sync(#state{pubsub_registry = Reg, identity = Kp,
+sync(#state{pubsub_registry = Reg,
             forwarder_sup   = FwdSup,
-            realm           = Realm,
             forwarders      = Forwarders,
             subs            = Subs} = S) ->
-    Topics = local_topics(Reg, Kp),
-    Peers  = macula_station_peer_links:connections(),
-    Desired = desired_pairs(Topics, Peers),
-    {Forwarders1, Subs1} =
-        reconcile(Desired, Forwarders, Subs, FwdSup, Realm),
+    Pairs = local_realm_topics(Reg),
+    Peers = macula_station_peer_links:connections(),
+    Desired = desired_triples(Pairs, Peers),
+    {Forwarders1, Subs1} = reconcile(Desired, Forwarders, Subs, FwdSup),
     S#state{forwarders = Forwarders1, subs = Subs1}.
 
-%% Cartesian product of (Topic, LinkPid). Topics that start with
+%% Cartesian product of (Realm, Topic, LinkPid). Topics that start with
 %% `_mesh.' are protocol-internal — bloom_exchange already broadcasts
 %% them out-of-band; the forwarder/subscribe path would double-fan
 %% them out and mess with the gossip cadence. Skip them.
-desired_pairs(Topics, Peers) ->
-    [{Topic, LinkPid}
-     || Topic   <- Topics, not is_mesh_topic(Topic),
+desired_triples(Pairs, Peers) ->
+    [{Realm, Topic, LinkPid}
+     || {Realm, Topic} <- Pairs, not is_mesh_topic(Topic),
         {_Url, LinkPid} <- Peers,
         is_pid(LinkPid)].
 
 is_mesh_topic(<<"_mesh.", _/binary>>) -> true;
 is_mesh_topic(_) -> false.
 
-reconcile(Desired, Forwarders, Subs, FwdSup, Realm) ->
+reconcile(Desired, Forwarders, Subs, FwdSup) ->
     DesiredSet = sets:from_list(Desired),
     F1 = stop_forwarders_not_in(DesiredSet, Forwarders, FwdSup),
     S1 = drop_subs_not_in(DesiredSet, Subs),
-    F2 = start_forwarders_for(Desired, F1, FwdSup, Realm),
-    S2 = subscribe_for(Desired, S1, Realm),
+    F2 = start_forwarders_for(Desired, F1, FwdSup),
+    S2 = subscribe_for(Desired, S1),
     {F2, S2}.
 
 stop_forwarders_not_in(Desired, Forwarders, FwdSup) ->
@@ -166,19 +168,19 @@ drop_subs_not_in(Desired, Subs) ->
               case sets:is_element(Key, Desired) of
                   true  -> true;
                   false ->
-                      {_Topic, LinkPid} = Key,
+                      {_Realm, _Topic, LinkPid} = Key,
                       catch macula_station_link:unsubscribe(LinkPid, SubRef),
                       false
               end
       end, Subs).
 
-start_forwarders_for(Desired, Forwarders, FwdSup, Realm) ->
+start_forwarders_for(Desired, Forwarders, FwdSup) ->
     lists:foldl(
-      fun({Topic, LinkPid} = Key, Acc) ->
+      fun({Realm, Topic, LinkPid} = Key, Acc) ->
               case maps:is_key(Key, Acc) of
                   true  -> Acc;
-                  false -> start_one_forwarder(Acc, Key, FwdSup, Realm,
-                                               Topic, LinkPid)
+                  false -> start_one_forwarder(Acc, Key, FwdSup,
+                                               Realm, Topic, LinkPid)
               end
       end, Forwarders, Desired).
 
@@ -189,9 +191,9 @@ start_one_forwarder(Acc, Key, FwdSup, Realm, Topic, LinkPid) ->
         {error, _R}  -> Acc
     end.
 
-subscribe_for(Desired, Subs, Realm) ->
+subscribe_for(Desired, Subs) ->
     lists:foldl(
-      fun({Topic, LinkPid} = Key, Acc) ->
+      fun({Realm, Topic, LinkPid} = Key, Acc) ->
               case maps:is_key(Key, Acc) of
                   true  -> Acc;
                   false -> subscribe_one(Acc, Key, Realm, Topic, LinkPid)
@@ -204,11 +206,9 @@ subscribe_one(Acc, Key, Realm, Topic, LinkPid) ->
     %% on the local pubsub_server to handle inbound delivery via
     %% the existing process_frame path. Subscribe-on-peer is the
     %% interest signal; the inbound event flow is owned elsewhere.
-    %% LinkPid may be a `macula_station_link' SDK client (handles
-    %% subscribe) OR a `macula_station_outbound_link' worker (does
-    %% not — returns `{error, unknown_call}'). The wildcard `of'
-    %% clause is mandatory: `try_clause' from a missing `of' pattern
-    %% is NOT caught by the `catch' below.
+    %% LinkPid may be a `macula_station_link' SDK client OR a
+    %% `macula_station_outbound_link' (which gained the SDK API
+    %% surface in commit afd3542 — both now handle subscribe).
     try macula_station_link:subscribe(LinkPid, Realm, Topic, self()) of
         {ok, SubRef} -> Acc#{Key => SubRef};
         _Other       -> Acc
@@ -226,8 +226,23 @@ drop_dead(Pid, #state{forwarders = F} = S) ->
 %% Lookups
 %%====================================================================
 
-local_topics(Reg, Kp) ->
-    try hecate_pubsub_registry:register(Reg, ?MESH_REALM, Kp) of
+%% Enumerate every (Realm, Topic) pair the local registry knows
+%% about. Tolerate registry-down / per-server lookup failures —
+%% downstream `desired_triples/2' just sees fewer pairs that tick
+%% and reconciles on the next.
+local_realm_topics(Reg) ->
+    Realms = safe_list_realms(Reg),
+    lists:flatmap(fun(Realm) ->
+        [{Realm, Topic} || Topic <- safe_topics_for_realm(Reg, Realm)]
+    end, Realms).
+
+safe_list_realms(Reg) ->
+    try hecate_pubsub_registry:list_realms(Reg)
+    catch _:_ -> []
+    end.
+
+safe_topics_for_realm(Reg, Realm) ->
+    try hecate_pubsub_registry:lookup(Reg, Realm) of
         {ok, Server} ->
             try hecate_pubsub_server:topics(Server)
             catch _:_ -> []
