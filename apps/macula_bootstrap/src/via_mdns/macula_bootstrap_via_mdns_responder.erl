@@ -23,7 +23,7 @@
 %% drops every query. Useful for operators who want to receive
 %% without advertising. Default `silent => false' follows Part 5 §5.3
 %% rationale (LAN is already a trust boundary).
--module(macula_bootstrap_mdns_responder).
+-module(macula_bootstrap_via_mdns_responder).
 -behaviour(gen_server).
 
 -export([
@@ -56,7 +56,7 @@
 
 -record(state, {
     socket    :: gen_udp:socket(),
-    node_info :: macula_bootstrap_mdns:node_info(),
+    node_info :: macula_bootstrap_via_mdns_query:node_info(),
     silent    :: boolean()
 }).
 
@@ -136,7 +136,7 @@ code_change(_Old, S, _Extra) ->
 maybe_reply(_Src, _SPort, _Bin, #state{silent = true}) ->
     ok;
 maybe_reply(Src, SPort, Bin, #state{socket = Sock, node_info = Info}) ->
-    send(macula_bootstrap_mdns:build_advertisement(Bin, Info),
+    send(macula_bootstrap_via_mdns_query:build_advertisement(Bin, Info),
          Sock, Src, SPort).
 
 send({ok, RespBin}, Sock, Src, SPort) ->
@@ -146,9 +146,9 @@ send(ignore, _Sock, _Src, _SPort) ->
 
 default_opener() ->
     gen_udp:open(
-      macula_bootstrap_mdns:multicast_port(),
+      macula_bootstrap_via_mdns_query:multicast_port(),
       [inet6, binary, {active, once}, {reuseaddr, true},
        {multicast_loop, false}, {multicast_ttl, 1},
        {add_membership,
-        {macula_bootstrap_mdns:multicast_group(),
+        {macula_bootstrap_via_mdns_query:multicast_group(),
          {0, 0, 0, 0, 0, 0, 0, 0}}}]).

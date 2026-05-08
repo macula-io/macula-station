@@ -5,7 +5,7 @@
 %% multicast-capable, not loopback, with at least one IPv6 address
 %% — and returns a normalised description for each. Consumers:
 %% <ul>
-%%   <li>`macula_bootstrap_mdns_udp' — probe fan-out: send one mDNS
+%%   <li>`macula_bootstrap_via_mdns_udp' — probe fan-out: send one mDNS
 %%       query per interface instead of relying on the kernel's
 %%       default egress pick.</li>
 %%   <li>`macula_bootstrap_mdns_responder_sup' (future) — spawn one
@@ -30,7 +30,7 @@
 %% The enumeration source is pluggable so unit tests can feed canned
 %% `inet:getifaddrs/0' output without touching a live host. Default
 %% source is `inet:getifaddrs/0'.
--module(macula_bootstrap_mdns_ifaces).
+-module(macula_bootstrap_via_mdns_ifaces).
 
 -export([list/0, list/1, eligible/1, describe/2, read_ifindex/1]).
 

@@ -13,8 +13,8 @@
 %%
 %% <ul>
 %%   <li>`udp_transport' :: module() — implementation of
-%%       `macula_bootstrap_mdns_transport'. Defaults to
-%%       `macula_bootstrap_mdns_udp' (real multicast UDP).</li>
+%%       `macula_bootstrap_via_mdns_transport'. Defaults to
+%%       `macula_bootstrap_via_mdns_udp' (real multicast UDP).</li>
 %%   <li>`handshake_fun' :: `handshake_fun()' — the QUIC
 %%       corroboration step. Takes the mDNS source address, the
 %%       advertised port, and the advertised NodeId, and returns
@@ -32,7 +32,7 @@
 %% Tier A gets a head start (it's typically fastest), but if it
 %% hasn't returned in 200 ms, B begins in parallel rather than
 %% blocking on A's timeout.
--module(macula_bootstrap_tier_b).
+-module(macula_bootstrap_via_mdns).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).
@@ -58,13 +58,13 @@ stagger_ms() -> 200.
 
 -spec discover(discover_opts()) -> macula_bootstrap_peer_discoverer:discover_result().
 discover(Opts) ->
-    UdpMod     = maps:get(udp_transport, Opts, macula_bootstrap_mdns_udp),
+    UdpMod     = maps:get(udp_transport, Opts, macula_bootstrap_via_mdns_udp),
     Handshake  = maps:get(handshake_fun, Opts, fun not_configured/3),
     Timeout    = maps:get(timeout_ms,    Opts, ?DEFAULT_TIMEOUT),
     run(UdpMod, Handshake, Timeout).
 
 run(UdpMod, Handshake, Timeout) ->
-    {_Id, Query} = macula_bootstrap_mdns:build_query(),
+    {_Id, Query} = macula_bootstrap_via_mdns_query:build_query(),
     Replies      = UdpMod:query(Query, Timeout),
     Candidates   = candidates(Replies),
     deduplicate(verify_all(Candidates, Handshake)).
@@ -77,10 +77,10 @@ candidates(Replies) ->
     lists:flatten([answers_to_candidates(Src, Bin) || {Src, Bin} <- Replies]).
 
 answers_to_candidates(Src, Bin) ->
-    case macula_bootstrap_mdns:parse_response(Bin) of
+    case macula_bootstrap_via_mdns_query:parse_response(Bin) of
         {ok, Answers} ->
             [C#{src_addr => Src}
-             || C <- macula_bootstrap_mdns:extract_candidates(Answers)];
+             || C <- macula_bootstrap_via_mdns_query:extract_candidates(Answers)];
         {error, _} ->
             []
     end.

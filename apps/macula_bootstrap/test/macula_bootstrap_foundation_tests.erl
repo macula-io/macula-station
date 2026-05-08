@@ -93,7 +93,7 @@ peers_from_record_preserves_addresses_test() ->
     Record = macula_record:sign(
                macula_record:foundation_seed_list(Fk, Seeds), Kp),
     [Peer] = macula_bootstrap_foundation:peers_from_record(
-               Record, b, macula_bootstrap_tier_b),
+               Record, b, macula_bootstrap_via_mdns),
     ?assertMatch([#{ {text, <<"ip">>}   := _,
                      {text, <<"port">>} := 7000 }],
                  maps:get(addresses, Peer)).

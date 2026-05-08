@@ -1,4 +1,4 @@
--module(macula_bootstrap_tier_b_tests).
+-module(macula_bootstrap_via_mdns_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%==================================================================
@@ -22,13 +22,13 @@ tier_b_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    macula_bootstrap_mdns_fake:init(),
+    macula_bootstrap_via_mdns_fake:init(),
     Peers = [make_peer() || _ <- lists:seq(1, 3)],
     Handshake = registry_handshake(Peers),
     #{peers => Peers, handshake => Handshake}.
 
 cleanup(_Ctx) ->
-    macula_bootstrap_mdns_fake:reset(),
+    macula_bootstrap_via_mdns_fake:reset(),
     ok.
 
 %%==================================================================
@@ -38,26 +38,26 @@ cleanup(_Ctx) ->
 happy_path(#{peers := Peers, handshake := Handshake}) ->
     fun() ->
         Replies = [peer_to_reply(P) || P <- Peers],
-        macula_bootstrap_mdns_fake:set_replies(Replies),
+        macula_bootstrap_via_mdns_fake:set_replies(Replies),
         {ok, Got} = probe(Handshake),
         ?assertEqual(length(Peers), length(Got)),
         ExpectedIds = lists:sort([maps:get(pub, P) || P <- Peers]),
         GotIds      = lists:sort([maps:get(node_id, G) || G <- Got]),
         ?assertEqual(ExpectedIds, GotIds),
         [?assertEqual(via_mdns, maps:get(strategy, G)) || G <- Got],
-        [?assertEqual(macula_bootstrap_tier_b, maps:get(via, G))
+        [?assertEqual(macula_bootstrap_via_mdns, maps:get(via, G))
          || G <- Got]
     end.
 
 no_replies(#{handshake := Handshake}) ->
     fun() ->
-        macula_bootstrap_mdns_fake:set_replies([]),
+        macula_bootstrap_via_mdns_fake:set_replies([]),
         ?assertEqual({ok, []}, probe(Handshake))
     end.
 
 handshake_failure_drops_candidate(#{peers := [P1 | _]}) ->
     fun() ->
-        macula_bootstrap_mdns_fake:set_replies([peer_to_reply(P1)]),
+        macula_bootstrap_via_mdns_fake:set_replies([peer_to_reply(P1)]),
         Handshake = fun(_, _, _) -> {error, quic_timeout} end,
         ?assertEqual({ok, []}, probe(Handshake))
     end.
@@ -70,7 +70,7 @@ node_id_mismatch_drops_candidate(#{peers := [P1 | _]}) ->
         Handshake = fun(_, _, _) ->
                             {ok, maps:get(signed_record, Other)}
                     end,
-        macula_bootstrap_mdns_fake:set_replies([peer_to_reply(P1)]),
+        macula_bootstrap_via_mdns_fake:set_replies([peer_to_reply(P1)]),
         ?assertEqual({ok, []}, probe(Handshake))
     end.
 
@@ -80,7 +80,7 @@ expired_record_dropped(_Ctx) ->
         Handshake = fun(_, _, _) ->
                             {ok, maps:get(signed_record, Expired)}
                     end,
-        macula_bootstrap_mdns_fake:set_replies(
+        macula_bootstrap_via_mdns_fake:set_replies(
           [peer_to_reply(Expired)]),
         ?assertEqual({ok, []}, probe(Handshake))
     end.
@@ -91,7 +91,7 @@ malformed_txt_skipped(#{peers := [P1 | _], handshake := Handshake}) ->
         Bad = {addr(99), build_response(
                           [{"_macula._udp.local", txt,
                             ["broken_txt"]}])},
-        macula_bootstrap_mdns_fake:set_replies([Bad, Good]),
+        macula_bootstrap_via_mdns_fake:set_replies([Bad, Good]),
         {ok, Got} = probe(Handshake),
         ?assertEqual(1, length(Got)),
         ?assertEqual(maps:get(pub, P1),
@@ -102,16 +102,16 @@ deduplicates_by_node_id(#{peers := [P1 | _], handshake := Handshake}) ->
     fun() ->
         Reply1 = peer_to_reply(P1),
         Reply2 = {addr(77), element(2, Reply1)},
-        macula_bootstrap_mdns_fake:set_replies([Reply1, Reply2]),
+        macula_bootstrap_via_mdns_fake:set_replies([Reply1, Reply2]),
         {ok, Got} = probe(Handshake),
         ?assertEqual(1, length(Got))
     end.
 
 missing_handshake_opt_drops_candidate(#{peers := [P1 | _]}) ->
     fun() ->
-        macula_bootstrap_mdns_fake:set_replies([peer_to_reply(P1)]),
-        {ok, Got} = macula_bootstrap_tier_b:discover(
-                      #{udp_transport => macula_bootstrap_mdns_fake,
+        macula_bootstrap_via_mdns_fake:set_replies([peer_to_reply(P1)]),
+        {ok, Got} = macula_bootstrap_via_mdns:discover(
+                      #{udp_transport => macula_bootstrap_via_mdns_fake,
                         timeout_ms    => 500}),
         ?assertEqual([], Got)
     end.
@@ -121,8 +121,8 @@ missing_handshake_opt_drops_candidate(#{peers := [P1 | _]}) ->
 %%==================================================================
 
 probe(Handshake) ->
-    macula_bootstrap_tier_b:discover(
-      #{udp_transport => macula_bootstrap_mdns_fake,
+    macula_bootstrap_via_mdns:discover(
+      #{udp_transport => macula_bootstrap_via_mdns_fake,
         handshake_fun => Handshake,
         timeout_ms    => 500}).
 

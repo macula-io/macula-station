@@ -25,7 +25,7 @@
 %%
 %% <ul>
 %%   <li>`interfaces' — list of
-%%       `macula_bootstrap_mdns_ifaces:iface()' maps, OR the atom
+%%       `macula_bootstrap_via_mdns_ifaces:iface()' maps, OR the atom
 %%       `default' (kernel picks — identical to `query/2').</li>
 %%   <li>`socket_opener' — `fun(iface() | default) ->
 %%       {ok, Sock} | {error, _}'. Pluggable for tests. Default
@@ -39,14 +39,14 @@
 %% its own socket. Replies are merged in the order workers finish.
 %% The total wall-clock budget is bounded by `TimeoutMs' — a slow
 %% interface never blocks a fast one.
--module(macula_bootstrap_mdns_udp).
--behaviour(macula_bootstrap_mdns_transport).
+-module(macula_bootstrap_via_mdns_udp).
+-behaviour(macula_bootstrap_via_mdns_transport).
 
 -export([query/2, query/3]).
 
 -export_type([opts/0, socket_opener/0]).
 
--type iface() :: macula_bootstrap_mdns_ifaces:iface().
+-type iface() :: macula_bootstrap_via_mdns_ifaces:iface().
 
 -type socket_opener() :: fun((iface() | default) ->
     {ok, gen_udp:socket()} | {error, term()}).
@@ -67,12 +67,12 @@
 %%==================================================================
 
 -spec query(binary(), pos_integer()) ->
-            [macula_bootstrap_mdns_transport:reply()].
+            [macula_bootstrap_via_mdns_transport:reply()].
 query(QueryBin, TimeoutMs) ->
     query(QueryBin, TimeoutMs, #{}).
 
 -spec query(binary(), pos_integer(), opts()) ->
-            [macula_bootstrap_mdns_transport:reply()].
+            [macula_bootstrap_via_mdns_transport:reply()].
 query(QueryBin, TimeoutMs, Opts) ->
     dispatch(interfaces(Opts), QueryBin, TimeoutMs, Opts).
 
@@ -168,8 +168,8 @@ send_and_collect(Sock, QueryBin, TimeoutMs) ->
     Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
     ok_or_empty(
       gen_udp:send(Sock,
-                   macula_bootstrap_mdns:multicast_group(),
-                   macula_bootstrap_mdns:multicast_port(),
+                   macula_bootstrap_via_mdns_query:multicast_group(),
+                   macula_bootstrap_via_mdns_query:multicast_port(),
                    QueryBin),
       Sock, Deadline).
 

@@ -1,10 +1,10 @@
-%% @doc In-memory `macula_bootstrap_mdns_transport' for tests.
+%% @doc In-memory `macula_bootstrap_via_mdns_transport' for tests.
 %%
 %% Tests install a canned reply list; the tier_b orchestrator then
 %% sees exactly those `{SrcAddress, PacketBin}' pairs instead of
 %% going to the kernel for multicast UDP.
--module(macula_bootstrap_mdns_fake).
--behaviour(macula_bootstrap_mdns_transport).
+-module(macula_bootstrap_via_mdns_fake).
+-behaviour(macula_bootstrap_via_mdns_transport).
 
 -export([init/0, reset/0, set_replies/1, query/2]).
 

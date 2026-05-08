@@ -40,7 +40,7 @@ sup_with_responder_config_starts_responder_test() ->
         try
             run_sup(fun(Pid) ->
                 [Child] = supervisor:which_children(Pid),
-                ?assertMatch({macula_bootstrap_mdns_responder, _, worker, _},
+                ?assertMatch({macula_bootstrap_via_mdns_responder, _, worker, _},
                              Child)
             end)
         after

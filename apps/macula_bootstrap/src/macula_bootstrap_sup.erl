@@ -3,7 +3,7 @@
 %% The cascade itself is a <em>one-shot</em> — `macula_bootstrap:run/0'
 %% spawns probes, collects peers, and returns. Nothing long-running
 %% on that path. But the Tier B <em>advertise</em> side
-%% (`macula_bootstrap_mdns_responder') is a steady-state service
+%% (`macula_bootstrap_via_mdns_responder') is a steady-state service
 %% owning a UDP socket, and a station-wide bootstrap subsystem needs
 %% a home for it (plus any future long-running children — periodic
 %% re-bootstrap timer, cached-peer maintainer, …).
@@ -51,10 +51,10 @@ responder_spec(_)                         -> [].
 
 child_spec(Opts) ->
     #{
-        id       => macula_bootstrap_mdns_responder,
-        start    => {macula_bootstrap_mdns_responder, start_link, [Opts]},
+        id       => macula_bootstrap_via_mdns_responder,
+        start    => {macula_bootstrap_via_mdns_responder, start_link, [Opts]},
         restart  => permanent,
         shutdown => 5000,
         type     => worker,
-        modules  => [macula_bootstrap_mdns_responder]
+        modules  => [macula_bootstrap_via_mdns_responder]
     }.

@@ -1,4 +1,4 @@
-%% @doc Fan-out tests for `macula_bootstrap_mdns_udp:query/3'.
+%% @doc Fan-out tests for `macula_bootstrap_via_mdns_udp:query/3'.
 %%
 %% The production socket_opener hits real IPv6 multicast, which we
 %% do NOT want in an eunit run (port 5353 conflicts with avahi, and
@@ -7,7 +7,7 @@
 %% UDP socket per interface. Each canned interface has an associated
 %% responder that echoes a unique canned reply back to the sender,
 %% so the merged reply list is deterministic.
--module(macula_bootstrap_mdns_udp_tests).
+-module(macula_bootstrap_via_mdns_udp_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 %%==================================================================
@@ -17,7 +17,7 @@
 single_socket_path_returns_empty_on_open_failure_test() ->
     Opener = fun(_) -> {error, eacces} end,
     ?assertEqual([],
-                 macula_bootstrap_mdns_udp:query(
+                 macula_bootstrap_via_mdns_udp:query(
                    <<"q">>, 50,
                    #{socket_opener => Opener,
                      interfaces    => default})).
@@ -37,7 +37,7 @@ fan_out_merges_per_interface_replies_test() ->
                 link_local => undefined, ipv6 => []},
               #{name => "iB", index => 11,
                 link_local => undefined, ipv6 => []}],
-    Replies = macula_bootstrap_mdns_udp:query(
+    Replies = macula_bootstrap_via_mdns_udp:query(
                 <<"probe">>, 500,
                 #{socket_opener => Opener,
                   interfaces    => Ifaces}),
@@ -49,7 +49,7 @@ fan_out_merges_per_interface_replies_test() ->
 fan_out_with_empty_interface_list_returns_empty_test() ->
     Opener = fun(_) -> error(opener_should_not_be_called) end,
     ?assertEqual([],
-                 macula_bootstrap_mdns_udp:query(
+                 macula_bootstrap_via_mdns_udp:query(
                    <<"q">>, 50,
                    #{socket_opener => Opener,
                      interfaces    => []})).
@@ -64,7 +64,7 @@ fan_out_survives_one_broken_opener_test() ->
                 link_local => undefined, ipv6 => []},
               #{name => "iBroken", index => 2,
                 link_local => undefined, ipv6 => []}],
-    Replies = macula_bootstrap_mdns_udp:query(
+    Replies = macula_bootstrap_via_mdns_udp:query(
                 <<"probe">>, 500,
                 #{socket_opener => Opener,
                   interfaces    => Ifaces}),
@@ -76,7 +76,7 @@ fan_out_survives_one_broken_opener_test() ->
 %% port, echoes a canned reply to whatever sends it a datagram.
 %%
 %% The REAL mDNS probe sends its query to
-%% `macula_bootstrap_mdns:multicast_group()' on port 5353. We can't
+%% `macula_bootstrap_via_mdns_query:multicast_group()' on port 5353. We can't
 %% use that in eunit (avahi / kernel / permissions). Instead the
 %% client sockets we hand back ARE connected to the echo's port, so
 %% when the probe's `gen_udp:send' fires with its multicast

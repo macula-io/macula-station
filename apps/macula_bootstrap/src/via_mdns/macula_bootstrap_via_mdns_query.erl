@@ -17,13 +17,13 @@
 %% peers. Per Part 5 §5.1 the TXT values alone are NOT trusted; a
 %% QUIC handshake against the candidate's source address is what
 %% upgrades a candidate into a `verified_peer()'. That handshake
-%% lives in `macula_bootstrap_tier_b'.
+%% lives in `macula_bootstrap_via_mdns'.
 %%
 %% The wire format is standard DNS, so we reuse OTP's
 %% `inet_dns'. mDNS-specific framing quirks (unicast-response bit,
 %% cache-flush bit) are omitted — we query `class=in' and parse
 %% whatever the responder sends back.
--module(macula_bootstrap_mdns).
+-module(macula_bootstrap_via_mdns_query).
 
 -export([
     service_name/0,
