@@ -3,9 +3,9 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
-%% A test tier that returns the peers it was configured with after
+%% A test strategy that returns the peers it was configured with after
 %% sleeping for `delay' milliseconds.
--define(FAKE, macula_bootstrap_test_tier).
+-define(FAKE, macula_bootstrap_test_strategy).
 
 %%------------------------------------------------------------------
 %% Empty cascade
@@ -16,7 +16,7 @@ empty_cascade_fails_test() ->
                  macula_bootstrap:cascade([])).
 
 %%------------------------------------------------------------------
-%% Tier E — single-tier success
+%% via_operator_paste — single-tier success
 %%------------------------------------------------------------------
 
 tier_e_single_cascade_succeeds_test() ->

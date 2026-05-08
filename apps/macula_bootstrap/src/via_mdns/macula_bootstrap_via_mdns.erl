@@ -1,10 +1,10 @@
-%% @doc Tier B — link-local mDNS discovery (Part 5 §5).
+%% @doc via_mdns — link-local mDNS discovery (Part 5 §5).
 %%
-%% Tier B sends a single IPv6 mDNS query to the link-local service
+%% via_mdns sends a single IPv6 mDNS query to the link-local service
 %% name `_macula._udp.local' and collects TXT advertisements from
 %% nearby stations. TXT values alone are <b>not</b> trusted — an
 %% adversary on the same LAN could spoof any advertisement. For each
-%% mDNS candidate Tier B runs a per-peer QUIC handshake via a
+%% mDNS candidate via_mdns runs a per-peer QUIC handshake via a
 %% caller-supplied function; the peer proves possession of the
 %% private key behind the advertised NodeId, hands back its signed
 %% `node_record', and only then becomes a `verified_peer()'.
@@ -28,10 +28,10 @@
 %%
 %% == Stagger ==
 %%
-%% Tier B enters the cascade 200 ms after Tier A per Part 5 §3 —
-%% Tier A gets a head start (it's typically fastest), but if it
-%% hasn't returned in 200 ms, B begins in parallel rather than
-%% blocking on A's timeout.
+%% via_mdns enters the cascade 200 ms after via_doh per Part 5 §3 —
+%% via_doh gets a head start (it's typically fastest), but if it
+%% hasn't returned in 200 ms, via_mdns begins in parallel rather
+%% than blocking on via_doh's timeout.
 -module(macula_bootstrap_via_mdns).
 -behaviour(macula_bootstrap_peer_discoverer).
 

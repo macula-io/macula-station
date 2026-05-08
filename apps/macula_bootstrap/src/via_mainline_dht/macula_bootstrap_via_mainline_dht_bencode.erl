@@ -1,6 +1,6 @@
 %% @doc BEP 3 bencode codec.
 %%
-%% Needed for Tier C (Part 5 §6 — Mainline DHT bridge). Bencode is
+%% Needed for via_mainline_dht (Part 5 §6 — Mainline DHT bridge). Bencode is
 %% the wire format of every BitTorrent DHT RPC; BEP 44's signature
 %% layer also signs over a bencoded tuple. The codec is pure,
 %% deterministic, and has no dependency on the DHT transport — it is

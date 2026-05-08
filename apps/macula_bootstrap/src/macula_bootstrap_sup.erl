@@ -2,7 +2,7 @@
 %%
 %% The cascade itself is a <em>one-shot</em> — `macula_bootstrap:run/0'
 %% spawns probes, collects peers, and returns. Nothing long-running
-%% on that path. But the Tier B <em>advertise</em> side
+%% on that path. But the via_mdns <em>advertise</em> side
 %% (`macula_bootstrap_via_mdns_responder') is a steady-state service
 %% owning a UDP socket, and a station-wide bootstrap subsystem needs
 %% a home for it (plus any future long-running children — periodic

@@ -1,4 +1,4 @@
-%% @doc Tier D — blockchain anchor (Part 5 §7).
+%% @doc via_blockchain — blockchain anchor (Part 5 §7).
 %%
 %% Last automated tier before operator paste. Reads the foundation's
 %% quarterly-refreshed anchor from one or more public blockchains
@@ -10,7 +10,7 @@
 %% The chain is a <em>locator</em>, not a trust anchor. Even a
 %% 51%-attacked chain cannot forge the Ed25519 signature of the
 %% foundation's threshold key. A successful attack on the chain at
-%% worst denies service and forces fall-through to Tier E; it cannot
+%% worst denies service and forces fall-through to via_operator_paste; it cannot
 %% inject hostile peers.
 %%
 %% == Probe options ==
@@ -25,9 +25,10 @@
 %%
 %% == Stagger ==
 %%
-%% 2000 ms per Part 5 §3 — Tier D is the slowest automated tier.
-%% It enters the cascade last so faster tiers (A/B/C) aren't
-%% starved by chain-query latency.
+%% 2000 ms per Part 5 §3 — via_blockchain is the slowest automated
+%% strategy. It enters the cascade last so faster strategies
+%% (via_doh, via_mdns, via_mainline_dht) aren't starved by
+%% chain-query latency.
 -module(macula_bootstrap_via_blockchain).
 -behaviour(macula_bootstrap_peer_discoverer).
 

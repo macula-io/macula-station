@@ -1,4 +1,4 @@
-%% @doc Tier C — Mainline DHT bridge (Part 5 §6).
+%% @doc via_mainline_dht — Mainline DHT bridge (Part 5 §6).
 %%
 %% Retrieves the foundation's BEP 44 mutable item (a PKARR DNS
 %% packet) from the public Mainline DHT at `SHA-1(foundation_pubkey)'.
@@ -27,9 +27,9 @@
 %%
 %% == Stagger ==
 %%
-%% 500 ms per Part 5 §3 — the DHT lookup is the slowest tier under
-%% normal conditions; we give Tier A and B a head start so they
-%% aren't starved by DHT latency.
+%% 500 ms per Part 5 §3 — the DHT lookup is the slowest strategy
+%% under normal conditions; we give via_doh and via_mdns a head
+%% start so they aren't starved by DHT latency.
 %%
 %% == Transport ==
 %%

@@ -1,6 +1,6 @@
-%% @doc Mainline DHT transport behaviour (Tier C, Part 5 §6).
+%% @doc Mainline DHT transport behaviour (via_mainline_dht, Part 5 §6).
 %%
-%% Hides the BEP 5 Kademlia-over-UDP particulars from Tier C's
+%% Hides the BEP 5 Kademlia-over-UDP particulars from via_mainline_dht's
 %% orchestration. Production will plug in a real Mainline DHT
 %% client (either a minimal Erlang implementation or a Rust NIF
 %% wrapping `mainline-dht-go' / `libtorrent'); unit tests plug in a
@@ -9,7 +9,7 @@
 %% The single callback fetches a BEP 44 mutable item at the supplied
 %% `target_id' (SHA-1 of foundation pubkey per `macula_bootstrap_via_mainline_dht_bep44').
 %% Corroboration across DHT nodes is the transport's concern —
-%% Tier C treats the returned item as a single signed blob to verify.
+%% via_mainline_dht treats the returned item as a single signed blob to verify.
 -module(macula_bootstrap_via_mainline_dht_transport).
 
 -export_type([target_id/0, get_result/0]).

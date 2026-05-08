@@ -1,6 +1,6 @@
-%% @doc Tier A DoH resolver behaviour.
+%% @doc via_doh DoH resolver behaviour.
 %%
-%% Tier A (Part 5 §4) bootstraps from <b>foundation-signed seed
+%% via_doh (Part 5 §4) bootstraps from <b>foundation-signed seed
 %% lists</b> resolved via DNS-over-HTTPS. The actual transport is
 %% pluggable so that:
 %% <ul>

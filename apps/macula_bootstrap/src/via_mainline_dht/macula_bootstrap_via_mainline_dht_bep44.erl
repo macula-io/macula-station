@@ -1,6 +1,6 @@
 %% @doc BEP 44 mutable-item envelope.
 %%
-%% Tier C bootstraps via Mainline DHT. Mainline BEP 44 defines how
+%% via_mainline_dht bootstraps via Mainline DHT. Mainline BEP 44 defines how
 %% to store and retrieve Ed25519-signed mutable data items at a
 %% `target' id (SHA-1 of the pubkey + optional salt). The PKARR
 %% layer (`pkarr.org') repurposes BEP 44 to publish signed DNS

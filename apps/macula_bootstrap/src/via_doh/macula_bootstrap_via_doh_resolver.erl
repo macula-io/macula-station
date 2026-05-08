@@ -1,6 +1,6 @@
 %% @doc RFC 8484 DNS-over-HTTPS request/response codec + resolver core.
 %%
-%% Tier A (Part 5 §4.1) fetches foundation-signed `foundation_seed_list'
+%% via_doh (Part 5 §4.1) fetches foundation-signed `foundation_seed_list'
 %% records via DoH. The well-known zone name for a foundation pubkey
 %% is built from a base32 encoding of the pubkey; the record bytes
 %% are published as one or more TXT character-strings which this

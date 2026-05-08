@@ -1,15 +1,15 @@
-%% @doc Integration tests — Tier A orchestrator + DoH codec layered.
+%% @doc Integration tests — via_doh orchestrator + DoH codec layered.
 %%
-%% The tier_a unit tests mock the resolver directly; this suite
+%% The via_doh unit tests mock the resolver directly; this suite
 %% instead plugs a resolver whose internals run the real
 %% `macula_bootstrap_via_doh_resolver:resolve/4' codec over a fake HTTP transport
 %% that builds DoH-shaped response packets. Verifies that:
 %% <ul>
 %%   <li>The base32-derived zone name round-trips — the resolver's
 %%       HTTP transport sees the correctly-encoded `_pkarr.*' query
-%%       for the pubkey Tier A asked about.</li>
+%%       for the pubkey via_doh asked about.</li>
 %%   <li>TXT rdata flowing back through the codec decodes to exactly
-%%       the `macula_record:encode/1' bytes Tier A then verifies.</li>
+%%       the `macula_record:encode/1' bytes via_doh then verifies.</li>
 %% </ul>
 -module(macula_bootstrap_via_doh_integration_tests).
 -include_lib("eunit/include/eunit.hrl").

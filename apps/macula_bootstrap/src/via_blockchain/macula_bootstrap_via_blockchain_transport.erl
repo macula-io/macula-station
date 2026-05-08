@@ -1,14 +1,14 @@
-%% @doc Blockchain-anchor transport behaviour (Tier D, Part 5 §7).
+%% @doc Blockchain-anchor transport behaviour (via_blockchain, Part 5 §7).
 %%
 %% Hides the per-chain mechanics of reading the foundation's
 %% quarterly-refreshed signed anchor from a public blockchain.
 %% Concrete adapters (Bitcoin OP_RETURN, Ethereum contract event)
-%% implement this callback; Tier D queries each configured chain in
+%% implement this callback; via_blockchain queries each configured chain in
 %% parallel and accepts the first valid answer.
 %%
 %% The anchor bytes MUST be a `macula_record:encode/1' byte string of
 %% a foundation-signed record (typically `foundation_seed_list',
-%% 0x0D). This keeps Tier D verification identical to Tier A — the
+%% 0x0D). This keeps via_blockchain verification identical to via_doh — the
 %% chain adapter is responsible solely for locating and returning the
 %% bytes.
 %%
@@ -17,7 +17,7 @@
 %% Even a 51%-attacked chain cannot forge the Ed25519 signature of
 %% the foundation's threshold key — the chain gives us <em>where to
 %% find</em> the anchor, the Ed25519 signature gives us <em>trust</em>.
-%% A rewritten chain history at worst denies service (forces Tier E),
+%% A rewritten chain history at worst denies service (forces via_operator_paste),
 %% it does not inject malicious peers.
 -module(macula_bootstrap_via_blockchain_transport).
 

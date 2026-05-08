@@ -1,7 +1,7 @@
-%% @doc mDNS responder (Tier B advertise side, Part 5 §5).
+%% @doc mDNS responder (via_mdns advertise side, Part 5 §5).
 %%
 %% Publishes this station on the link-local segment so peers running
-%% Tier B probes find us. Listens on the mDNS group
+%% via_mdns probes find us. Listens on the mDNS group
 %% `[ff02::fb]:5353' for queries matching `_macula._udp.local' and
 %% answers with a TXT record carrying `node_id=<hex>', `port=...',
 %% `tier=...'. The response is unsigned — peers corroborate via a

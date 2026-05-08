@@ -1,11 +1,11 @@
-%% @doc Tier E — social / out-of-band peer ingestion.
+%% @doc via_operator_paste — social / out-of-band peer ingestion.
 %%
-%% The last-resort cascade tier (Part 5 §8). Operator supplies one or
+%% The last-resort cascade strategy (Part 5 §8). Operator supplies one or
 %% more signed peer URLs (see `macula_bootstrap_via_operator_paste_peer_url'); each URL
 %% is decoded and signature-verified. Verified peers are returned to
 %% the orchestrator.
 %%
-%% Tier E is instantaneous — it does no network I/O — so it runs with
+%% via_operator_paste is instantaneous — it does no network I/O — so it runs with
 %% zero stagger. When URLs are provided it typically wins the cascade
 %% before any other tier gets a chance. When no URLs are provided it
 %% returns `{error, no_urls}' and the orchestrator falls through.

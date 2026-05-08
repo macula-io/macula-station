@@ -18,7 +18,7 @@
 %% This module is the single home for steps (1) and (3). Step (2) is
 %% `macula_foundation:verify_record/1' directly — one public trust
 %% anchor, no duplication. Tier-specific integrity checks (storage
-%% key for Tier A, BEP 44 signature for Tier C) remain tier-local.
+%% key for via_doh, BEP 44 signature for via_mainline_dht) remain strategy-local.
 %%
 %% Reference:
 %% - PLAN_MACULA_V2_PART5_BOOTSTRAP.md §3, §4, §6, §7

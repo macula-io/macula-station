@@ -1,6 +1,6 @@
 %% @doc One-shot bootstrap orchestrator.
 %%
-%% Composes `macula_bootstrap:run/0,1' (the five-tier cascade) with
+%% Composes `macula_bootstrap:run/0,1' (the peer-discovery cascade) with
 %% `macula_station_bootstrap:ingest/2' (the bridge that seeds the
 %% DHT routing table). Called by `macula_station_app:start/2' after
 %% the DHT child is up, and before SWIM is started.

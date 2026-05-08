@@ -1,7 +1,7 @@
 %% @doc Bootstrap → DHT routing-table ingestion.
 %%
 %% Bridges the output of `macula_bootstrap:run/0,1' (a list of
-%% foundation-verified peers from the five-tier cascade) into the
+%% foundation-verified peers from the peer-discovery cascade) into the
 %% station's local Kademlia routing table via `macula_dht:observe/2'.
 %% The cascade finds peers; this module hands them to the DHT so
 %% subsequent lookup walks start from a seeded table.
@@ -24,7 +24,7 @@
 %%       (3 or 4 per Part 2 §8); we surface it as
 %%       `gateway_tier' on the verified_peer and translate it to the
 %%       DHT's atom form (`t3'). Non-foundation peers
-%%       (Tier B mDNS, Tier E operator paste) default to `t0'.</li>
+%%       (via_mdns mDNS, via_operator_paste operator paste) default to `t0'.</li>
 %%   <li><b>Location.</b> Lives in `macula_station' rather than
 %%       `macula_bootstrap' because it bridges two apps and its home
 %%       is the orchestration layer that already depends on both.</li>

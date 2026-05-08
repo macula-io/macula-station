@@ -7,7 +7,7 @@
 %% `macula_station_outbound_link' workers BEFORE the cascade runs (see
 %% `macula_station_app:boot_outbound_links/2').
 %%
-%% At probe time the tier waits a configurable stagger window for
+%% At probe time the strategy waits a configurable stagger window for
 %% in-flight handshakes to complete, then snapshots the registry's
 %% `verified_peers/0' list and returns it as `verified_peer()' maps.
 %%
@@ -20,7 +20,7 @@
 %%
 %% == Stagger ==
 %%
-%% Tier seed_dial enters the cascade at zero stagger — outbound link
+%% via_seed_dial enters the cascade at zero stagger — outbound link
 %% workers are already up by the time the cascade starts.
 -module(macula_station_via_seed_dial).
 -behaviour(macula_bootstrap_peer_discoverer).

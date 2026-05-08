@@ -3,7 +3,7 @@
 %% Covers the §11.3 acceptance bars that can be exercised
 %% deterministically in-VM without kicking off real network I/O:
 %% <ul>
-%%   <li>Tier E (operator peer paste) yields ≥3 verified peers from
+%%   <li>via_operator_paste (operator peer paste) yields ≥3 verified peers from
 %%       a set of signed URLs.</li>
 %%   <li>The cascade falls through failing tiers to a working one.</li>
 %%   <li>A faster tier preempts a slower tier with stagger delay.</li>
@@ -11,7 +11,7 @@
 %%       pubkey and reject untrusted signers (Part 6 §9.14–§9.17).</li>
 %% </ul>
 %%
-%% Tier A (DoH), Tier B (mDNS), Tier C (Mainline DHT), Tier D
+%% via_doh (DoH), via_mdns (mDNS), via_mainline_dht (Mainline DHT), via_blockchain
 %% (blockchain) require external infrastructure and are covered by
 %% the network-integrated suite — not this file.
 -module(macula_phase6_SUITE).
@@ -69,7 +69,7 @@ end_per_testcase(_Case, _Cfg) ->
     ok.
 
 %%---------------------------------------------------------------------
-%% Tier E — operator-provided peer URLs
+%% via_operator_paste — operator-provided peer URLs
 %%---------------------------------------------------------------------
 
 tier_e_yields_three_peers(_Cfg) ->
@@ -161,7 +161,7 @@ foundation_seed_list_signed_by_trusted_key(_Cfg) ->
     ok.
 
 %%---------------------------------------------------------------------
-%% Tier A — corroborated seed list (acceptance §11.3)
+%% via_doh — corroborated seed list (acceptance §11.3)
 %%---------------------------------------------------------------------
 
 tier_a_corroborated_seed_list_yields_peers(_Cfg) ->
@@ -192,7 +192,7 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     Fk = macula_identity:public(Kp),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
     Bytes = signed_seed_list_bytes(Kp, Fk, 3),
-    %% Only one resolver corroborates — threshold is 2, so Tier A fails.
+    %% Only one resolver corroborates — threshold is 2, so via_doh fails.
     macula_bootstrap_via_doh_fake:set(<<"r1">>, Fk, {ok, Bytes}),
     macula_bootstrap_via_doh_fake:set(<<"r2">>, Fk, {error, dns_failure}),
     macula_bootstrap_via_doh_fake:set(<<"r3">>, Fk, {error, dns_failure}),
@@ -215,14 +215,14 @@ tier_a_uncorroborated_falls_through_to_tier_e(_Cfg) ->
     ok.
 
 %%---------------------------------------------------------------------
-%% Tier B — mDNS cascade winner (acceptance §11.3)
+%% via_mdns — mDNS cascade winner (acceptance §11.3)
 %%---------------------------------------------------------------------
 
 tier_b_wins_cascade_when_tier_a_has_no_resolvers(_Cfg) ->
-    %% Three peers advertise themselves via mDNS; the tier_a probe
-    %% has no resolvers to consult and errors out; tier_b corroborates
+    %% Three peers advertise themselves via mDNS; the via_doh probe
+    %% has no resolvers to consult and errors out; via_mdns corroborates
     %% each TXT via the canned handshake and yields three peers before
-    %% tier_e's peer-url paste would have been necessary.
+    %% via_operator_paste's peer-url paste would have been necessary.
     Peers = [make_peer() || _ <- lists:seq(1, 3)],
     Replies = [peer_reply(P) || P <- Peers],
     macula_bootstrap_via_mdns_fake:set_replies(Replies),
@@ -294,7 +294,7 @@ registry_handshake(Peers) ->
     end.
 
 %%---------------------------------------------------------------------
-%% Tier C — Mainline DHT cascade winner (acceptance §11.3)
+%% via_mainline_dht — Mainline DHT cascade winner (acceptance §11.3)
 %%---------------------------------------------------------------------
 
 tier_c_wins_cascade_when_a_and_b_are_down(_Cfg) ->
@@ -351,7 +351,7 @@ tier_c_chunk(Bin, Max) ->
     [Head | tier_c_chunk(Rest, Max)].
 
 %%---------------------------------------------------------------------
-%% Tier D — blockchain anchor cascade winner
+%% via_blockchain — blockchain anchor cascade winner
 %%---------------------------------------------------------------------
 
 tier_d_wins_when_a_b_c_are_down(_Cfg) ->
@@ -373,7 +373,7 @@ tier_d_wins_when_a_b_c_are_down(_Cfg) ->
     ok.
 
 %%---------------------------------------------------------------------
-%% Total failure — no tier yields peers
+%% Total failure — no strategy yields peers
 %%---------------------------------------------------------------------
 
 full_cascade_all_tiers_down_returns_failure(_Cfg) ->
@@ -400,7 +400,7 @@ full_cascade_under_time_budget(_Cfg) ->
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
-    %% Only Tier E has peers; cascade must fall through A+B+C+D.
+    %% Only via_operator_paste has peers; cascade must fall through A+B+C+D.
     Urls = [phase6_signed_url() || _ <- lists:seq(1, 3)],
     Tiers = full_cascade_tiers(Fk,
                                #{tier_c_working => false,
@@ -459,7 +459,7 @@ phase6_signed_url() ->
     macula_bootstrap_via_operator_paste_peer_url:encode(Record, []).
 
 %%---------------------------------------------------------------------
-%% Tier D via real Ethereum JSON-RPC adapter (with canned HTTP)
+%% via_blockchain via real Ethereum JSON-RPC adapter (with canned HTTP)
 %%---------------------------------------------------------------------
 
 tier_d_eth_adapter_end_to_end(_Cfg) ->

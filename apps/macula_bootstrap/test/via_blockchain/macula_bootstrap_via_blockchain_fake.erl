@@ -2,7 +2,7 @@
 %%
 %% Canned anchor bytes keyed by a chain label (supplied via
 %% `chain_opts' under the `label' key). Tests install an anchor or a
-%% failure via `set/2' / `fail/2'; tier_d looks them up through the
+%% failure via `set/2' / `fail/2'; via_blockchain looks them up through the
 %% behaviour callback.
 -module(macula_bootstrap_via_blockchain_fake).
 -behaviour(macula_bootstrap_via_blockchain_transport).

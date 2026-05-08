@@ -138,7 +138,7 @@ record_not_signed_by_foundation(#{fk := Fk}) ->
 first_successful_pubkey_wins(#{kp := Kp, fk := Fk}) ->
     fun() ->
         %% Two foundation pubkeys; only one has a record in DHT.
-        %% Tier C should still succeed via the one that works.
+        %% via_mainline_dht should still succeed via the one that works.
         OtherKp = macula_identity:generate(),
         OtherFk = macula_identity:public(OtherKp),
         application:set_env(macula_record, foundation_pubkeys,

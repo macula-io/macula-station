@@ -1,4 +1,4 @@
-%% @doc Tier E signed peer-URL codec.
+%% @doc via_operator_paste signed peer-URL codec.
 %%
 %% The "social / out-of-band" tier (Part 5 §8) lets an operator paste
 %% a single URL into the station to add a known peer when all

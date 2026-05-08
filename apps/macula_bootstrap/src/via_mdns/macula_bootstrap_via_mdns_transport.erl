@@ -1,6 +1,6 @@
 %% @doc mDNS UDP transport behaviour.
 %%
-%% The pure Tier B codec (`macula_bootstrap_via_mdns_query') and the Tier B
+%% The pure via_mdns codec (`macula_bootstrap_via_mdns_query') and the via_mdns
 %% orchestrator (`macula_bootstrap_via_mdns') are transport-agnostic.
 %% This behaviour abstracts the "send a query and collect responses"
 %% step so:
@@ -13,7 +13,7 @@
 %%
 %% Implementations MUST honour `TimeoutMs' as the total budget — send
 %% + collect combined. Returning an empty list is legal (no peers
-%% responded) and simply causes Tier B to fall through.
+%% responded) and simply causes via_mdns to fall through.
 -module(macula_bootstrap_via_mdns_transport).
 
 -export_type([reply/0]).

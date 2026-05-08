@@ -1,9 +1,9 @@
-%% @doc Hecate Bootstrap — five-tier cascade orchestrator.
+%% @doc Hecate Bootstrap — peer-discovery cascade orchestrator.
 %%
 %% Facade for the Phase 6 bootstrap cascade. Accepts an ordered list
 %% of strategy modules (implementing `macula_bootstrap_peer_discoverer') and
 %% cascade options, runs probes in parallel with staggered starts
-%% per Part 5 §3, and returns the first tier's verified peers that
+%% per Part 5 §3, and returns the first strategy's verified peers that
 %% reach the `min_peers' threshold.
 %%
 %% == Example ==
@@ -151,7 +151,7 @@ handle_result(Pid, {ok, Peers}, Workers, _PerTier, MinPeers, _Deadline)
     drain_monitors(Workers),
     {ok, Peers};
 handle_result(Pid, {ok, Peers}, Workers, PerTier, MinPeers, Deadline) ->
-    %% Not enough peers from this tier; record and keep waiting
+    %% Not enough peers from this strategy; record and keep waiting
     %% in case a later tier clears the bar.
     collect(Workers, PerTier#{Pid => Peers}, MinPeers, Deadline);
 handle_result(_Pid, {error, _Reason}, Workers, PerTier, MinPeers, Deadline) ->

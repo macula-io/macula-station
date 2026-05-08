@@ -1,4 +1,4 @@
-%% @doc Bitcoin Esplora chain adapter for Tier D (Part 5 §7).
+%% @doc Bitcoin Esplora chain adapter for via_blockchain (Part 5 §7).
 %%
 %% Reads the foundation's latest anchor from a Blockstream/Esplora
 %% HTTP API (`GET /address/<addr>/txs'). Bitcoin's 80-byte OP_RETURN

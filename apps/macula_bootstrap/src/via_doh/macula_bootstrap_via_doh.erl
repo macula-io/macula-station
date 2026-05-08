@@ -1,6 +1,6 @@
-%% @doc Tier A — foundation-anchor bootstrap (Part 5 §4).
+%% @doc via_doh — foundation-anchor bootstrap (Part 5 §4).
 %%
-%% Tier A queries a panel of independent DoH resolvers in parallel
+%% via_doh queries a panel of independent DoH resolvers in parallel
 %% for the foundation-signed `foundation_seed_list' record at each
 %% firmware-embedded foundation pubkey (`macula_foundation:pubkeys/0').
 %% A record is accepted only when at least `corroboration' resolvers
@@ -37,7 +37,7 @@
 %%       (default 1500).</li>
 %% </ul>
 %%
-%% Tier A runs at zero stagger — it is the cascade's first hop.
+%% via_doh runs at zero stagger — it is the cascade's first hop.
 -module(macula_bootstrap_via_doh).
 -behaviour(macula_bootstrap_peer_discoverer).
 

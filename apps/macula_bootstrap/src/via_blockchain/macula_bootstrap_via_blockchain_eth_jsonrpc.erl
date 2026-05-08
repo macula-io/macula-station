@@ -1,4 +1,4 @@
-%% @doc Ethereum JSON-RPC chain adapter for Tier D (Part 5 §7).
+%% @doc Ethereum JSON-RPC chain adapter for via_blockchain (Part 5 §7).
 %%
 %% Reads the foundation's latest `AnchorPublished(bytes)' event from
 %% a foundation-deployed contract via `eth_getLogs'. Ethereum has
