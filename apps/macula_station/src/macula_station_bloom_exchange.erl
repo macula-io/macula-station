@@ -138,12 +138,12 @@ handle_cast(_Msg, S) ->
 handle_info({rebuild, Ref}, #state{timer_ref = Ref} = S) ->
     S1 = sync_inbound_subs(do_rebuild(S)),
     {noreply, schedule_rebuild(S1)};
-%% Inbound EVENT frame from a peer's station_link — `_mesh.bloom'
-%% delivery. The station_link sends events to its subscriber's
-%% mailbox; we look up SubRef in our `subs' map to find which peer
+%% Inbound EVENT frame from a peer's outbound_link — `_mesh.bloom'
+%% delivery. The outbound_link (and the SDK station_link) deliver
+%% events as the 5-tuple `{macula_event, SubRef, Topic, Payload,
+%% Meta}'; we look up SubRef in our `subs' map to find which peer
 %% sent it and key the cache by hostname.
-handle_info({macula_station_link_event, SubRef,
-             #{topic := <<"_mesh.bloom">>, payload := Payload} = _Frame},
+handle_info({macula_event, SubRef, <<"_mesh.bloom">>, Payload, _Meta},
             #state{subs = Subs, peer_blooms = PB} = S)
   when is_binary(Payload), byte_size(Payload) =:= 1024 ->
     case hostname_for_sub(SubRef, Subs) of
