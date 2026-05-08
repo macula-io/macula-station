@@ -67,7 +67,7 @@ peers_from_record_empty_seed_list_test() ->
     Record = macula_record:sign(
                macula_record:foundation_seed_list(Fk, []), Kp),
     ?assertEqual([], macula_bootstrap_foundation:peers_from_record(
-                       Record, d, macula_bootstrap_tier_d)).
+                       Record, d, macula_bootstrap_via_blockchain)).
 
 peers_from_non_seed_list_record_returns_empty_test() ->
     %% A record whose payload doesn't carry a `seeds' key — defensively

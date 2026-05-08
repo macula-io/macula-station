@@ -55,7 +55,7 @@ init_per_testcase(_Case, Cfg) ->
     macula_bootstrap_via_doh_fake:init(),
     macula_bootstrap_via_mdns_fake:init(),
     macula_bootstrap_via_mainline_dht_fake:init(),
-    macula_bootstrap_chain_fake:init(),
+    macula_bootstrap_via_blockchain_fake:init(),
     macula_bootstrap_http_fake:init(),
     Cfg.
 
@@ -64,7 +64,7 @@ end_per_testcase(_Case, _Cfg) ->
     macula_bootstrap_via_doh_fake:reset(),
     macula_bootstrap_via_mdns_fake:reset(),
     macula_bootstrap_via_mainline_dht_fake:reset(),
-    macula_bootstrap_chain_fake:reset(),
+    macula_bootstrap_via_blockchain_fake:reset(),
     macula_bootstrap_http_fake:reset(),
     ok.
 
@@ -361,7 +361,7 @@ tier_d_wins_when_a_b_c_are_down(_Cfg) ->
     Record = macula_record:sign(
                macula_record:foundation_seed_list(
                  Fk, tier_c_seeds(4)), Kp),
-    macula_bootstrap_chain_fake:set(
+    macula_bootstrap_via_blockchain_fake:set(
       bitcoin, macula_record:encode(Record)),
     Tiers = full_cascade_tiers(Fk,
                                #{tier_c_working => false,
@@ -379,8 +379,8 @@ tier_d_wins_when_a_b_c_are_down(_Cfg) ->
 full_cascade_all_tiers_down_returns_failure(_Cfg) ->
     Fk = crypto:strong_rand_bytes(32),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
-    macula_bootstrap_chain_fake:fail(bitcoin,  chain_unreachable),
-    macula_bootstrap_chain_fake:fail(ethereum, chain_unreachable),
+    macula_bootstrap_via_blockchain_fake:fail(bitcoin,  chain_unreachable),
+    macula_bootstrap_via_blockchain_fake:fail(ethereum, chain_unreachable),
     Tiers = full_cascade_tiers(Fk,
                                #{tier_c_working => false,
                                  tier_d_chains  => [{bitcoin, #{}},
@@ -406,7 +406,7 @@ full_cascade_under_time_budget(_Cfg) ->
                                #{tier_c_working => false,
                                  tier_d_chains  => [{bitcoin, #{}}],
                                  tier_e_urls    => Urls}),
-    macula_bootstrap_chain_fake:fail(bitcoin, chain_unreachable),
+    macula_bootstrap_via_blockchain_fake:fail(bitcoin, chain_unreachable),
     T0 = erlang:monotonic_time(millisecond),
     {ok, Peers} = macula_bootstrap:cascade(
                     Tiers, #{min_peers => 3, timeout_ms => 5_000}),
@@ -442,8 +442,8 @@ full_cascade_tiers(Fk, Opts) ->
          #{dht_transport => DhtTransport,
            pubkeys       => [Fk],
            timeout_ms    => 200}},
-        {macula_bootstrap_tier_d,
-         #{chains     => [{macula_bootstrap_chain_fake,
+        {macula_bootstrap_via_blockchain,
+         #{chains     => [{macula_bootstrap_via_blockchain_fake,
                             CO#{label => Label}}
                            || {Label, CO} <- TierDChains],
            timeout_ms => 500}},
@@ -482,9 +482,9 @@ tier_d_eth_adapter_end_to_end(_Cfg) ->
                     <<"result">>  => [Log]})),
     macula_bootstrap_http_fake:set_post(Endpoint, {ok, RpcBody}),
     Tiers = [
-        {macula_bootstrap_tier_d,
+        {macula_bootstrap_via_blockchain,
          #{chains =>
-               [{macula_bootstrap_chain_eth_jsonrpc,
+               [{macula_bootstrap_via_blockchain_eth_jsonrpc,
                  #{endpoint => Endpoint,
                    contract => Contract,
                    topic    => Topic,

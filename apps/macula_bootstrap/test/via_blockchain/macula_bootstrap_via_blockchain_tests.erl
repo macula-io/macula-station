@@ -1,4 +1,4 @@
--module(macula_bootstrap_tier_d_tests).
+-module(macula_bootstrap_via_blockchain_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BTC, bitcoin).
@@ -25,7 +25,7 @@ tier_d_test_() ->
 
 setup() ->
     application:ensure_all_started(crypto),
-    macula_bootstrap_chain_fake:init(),
+    macula_bootstrap_via_blockchain_fake:init(),
     Kp = macula_identity:generate(),
     Fk = macula_identity:public(Kp),
     application:set_env(macula_record, foundation_pubkeys, [Fk]),
@@ -33,7 +33,7 @@ setup() ->
 
 cleanup(_Ctx) ->
     application:unset_env(macula_record, foundation_pubkeys),
-    macula_bootstrap_chain_fake:reset(),
+    macula_bootstrap_via_blockchain_fake:reset(),
     ok.
 
 %%==================================================================
@@ -43,7 +43,7 @@ cleanup(_Ctx) ->
 happy_single_chain(#{kp := Kp, fk := Fk}) ->
     fun() ->
         Bytes = foundation_bytes(Kp, Fk, 4),
-        macula_bootstrap_chain_fake:set(?BTC, Bytes),
+        macula_bootstrap_via_blockchain_fake:set(?BTC, Bytes),
         {ok, Peers} = probe([{?BTC, #{}}]),
         ?assertEqual(4, length(Peers)),
         [via_blockchain] = lists:usort([maps:get(strategy, P) || P <- Peers])
@@ -56,8 +56,8 @@ no_chains_configured(_Ctx) ->
 
 all_chains_fail(_Ctx) ->
     fun() ->
-        macula_bootstrap_chain_fake:fail(?BTC, chain_unreachable),
-        macula_bootstrap_chain_fake:fail(?ETH, rate_limited),
+        macula_bootstrap_via_blockchain_fake:fail(?BTC, chain_unreachable),
+        macula_bootstrap_via_blockchain_fake:fail(?ETH, rate_limited),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}, {?ETH, #{}}]))
     end.
@@ -65,8 +65,8 @@ all_chains_fail(_Ctx) ->
 first_successful_chain_wins(#{kp := Kp, fk := Fk}) ->
     fun() ->
         Bytes = foundation_bytes(Kp, Fk, 2),
-        macula_bootstrap_chain_fake:fail(?BTC, chain_unreachable),
-        macula_bootstrap_chain_fake:set(?ETH, Bytes),
+        macula_bootstrap_via_blockchain_fake:fail(?BTC, chain_unreachable),
+        macula_bootstrap_via_blockchain_fake:set(?ETH, Bytes),
         {ok, Peers} = probe([{?BTC, #{}}, {?ETH, #{}}]),
         ?assertEqual(2, length(Peers))
     end.
@@ -74,8 +74,8 @@ first_successful_chain_wins(#{kp := Kp, fk := Fk}) ->
 slow_chain_does_not_block_fast_one(#{kp := Kp, fk := Fk}) ->
     fun() ->
         Bytes = foundation_bytes(Kp, Fk, 1),
-        macula_bootstrap_chain_fake:set(?BTC, Bytes),
-        macula_bootstrap_chain_fake:set(?ETH, Bytes),
+        macula_bootstrap_via_blockchain_fake:set(?BTC, Bytes),
+        macula_bootstrap_via_blockchain_fake:set(?ETH, Bytes),
         T0 = erlang:monotonic_time(millisecond),
         {ok, _} = probe([{?BTC, #{delay_ms => 0}},
                          {?ETH, #{delay_ms => 5_000}}],
@@ -91,7 +91,7 @@ untrusted_signer_rejected(#{fk := Fk}) ->
                    macula_record:foundation_seed_list(
                      Fk, sample_seeds(3)),
                    ImpKp),
-        macula_bootstrap_chain_fake:set(?BTC,
+        macula_bootstrap_via_blockchain_fake:set(?BTC,
                                         macula_record:encode(Record)),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}]))
@@ -99,7 +99,7 @@ untrusted_signer_rejected(#{fk := Fk}) ->
 
 garbage_bytes_rejected(_Ctx) ->
     fun() ->
-        macula_bootstrap_chain_fake:set(?BTC, <<"not a macula record">>),
+        macula_bootstrap_via_blockchain_fake:set(?BTC, <<"not a macula record">>),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}]))
     end.
@@ -111,7 +111,7 @@ expired_record_rejected(#{kp := Kp, fk := Fk}) ->
                      Fk, sample_seeds(2), #{ttl_ms => 1}),
                    Kp),
         timer:sleep(5),
-        macula_bootstrap_chain_fake:set(?BTC,
+        macula_bootstrap_via_blockchain_fake:set(?BTC,
                                         macula_record:encode(Record)),
         ?assertEqual({error, all_failed},
                      probe([{?BTC, #{}}]))
@@ -125,8 +125,8 @@ probe(Chains) ->
     probe(Chains, 500).
 
 probe(Chains, TimeoutMs) ->
-    macula_bootstrap_tier_d:discover(
-      #{chains     => [{macula_bootstrap_chain_fake, ChainOpts#{label => L}}
+    macula_bootstrap_via_blockchain:discover(
+      #{chains     => [{macula_bootstrap_via_blockchain_fake, ChainOpts#{label => L}}
                         || {L, ChainOpts} <- Chains],
         timeout_ms => TimeoutMs}).
 

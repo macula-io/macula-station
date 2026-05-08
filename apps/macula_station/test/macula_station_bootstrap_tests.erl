@@ -118,7 +118,7 @@ ingest_preserves_count_across_cascade_tiers_test_() ->
              Peers = [peer(rand_id(), via_doh, macula_bootstrap_via_doh),
                       peer(rand_id(), via_mdns, macula_bootstrap_via_mdns),
                       peer(rand_id(), via_mainline_dht, macula_bootstrap_via_mainline_dht),
-                      peer(rand_id(), via_blockchain, macula_bootstrap_tier_d),
+                      peer(rand_id(), via_blockchain, macula_bootstrap_via_blockchain),
                       peer(rand_id(), via_operator_paste, macula_bootstrap_via_operator_paste)],
              Summary = macula_station_bootstrap:ingest(Dht, Peers),
              ?assertEqual(5, maps:get(observed, Summary)),

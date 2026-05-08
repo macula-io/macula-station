@@ -1,4 +1,4 @@
--module(macula_bootstrap_chain_esplora_tests).
+-module(macula_bootstrap_via_blockchain_esplora_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BASE,    <<"https://esplora.example/api">>).
@@ -19,7 +19,7 @@ parse_op_return_raw_push_test() ->
     Payload = <<"MCLA", Hash/binary, ShortUrl/binary>>,
     Script = <<16#6A, (byte_size(Payload)):8, Payload/binary>>,
     {ok, #{hash := H, url := U}} =
-        macula_bootstrap_chain_esplora:parse_op_return(Script),
+        macula_bootstrap_via_blockchain_esplora:parse_op_return(Script),
     ?assertEqual(Hash, H),
     ?assertEqual(ShortUrl, U).
 
@@ -28,17 +28,17 @@ parse_op_return_pushdata1_test() ->
     Payload = <<"MCLA", Hash/binary, ?URL/binary>>,
     Script = <<16#6A, 16#4C, (byte_size(Payload)):8, Payload/binary>>,
     ?assertMatch({ok, _},
-                 macula_bootstrap_chain_esplora:parse_op_return(Script)).
+                 macula_bootstrap_via_blockchain_esplora:parse_op_return(Script)).
 
 parse_op_return_not_our_marker_test() ->
     Script = <<16#6A, 8, "NOPEnope">>,
     ?assertEqual({error, not_our_marker},
-                 macula_bootstrap_chain_esplora:parse_op_return(Script)).
+                 macula_bootstrap_via_blockchain_esplora:parse_op_return(Script)).
 
 parse_op_return_non_op_return_test() ->
     %% Leading byte is P2WPKH (0x00), not OP_RETURN.
     ?assertEqual({error, bad_op_return_script},
-                 macula_bootstrap_chain_esplora:parse_op_return(
+                 macula_bootstrap_via_blockchain_esplora:parse_op_return(
                    <<16#00, 1, 2, 3>>)).
 
 parse_op_return_empty_url_rejected_test() ->
@@ -46,7 +46,7 @@ parse_op_return_empty_url_rejected_test() ->
     Payload = <<"MCLA", Hash/binary>>,
     Script = <<16#6A, (byte_size(Payload)):8, Payload/binary>>,
     ?assertEqual({error, empty_url},
-                 macula_bootstrap_chain_esplora:parse_op_return(Script)).
+                 macula_bootstrap_via_blockchain_esplora:parse_op_return(Script)).
 
 parse_op_return_strips_trailing_null_padding_test() ->
     Hash    = crypto:hash(sha256, <<"payload">>),
@@ -54,7 +54,7 @@ parse_op_return_strips_trailing_null_padding_test() ->
     Payload = <<"MCLA", Hash/binary, ?URL/binary, Padding/binary>>,
     Script = <<16#6A, 16#4C, (byte_size(Payload)):8, Payload/binary>>,
     {ok, #{url := U}} =
-        macula_bootstrap_chain_esplora:parse_op_return(Script),
+        macula_bootstrap_via_blockchain_esplora:parse_op_return(Script),
     ?assertEqual(?URL, U).
 
 %%==================================================================
@@ -73,11 +73,11 @@ extract_anchor_skips_non_op_return_vouts_test() ->
                  <<"scriptpubkey">>      => string:lowercase(Hex)}
            ]},
     ?assertMatch({ok, #{hash := _, url := _}},
-                 macula_bootstrap_chain_esplora:extract_anchor_pointer(Tx)).
+                 macula_bootstrap_via_blockchain_esplora:extract_anchor_pointer(Tx)).
 
 extract_anchor_missing_vout_test() ->
     ?assertEqual({error, bad_tx},
-                 macula_bootstrap_chain_esplora:extract_anchor_pointer(
+                 macula_bootstrap_via_blockchain_esplora:extract_anchor_pointer(
                    #{<<"txid">> => <<"abc">>})).
 
 extract_anchor_no_op_return_test() ->
@@ -86,7 +86,7 @@ extract_anchor_no_op_return_test() ->
                  <<"scriptpubkey">>      => <<"001400">>}
            ]},
     ?assertEqual({error, no_op_return},
-                 macula_bootstrap_chain_esplora:extract_anchor_pointer(Tx)).
+                 macula_bootstrap_via_blockchain_esplora:extract_anchor_pointer(Tx)).
 
 %%==================================================================
 %% latest_anchor/2 — full pipeline
@@ -167,7 +167,7 @@ bad_json_response(_Ctx) ->
 %%==================================================================
 
 probe() ->
-    macula_bootstrap_chain_esplora:latest_anchor(
+    macula_bootstrap_via_blockchain_esplora:latest_anchor(
       #{base_url => ?BASE,
         address  => ?ADDR,
         http     => macula_bootstrap_http_fake},

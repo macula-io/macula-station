@@ -28,8 +28,8 @@
 %%   <li>`address'  :: binary() — foundation's Bitcoin address.</li>
 %%   <li>`http'     :: module() — defaults `macula_bootstrap_http_httpc'.</li>
 %% </ul>
--module(macula_bootstrap_chain_esplora).
--behaviour(macula_bootstrap_chain_transport).
+-module(macula_bootstrap_via_blockchain_esplora).
+-behaviour(macula_bootstrap_via_blockchain_transport).
 
 -export([latest_anchor/2]).
 
@@ -55,7 +55,7 @@
 -define(DEFAULT_HTTP,  macula_bootstrap_http_httpc).
 
 -spec latest_anchor(probe_opts(), pos_integer()) ->
-          macula_bootstrap_chain_transport:anchor_result().
+          macula_bootstrap_via_blockchain_transport:anchor_result().
 latest_anchor(Opts, TimeoutMs) ->
     Base    = maps:get(base_url, Opts),
     Address = maps:get(address,  Opts),

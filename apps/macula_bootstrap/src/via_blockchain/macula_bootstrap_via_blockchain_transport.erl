@@ -19,7 +19,7 @@
 %% find</em> the anchor, the Ed25519 signature gives us <em>trust</em>.
 %% A rewritten chain history at worst denies service (forces Tier E),
 %% it does not inject malicious peers.
--module(macula_bootstrap_chain_transport).
+-module(macula_bootstrap_via_blockchain_transport).
 
 -export_type([anchor_result/0, chain_opts/0]).
 

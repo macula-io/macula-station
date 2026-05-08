@@ -1,7 +1,7 @@
 %% @doc HTTP transport behaviour for chain adapters.
 %%
-%% Both concrete chain adapters (`macula_bootstrap_chain_eth_jsonrpc'
-%% and `macula_bootstrap_chain_esplora') reach out over HTTP. Sharing
+%% Both concrete chain adapters (`macula_bootstrap_via_blockchain_eth_jsonrpc'
+%% and `macula_bootstrap_via_blockchain_esplora') reach out over HTTP. Sharing
 %% a single transport abstraction lets:
 %% <ul>
 %%   <li>Production use `macula_bootstrap_http_httpc' (OTP `inets').</li>

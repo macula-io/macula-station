@@ -33,8 +33,8 @@
 %% response, ABI-decoding the `bytes' event argument) is pure and
 %% exercised by unit tests with a canned HTTP module. The concrete
 %% `httpc' transport is not unit-tested — it is a thin wrapper.
--module(macula_bootstrap_chain_eth_jsonrpc).
--behaviour(macula_bootstrap_chain_transport).
+-module(macula_bootstrap_via_blockchain_eth_jsonrpc).
+-behaviour(macula_bootstrap_via_blockchain_transport).
 
 -export([latest_anchor/2]).
 
@@ -57,7 +57,7 @@
 -define(DEFAULT_HTTP, macula_bootstrap_http_httpc).
 
 -spec latest_anchor(probe_opts(), pos_integer()) ->
-          macula_bootstrap_chain_transport:anchor_result().
+          macula_bootstrap_via_blockchain_transport:anchor_result().
 latest_anchor(Opts, TimeoutMs) ->
     Endpoint = maps:get(endpoint, Opts),
     Contract = maps:get(contract, Opts),

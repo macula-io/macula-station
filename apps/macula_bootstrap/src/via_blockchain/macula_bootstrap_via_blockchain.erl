@@ -28,7 +28,7 @@
 %% 2000 ms per Part 5 §3 — Tier D is the slowest automated tier.
 %% It enters the cascade last so faster tiers (A/B/C) aren't
 %% starved by chain-query latency.
--module(macula_bootstrap_tier_d).
+-module(macula_bootstrap_via_blockchain).
 -behaviour(macula_bootstrap_peer_discoverer).
 
 -export([strategy/0, stagger_ms/0, discover/1]).
@@ -36,7 +36,7 @@
 -export_type([chain_spec/0, discover_opts/0]).
 
 -type chain_spec() :: {module(),
-                       macula_bootstrap_chain_transport:chain_opts()}.
+                       macula_bootstrap_via_blockchain_transport:chain_opts()}.
 
 -type discover_opts() :: #{
     chains     => [chain_spec()],

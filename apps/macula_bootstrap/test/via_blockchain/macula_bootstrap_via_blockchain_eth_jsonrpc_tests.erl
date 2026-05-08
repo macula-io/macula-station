@@ -1,4 +1,4 @@
--module(macula_bootstrap_chain_eth_jsonrpc_tests).
+-module(macula_bootstrap_via_blockchain_eth_jsonrpc_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(ENDPOINT, <<"https://eth.example/v1/rpc">>).
@@ -12,7 +12,7 @@
 %%==================================================================
 
 build_request_shape_test() ->
-    Req = macula_bootstrap_chain_eth_jsonrpc:build_request(
+    Req = macula_bootstrap_via_blockchain_eth_jsonrpc:build_request(
             ?CONTRACT, ?TOPIC,
             #{from => <<"earliest">>, to => <<"latest">>}),
     #{<<"jsonrpc">> := <<"2.0">>,
@@ -23,7 +23,7 @@ build_request_shape_test() ->
                           <<"toBlock">>   := <<"latest">>}]} = Req.
 
 build_request_roundtrips_via_json_test() ->
-    Req = macula_bootstrap_chain_eth_jsonrpc:build_request(
+    Req = macula_bootstrap_via_blockchain_eth_jsonrpc:build_request(
             ?CONTRACT, ?TOPIC,
             #{from => <<"0x100">>, to => <<"0x200">>}),
     Json = iolist_to_binary(json:encode(Req)),
@@ -37,7 +37,7 @@ build_request_roundtrips_via_json_test() ->
 parse_response_no_logs_test() ->
     Body = iolist_to_binary(json:encode(rpc_ok([]))),
     ?assertEqual({error, no_logs},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 parse_response_rpc_error_test() ->
     Body = iolist_to_binary(json:encode(
@@ -45,11 +45,11 @@ parse_response_rpc_error_test() ->
                <<"error">> => #{<<"code">> => -32000,
                                  <<"message">> => <<"nope">>}})),
     ?assertMatch({error, {rpc_error, _}},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 parse_response_bad_json_test() ->
     ?assertEqual({error, bad_json},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(
                    <<"not json">>)).
 
 parse_response_happy_path_test() ->
@@ -57,7 +57,7 @@ parse_response_happy_path_test() ->
     Log = mk_log(<<"0x1">>, Payload),
     Body = iolist_to_binary(json:encode(rpc_ok([Log]))),
     ?assertEqual({ok, Payload},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 parse_response_picks_highest_block_test() ->
     Old = mk_log(<<"0x1">>, <<"old">>),
@@ -65,21 +65,21 @@ parse_response_picks_highest_block_test() ->
     New = mk_log(<<"0xff">>, <<"new">>),
     Body = iolist_to_binary(json:encode(rpc_ok([Old, New, Mid]))),
     ?assertEqual({ok, <<"new">>},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 parse_response_missing_data_test() ->
     Log = #{<<"blockNumber">> => <<"0x1">>,
             <<"address">> => ?CONTRACT},
     Body = iolist_to_binary(json:encode(rpc_ok([Log]))),
     ?assertEqual({error, missing_data},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 parse_response_bad_data_hex_test() ->
     Log = #{<<"blockNumber">> => <<"0x1">>,
             <<"data">> => <<"0xzz">>},
     Body = iolist_to_binary(json:encode(rpc_ok([Log]))),
     ?assertEqual({error, bad_hex},
-                 macula_bootstrap_chain_eth_jsonrpc:parse_response(Body)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:parse_response(Body)).
 
 %%==================================================================
 %% decode_bytes_arg (ABI)
@@ -89,23 +89,23 @@ decode_bytes_arg_happy_test() ->
     Payload = <<"hello, world — this is the record bytes">>,
     Abi = abi_bytes(Payload),
     ?assertEqual({ok, Payload},
-                 macula_bootstrap_chain_eth_jsonrpc:decode_bytes_arg(Abi)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:decode_bytes_arg(Abi)).
 
 decode_bytes_arg_zero_length_rejected_test() ->
     ?assertEqual({error, bad_abi},
-                 macula_bootstrap_chain_eth_jsonrpc:decode_bytes_arg(
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:decode_bytes_arg(
                    <<0:256, 0:256>>)).
 
 decode_bytes_arg_short_header_test() ->
     ?assertEqual({error, bad_abi},
-                 macula_bootstrap_chain_eth_jsonrpc:decode_bytes_arg(
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:decode_bytes_arg(
                    <<0:200>>)).
 
 decode_bytes_arg_length_exceeds_payload_test() ->
     %% Claims 100 bytes but only has 4 after the header.
     Bin = <<32:256, 100:256, 0, 0, 0, 0>>,
     ?assertEqual({error, bad_abi},
-                 macula_bootstrap_chain_eth_jsonrpc:decode_bytes_arg(Bin)).
+                 macula_bootstrap_via_blockchain_eth_jsonrpc:decode_bytes_arg(Bin)).
 
 %%==================================================================
 %% latest_anchor/2 — full end-to-end with canned HTTP
@@ -126,7 +126,7 @@ latest_anchor_happy_end_to_end_test_() ->
                      topic    => ?TOPIC,
                      http     => macula_bootstrap_http_fake},
             ?assertEqual({ok, Payload},
-                         macula_bootstrap_chain_eth_jsonrpc:latest_anchor(
+                         macula_bootstrap_via_blockchain_eth_jsonrpc:latest_anchor(
                            Opts, 500))
         end
      end}.
@@ -143,7 +143,7 @@ latest_anchor_http_error_wrapped_test_() ->
                      topic    => ?TOPIC,
                      http     => macula_bootstrap_http_fake},
             ?assertEqual({error, timeout},
-                         macula_bootstrap_chain_eth_jsonrpc:latest_anchor(
+                         macula_bootstrap_via_blockchain_eth_jsonrpc:latest_anchor(
                            Opts, 500))
         end
      end}.
