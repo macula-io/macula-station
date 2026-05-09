@@ -94,9 +94,32 @@ handle_put_record(_Dht, _Other) ->
 
 on_verify(Dht, _Record, {ok, Verified}) ->
     ok = macula_dht:put_record(Dht, Verified),
+    fire_eager_replication(Verified),
     {ok, ok};
 on_verify(_Dht, _Record, {error, _Reason}) ->
     {error, bad_signature}.
+
+%% Eager replication on every put — fan STORE out to the k-closest
+%% custodians for this record's storage key. Async (gen_server cast)
+%% so the daemon's `_dht.put_record' RPC returns the moment the
+%% local store has succeeded; we don't gate on remote acks.
+%%
+%% Without this, a daemon that puts on station A and then reads from
+%% station B sees `not_found' for up to one full
+%% `macula_dht_replicate' tick (default 1 h). The periodic tick
+%% remains the safety net for churn (peers that joined the k-closest
+%% set after the original put), but normal write-then-read traffic
+%% needs the on-write fan-out.
+%%
+%% Resilient to the replicator not being registered (e.g. a station
+%% started without `macula_dht_replicate' for some reason) — falls
+%% back to silent best-effort, which is fine because the record
+%% still landed in the local store.
+fire_eager_replication(Record) ->
+    case whereis(macula_dht_replicate) of
+        undefined -> ok;
+        Pid       -> macula_dht_replicate:replicate_one(Pid, Record)
+    end.
 
 handle_find_record(Dht, #{key := Key})
   when is_binary(Key), byte_size(Key) =:= 32 ->

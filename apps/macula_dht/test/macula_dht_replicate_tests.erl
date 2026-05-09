@@ -110,6 +110,41 @@ tick_with_record_but_no_peers_sends_nothing_test() ->
     stop_net(Net).
 
 %%---------------------------------------------------------------------
+%% Eager replication: replicate_one/2 fans STORE without waiting for tick
+%%---------------------------------------------------------------------
+
+replicate_one_eagerly_pushes_record_test() ->
+    Net = start_net([a, b]),
+    #{a := {A, _}, b := {B, KpB}} = Net,
+    BId = macula_identity:public(KpB),
+
+    %% A holds a record and knows B; the replicator's tick interval
+    %% is set to 1 h so we can be sure replication only happens via
+    %% the explicit `replicate_one/2' call, not a stray tick.
+    Record = signed_record(),
+    ok = macula_dht:put_record(A, Record),
+    admitted = macula_dht:observe(A, peer_spec(BId)),
+
+    R = start_replicator(A, #{interval_ms => 3_600_000,
+                              k => 20,
+                              per_store_timeout_ms => 500}),
+    ok = macula_dht_replicate:replicate_one(R, Record),
+
+    %% Cast is async — wait for B to register the replicated record.
+    Key = macula_record:storage_key(Record),
+    ok = wait_for_record(B, Key, 1_000),
+    [Stored] = macula_dht:find_local_record(B, Key),
+    ?assertEqual(macula_record:key(Record), macula_record:key(Stored)),
+
+    %% Ticks counter unchanged (only `replicate_one' fired).
+    %% The replicate_one cast bumps the cumulative store counters
+    %% via `advance/2' too, which sets `last_tick' as a side
+    %% effect — that is the same behaviour the periodic tick
+    %% would produce, just driven by an explicit cast.
+    stop_replicator(R),
+    stop_net(Net).
+
+%%---------------------------------------------------------------------
 %% Timer fires automatically on the configured interval
 %%---------------------------------------------------------------------
 
@@ -147,6 +182,20 @@ start_replicator(Dht, Extra) ->
 
 stop_replicator(R) ->
     macula_dht_replicate:stop(R).
+
+%% Poll until the receiving DHT shows the record, or fail with
+%% `timeout' once the deadline expires. Used by the async
+%% replicate_one test where the cast hasn't finished by the time
+%% the assertion would otherwise fire.
+wait_for_record(_Dht, _Key, Remaining) when Remaining =< 0 ->
+    timeout;
+wait_for_record(Dht, Key, Remaining) ->
+    case macula_dht:find_local_record(Dht, Key) of
+        [_ | _] -> ok;
+        []      ->
+            timer:sleep(20),
+            wait_for_record(Dht, Key, Remaining - 20)
+    end.
 
 start_net(Names) ->
     Router = spawn_router(),

@@ -31,7 +31,7 @@
 -module(macula_dht_replicate).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, tick/1, stats/1]).
+-export([start_link/1, stop/1, tick/1, replicate_one/2, stats/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -91,6 +91,20 @@ stop(Pid) ->
 tick(Pid) ->
     gen_server:call(Pid, tick, infinity).
 
+%% @doc Eager replication for a single record. Fire-and-forget — the
+%% caller (typically the per-station `_dht.put_record' RPC handler)
+%% returns to its daemon immediately while the gen_server fans STORE
+%% out to the k-closest custodians in the background.
+%%
+%% This is the on-write half of the durability contract. The
+%% periodic tick is the long-period repair sweep (default 1 h);
+%% without `replicate_one/2', a record put on station A would only
+%% reach station B after the next tick — too slow for any client
+%% that puts and immediately reads from a different station.
+-spec replicate_one(pid(), macula_record:record()) -> ok.
+replicate_one(Pid, Record) when is_map(Record) ->
+    gen_server:cast(Pid, {replicate_one, Record}).
+
 -spec stats(pid()) -> stats().
 stats(Pid) ->
     gen_server:call(Pid, stats).
@@ -122,6 +136,10 @@ handle_call(stats, _From, State) ->
 handle_call(_Msg, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
+handle_cast({replicate_one, Record}, #state{dht = Dht} = State) ->
+    SelfId = macula_dht:self_id(Dht),
+    Outcome = replicate_record(Record, SelfId, State, zero_outcome()),
+    {noreply, advance(State, Outcome)};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
