@@ -23,6 +23,37 @@ connected_observes_into_dht_as_t0_test_() ->
         end
     end}.
 
+%% conn_for/2 should return the connection without going through the
+%% observer's gen_server mailbox — proves wire-send paths (DHT
+%% transport, etc.) won't queue against frame-handling under load.
+%% We block the gen_server in a synthetic 2s sleep handle_call and
+%% verify conn_for/2 still returns immediately.
+conn_for_bypasses_gen_server_mailbox_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            %% Confirm the lookup works via the ETS mirror.
+            ?assertEqual({ok, ConnPid},
+                         macula_station_peer_observer:conn_for(Obs, NodeId)),
+
+            %% Stuff the gen_server mailbox with a slow custom call
+            %% that won't terminate for 2s. If conn_for/2 went
+            %% through gen_server:call it would block behind this
+            %% and time out at 5s default — but it doesn't, because
+            %% it reads ETS directly.
+            spawn(fun() -> gen_server:call(Obs, slow_blocker, 5_000) end),
+            timer:sleep(50), %% let the slow call enqueue first
+            T0 = erlang:monotonic_time(millisecond),
+            ?assertEqual({ok, ConnPid},
+                         macula_station_peer_observer:conn_for(Obs, NodeId)),
+            Elapsed = erlang:monotonic_time(millisecond) - T0,
+            %% A bypass should resolve in microseconds; allow 200ms
+            %% margin for scheduler jitter on a busy CI box.
+            ?assert(Elapsed < 200,
+                    {elapsed_ms_too_long_for_ets_bypass, Elapsed})
+        end
+    end}.
+
 connected_adds_peer_to_swim_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
@@ -597,10 +628,14 @@ forwarded_entry_purged_on_ttl_timeout_test_() ->
 %%   1: tag (state)        2: dht                 3: swim
 %%   4: handler_registry   5: pubsub_registry     6: remote_advertise
 %%   7: self_id            8: peers               9: conns
-%%  10: forwarded
+%% State record layout (1-indexed within the tuple, after the
+%% record-name atom at slot 1):
+%%   2: dht,  3: swim,  4: handler_registry,  5: pubsub_registry,
+%%   6: remote_advertise,  7: self_id,  8: peers,  9: conns,
+%%  10: direction_of_pid,  11: forwarded
 forwarded_size(Obs) ->
     State = sys:get_state(Obs),
-    F = element(10, State),
+    F = element(11, State),
     map_size(F).
 
 advertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->

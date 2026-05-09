@@ -122,6 +122,11 @@
 %% stragglers even when a buggy peer never sends RESULT/ERROR.
 -define(FORWARDED_TTL_MS, 60_000).
 
+%% Named ETS table mirroring the `conns' map so external callers
+%% (DHT transport, anyone routing wire frames by NodeId) read
+%% without serializing against the observer's gen_server mailbox.
+-define(CONNS_TABLE, macula_station_peer_observer_conns).
+
 %%==================================================================
 %% API
 %%==================================================================
@@ -136,10 +141,23 @@ stop(Pid) -> gen_server:stop(Pid).
 -spec peers(pid()) -> [{pid(), macula_identity:pubkey()}].
 peers(Pid) -> gen_server:call(Pid, peers).
 
+%% Reads from the public ETS conns mirror — bypasses the gen_server
+%% mailbox so wire-send paths (the DHT's `send_frame' callback fires
+%% per outgoing STORE / FIND_VALUE / etc.) do NOT serialize against
+%% the observer's frame-handling loop. Under burst load the
+%% gen_server:call path queued tens of conn_for lookups behind
+%% in-flight ADVERTISE / EVENT processing and timed out at 5s,
+%% cascading into supervised-process restarts. The ETS read is
+%% O(1) and concurrent.
+%%
+%% `Pid' is retained in the API for caller-side ergonomics (callers
+%% already hold `whereis(macula_station_peer_observer)' or pass it
+%% explicitly) but is not used — `?CONNS_TABLE' is named, single
+%% per BEAM, so a stale pid does not matter.
 -spec conn_for(pid(), macula_identity:pubkey()) ->
     {ok, pid()} | error.
-conn_for(Pid, <<_:256>> = NodeId) ->
-    gen_server:call(Pid, {conn_for, NodeId}).
+conn_for(_Pid, <<_:256>> = NodeId) ->
+    primary_conn_lookup(ets_find_conns(NodeId)).
 
 %%==================================================================
 %% gen_server
@@ -147,6 +165,19 @@ conn_for(Pid, <<_:256>> = NodeId) ->
 
 init(#{dht := Dht, swim := Swim} = Opts)
   when is_pid(Dht), is_pid(Swim) ->
+    %% `protected' = anyone reads, only owner writes. `set' = unique
+    %% NodeId key, last write wins (matches the `conns' map's
+    %% per-NodeId semantics). `read_concurrency' biases the BEAM
+    %% scheduler for the read-heavy access pattern (every wire frame
+    %% routes through one read).
+    %%
+    %% Idempotent: on supervisor restart the prior peer_observer
+    %% process is already gone, taking the table with it; if for
+    %% some reason the table still exists, recreate cleanly.
+    catch ets:delete(?CONNS_TABLE),
+    ?CONNS_TABLE = ets:new(?CONNS_TABLE,
+                           [named_table, protected, set,
+                            {read_concurrency, true}]),
     State0 = #state{dht              = Dht,
                     swim             = Swim,
                     handler_registry = maps:get(handler_registry, Opts, undefined),
@@ -192,6 +223,9 @@ absorb_known_dial(LinkPid, NodeId, S) ->
 handle_call(peers, _From, #state{peers = P} = S) ->
     {reply, maps:to_list(P), S};
 handle_call({conn_for, NodeId}, _From, #state{conns = C} = S) ->
+    %% Kept for direct gen_server callers (tests, debug) — the
+    %% public `conn_for/2' export now uses the ETS mirror and never
+    %% reaches this clause in production.
     {reply, primary_conn_lookup(maps:find(NodeId, C)), S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -268,9 +302,25 @@ on_connected_directional(Direction, ConnPid, NodeId,
     _ = erlang:monitor(process, ConnPid),
     Existing = maps:get(NodeId, C, empty_peer_conns()),
     Updated  = Existing#{Direction => ConnPid},
+    write_conn_table(NodeId, Updated),
     S#state{peers            = P#{ConnPid => NodeId},
             conns            = C#{NodeId => Updated},
             direction_of_pid = D#{ConnPid => Direction}}.
+
+%% ETS mirror writers — must run from the gen_server process (table
+%% is `protected'). Both write the same value the `conns' map sees,
+%% so external readers via `conn_for/2' get consistent state.
+write_conn_table(NodeId, PeerConns) ->
+    ets:insert(?CONNS_TABLE, {NodeId, PeerConns}).
+
+delete_conn_table(NodeId) ->
+    ets:delete(?CONNS_TABLE, NodeId).
+
+ets_find_conns(NodeId) ->
+    case ets:lookup(?CONNS_TABLE, NodeId) of
+        [{_, PeerConns}] -> {ok, PeerConns};
+        []               -> error
+    end.
 
 empty_peer_conns() ->
     #{inbound => undefined, outbound => undefined}.
@@ -692,10 +742,14 @@ clear_if_match(Existing, _OtherPid) -> Existing.
 
 %% Drop the NodeId entry entirely once both slots are empty so the
 %% conns map doesn't leak `#{inbound => undefined, outbound => undefined}'
-%% husks for every disconnected peer.
+%% husks for every disconnected peer. ETS mirror is updated in
+%% lock-step so external `conn_for/2' readers never see a stale
+%% pid for a peer whose connection has died.
 on_cleared_peer_conns(NodeId, #{inbound := undefined, outbound := undefined}, C) ->
+    delete_conn_table(NodeId),
     maps:remove(NodeId, C);
 on_cleared_peer_conns(NodeId, Cleared, C) ->
+    write_conn_table(NodeId, Cleared),
     C#{NodeId => Cleared}.
 
 maybe_remove_if_isolated(undefined, _NewConns, _Swim) ->
