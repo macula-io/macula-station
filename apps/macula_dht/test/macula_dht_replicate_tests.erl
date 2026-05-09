@@ -130,17 +130,12 @@ replicate_one_eagerly_pushes_record_test() ->
                               per_store_timeout_ms => 500}),
     ok = macula_dht_replicate:replicate_one(R, Record),
 
-    %% Cast is async — wait for B to register the replicated record.
+    %% Cast is async (worker spawn) — wait for B to register the
+    %% replicated record before asserting.
     Key = macula_record:storage_key(Record),
     ok = wait_for_record(B, Key, 1_000),
     [Stored] = macula_dht:find_local_record(B, Key),
     ?assertEqual(macula_record:key(Record), macula_record:key(Stored)),
-
-    %% Ticks counter unchanged (only `replicate_one' fired).
-    %% The replicate_one cast bumps the cumulative store counters
-    %% via `advance/2' too, which sets `last_tick' as a side
-    %% effect — that is the same behaviour the periodic tick
-    %% would produce, just driven by an explicit cast.
     stop_replicator(R),
     stop_net(Net).
 

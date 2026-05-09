@@ -136,10 +136,20 @@ handle_call(stats, _From, State) ->
 handle_call(_Msg, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
-handle_cast({replicate_one, Record}, #state{dht = Dht} = State) ->
-    SelfId = macula_dht:self_id(Dht),
-    Outcome = replicate_record(Record, SelfId, State, zero_outcome()),
-    {noreply, advance(State, Outcome)};
+handle_cast({replicate_one, Record},
+            #state{dht = Dht, k = K,
+                   per_store_timeout_ms = Tmo} = State) ->
+    %% Async fire-and-forget: each STORE runs in its own worker so
+    %% the gen_server stays responsive. A synchronous fold here
+    %% would block this process for up to (k × per_store_timeout_ms),
+    %% queueing every subsequent eager-replicate cast and stalling
+    %% the periodic tick. The local store has already succeeded
+    %% (the public `_dht.put_record' handler stored before casting
+    %% to us); remote acks are best-effort durability and do NOT
+    %% need to be tracked in the cumulative stats — `replicate_tick'
+    %% remains the authoritative source of repair telemetry.
+    fire_eager_stores(Record, Dht, K, Tmo),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -170,6 +180,20 @@ run_tick(#state{dht = Dht} = State) ->
                 fun(R, Acc) -> replicate_record(R, SelfId, State, Acc) end,
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
+
+-spec fire_eager_stores(macula_record:record(), macula_dht:dht(),
+                        pos_integer(), pos_integer()) -> ok.
+fire_eager_stores(Record, Dht, K, Tmo) ->
+    SelfId  = macula_dht:self_id(Dht),
+    Key     = macula_record:storage_key(Record),
+    Entries = macula_dht:k_closest(Dht, Key, K),
+    Targets = [macula_dht_entry:node_id(E)
+               || E <- Entries,
+                  macula_dht_entry:node_id(E) =/= SelfId],
+    _ = [spawn(fun() ->
+            _ = macula_dht:send_store(Dht, PeerId, Record, Tmo)
+         end) || PeerId <- Targets],
+    ok.
 
 -spec replicate_record(macula_record:record(), macula_identity:pubkey(),
                        #state{}, outcome()) -> outcome().
