@@ -44,6 +44,19 @@
 %% `?CONTENT_BLOCK_TIMEOUT_MS' so the daemon's outer call doesn't
 %% race the iteration's deadline.
 -define(REMOTE_BLOCK_PER_PEER_MS, 5_000).
+%% Eager replication fan-out cap on `_content.put_block'. K = 3
+%% covers the partial-mesh topology where each station has 3-8
+%% peer connections — every cross-station read pair shares at
+%% least one peer that received an eager replica, so 1-hop
+%% iterative fallback (or even direct-peer hit) reliably finds
+%% the block. Larger K = more wire bandwidth per put without
+%% meaningful coverage gain at this mesh size.
+-define(DEFAULT_REPLICATION_K, 3).
+%% Per-peer timeout for the eager replication leg. Generous because
+%% the receiving relay does a full BLAKE3 hash check before
+%% acking, and 256 KiB blobs over a slow link can take real time.
+-define(REPLICATION_TIMEOUT_MS, 10_000).
+
 %% Default hop budget for a daemon's `_content.get_block' that
 %% doesn't supply its own. 1 hop only — 2-hop iteration was
 %% overwhelming the fleet's macula_content_store gen_server under
@@ -124,14 +137,51 @@ handle_put_manifest(_Other) ->
 %% returns `{error, hash_mismatch}' on tampered uploads). The CALL
 %% relay path doesn't validate content integrity, so this is the
 %% chokepoint that keeps the local store consistent.
-handle_put_block(#{mcid := MCID, payload := Payload})
+handle_put_block(#{mcid := MCID, payload := Payload} = Args)
   when is_binary(MCID), is_binary(Payload) ->
-    classify_put_block(macula_content_store:put_block(MCID, Payload));
+    on_local_put(macula_content_store:put_block(MCID, Payload), MCID, Payload, Args);
 handle_put_block(_Other) ->
     {error, bad_request}.
 
-classify_put_block(ok)                       -> {ok, ok};
-classify_put_block({error, hash_mismatch})   -> {ok, hash_mismatch}.
+%% Eager replication kicks in on a successful local store, and only
+%% when the daemon-facing put — `replicate' arg defaults to true.
+%% Peer-to-peer replication calls pass `replicate => false' so the
+%% receiving relay stores locally and does not re-fan-out (loop
+%% prevention; mirrors the `hops_remaining' shape on get_block).
+%%
+%% Local-store failure (`hash_mismatch') short-circuits — the
+%% replicas would fail the same hash check, no point fanning out.
+on_local_put(ok, MCID, Payload, Args) ->
+    case maps:get(replicate, Args, true) of
+        true  -> fire_eager_block_replication(MCID, Payload);
+        false -> ok
+    end,
+    {ok, ok};
+on_local_put({error, hash_mismatch}, _MCID, _Payload, _Args) ->
+    {ok, hash_mismatch}.
+
+%% Pick up to ?DEFAULT_REPLICATION_K peer-station LinkPids and
+%% spawn one worker per peer that calls the peer's
+%% `_content.put_block' RPC with `replicate => false'. Workers are
+%% unlinked + fire-and-forget — the daemon's outer put_content
+%% RPC returns the moment the local store succeeds; replication
+%% acks happen in the background. Bounded by K so a put never
+%% generates more than K outbound store calls.
+fire_eager_block_replication(MCID, Payload) ->
+    Conns = safe_peer_connections(),
+    Targets = lists:sublist(Conns, ?DEFAULT_REPLICATION_K),
+    [spawn(fun() ->
+        _ = safe_replicate(LinkPid, MCID, Payload)
+     end) || {_Url, LinkPid} <- Targets],
+    ok.
+
+safe_replicate(LinkPid, MCID, Payload) ->
+    Args = #{mcid => MCID, payload => Payload, replicate => false},
+    try macula_station_link:call(LinkPid, ?CONTENT_REALM,
+                                  <<"_content.put_block">>,
+                                  Args, ?REPLICATION_TIMEOUT_MS)
+    catch _:_ -> {error, exception}
+    end.
 
 handle_get_manifest(#{mcid := MCID}) when is_binary(MCID) ->
     classify_get_manifest(macula_content_store:get_manifest(MCID));
