@@ -44,6 +44,13 @@
 %% `?CONTENT_BLOCK_TIMEOUT_MS' so the daemon's outer call doesn't
 %% race the iteration's deadline.
 -define(REMOTE_BLOCK_PER_PEER_MS, 5_000).
+%% Default hop budget for a daemon's `_content.get_block' that
+%% doesn't supply its own. 2 hops is enough to traverse the
+%% partial-mesh worst case (writer's relay → intermediate peer →
+%% reader's relay). Each hop fans out to ~8 peers, so the load
+%% upper bound is 8² = 64 RPCs per failed lookup — bounded but
+%% non-trivial; keep small.
+-define(DEFAULT_HOPS, 2).
 
 -type opts() :: #{
     handler_registry := pid()
@@ -131,37 +138,42 @@ handle_get_block(#{mcid := MCID} = Args) when is_binary(MCID) ->
 handle_get_block(_Other) ->
     {error, bad_request}.
 
-%% Local hit short-circuits. Local miss falls back to one-hop
+%% Local hit short-circuits. Local miss falls back to multi-hop
 %% iterative fetch against peer stations — necessary because the v1
 %% put path stores ONLY locally on the writer's relay, and the
 %% reader (here) might be a different relay. Fans
 %% `_content.get_block' RPCs out to every peer link in parallel,
 %% returns the first peer that holds the block.
 %%
-%% The `iterative' arg flag prevents infinite peer-to-peer recursion:
-%% a daemon's first call arrives without it (default = true), an
-%% iteration call passes `iterative => false', and the receiving
-%% handler stops at the local-miss path.
+%% The `hops_remaining' arg counts down hops the receiving handler
+%% is still allowed to walk. A daemon's first call arrives without
+%% the field — defaults to `?DEFAULT_HOPS' (2 in our partial-mesh
+%% topology, sufficient for the worst-case 2-hop path between
+%% centrum and haasrode). Each peer-to-peer iteration decrements
+%% the counter; reaching 0 stops at local lookup. Without multi-hop,
+%% partial-mesh pairs that lack a direct edge can't reach a block
+%% held only on the writer's relay.
 on_local_block({ok, Block}, _MCID, _Args) ->
     {ok, Block};
 on_local_block({error, not_found}, MCID, Args) ->
-    on_iterative_decision(maps:get(iterative, Args, true), MCID).
+    Hops = maps:get(hops_remaining, Args, ?DEFAULT_HOPS),
+    on_iterative_decision(Hops, MCID).
 
-on_iterative_decision(false, _MCID) ->
+on_iterative_decision(0, _MCID) ->
     {ok, not_found};
-on_iterative_decision(true, MCID) ->
-    fanout_remote_get_block(MCID).
+on_iterative_decision(N, MCID) when N > 0 ->
+    fanout_remote_get_block(MCID, N - 1).
 
-fanout_remote_get_block(MCID) ->
+fanout_remote_get_block(MCID, NextHops) ->
     Conns = safe_peer_connections(),
-    on_peer_count(length(Conns), MCID, Conns).
+    on_peer_count(length(Conns), MCID, NextHops, Conns).
 
-on_peer_count(0, _MCID, _Conns) ->
+on_peer_count(0, _MCID, _NextHops, _Conns) ->
     {ok, not_found};
-on_peer_count(_N, MCID, Conns) ->
+on_peer_count(_N, MCID, NextHops, Conns) ->
     Tag    = make_ref(),
     Parent = self(),
-    Args   = #{mcid => MCID, iterative => false},
+    Args   = #{mcid => MCID, hops_remaining => NextHops},
     [spawn(fun() ->
         Reply = safe_call(LinkPid, Args),
         Parent ! {Tag, Reply}
