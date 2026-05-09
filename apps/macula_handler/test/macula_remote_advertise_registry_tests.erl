@@ -14,6 +14,11 @@ setup() ->
     {ok, Pid} = macula_remote_advertise_registry:start_link(),
     Pid.
 
+setup_short_tombstone() ->
+    {ok, Pid} = macula_remote_advertise_registry:start_link(
+                  #{tombstone_ms => 50}),
+    Pid.
+
 teardown(Pid) ->
     macula_remote_advertise_registry:stop(Pid).
 
@@ -110,3 +115,85 @@ different_realms_isolated_test() ->
                      macula_remote_advertise_registry:lookup(
                        Pid, ?REALM2, <<"_p">>))
     end).
+
+%%--- Tombstones -----------------------------------------------------
+
+unregister_tombstones_block_register_test() ->
+    Pid = setup_short_tombstone(),
+    try
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<19:256>>, conn_pid => self()}),
+        ok = macula_remote_advertise_registry:unregister(
+               Pid, ?REALM, <<"_p">>),
+        %% Tombstone is active — register is a no-op.
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<20:256>>, conn_pid => self()}),
+        ?assertMatch({error, not_found},
+                     macula_remote_advertise_registry:lookup(
+                       Pid, ?REALM, <<"_p">>))
+    after
+        teardown(Pid)
+    end.
+
+tombstone_expires_and_register_resumes_test() ->
+    Pid = setup_short_tombstone(),
+    try
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<21:256>>, conn_pid => self()}),
+        ok = macula_remote_advertise_registry:unregister(
+               Pid, ?REALM, <<"_p">>),
+        timer:sleep(150),
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<22:256>>, conn_pid => self()}),
+        ?assertMatch({ok, #{advertiser := <<22:256>>}},
+                     macula_remote_advertise_registry:lookup(
+                       Pid, ?REALM, <<"_p">>))
+    after
+        teardown(Pid)
+    end.
+
+tombstone_allows_same_source_readvertise_test() ->
+    Pid = setup_short_tombstone(),
+    try
+        Adv = <<25:256>>,
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => Adv, conn_pid => self()}),
+        ok = macula_remote_advertise_registry:unregister(
+               Pid, ?REALM, <<"_p">>),
+        %% Same advertiser punches through the tombstone (reconnect
+        %% case): the original source IS allowed to re-advertise.
+        Conn2 = spawn(fun() -> receive _ -> ok end end),
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => Adv, conn_pid => Conn2}),
+        ?assertMatch({ok, #{advertiser := Adv, conn_pid := Conn2}},
+                     macula_remote_advertise_registry:lookup(
+                       Pid, ?REALM, <<"_p">>)),
+        exit(Conn2, kill)
+    after
+        teardown(Pid)
+    end.
+
+purge_conn_tombstones_block_register_test() ->
+    Pid = setup_short_tombstone(),
+    try
+        Conn = self(),
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<23:256>>, conn_pid => Conn}),
+        ok = macula_remote_advertise_registry:purge_conn(Pid, Conn),
+        %% Gossip-resurrection attempt during the disconnect window.
+        ok = macula_remote_advertise_registry:register(
+               Pid, ?REALM, <<"_p">>,
+               #{advertiser => <<24:256>>, conn_pid => self()}),
+        ?assertMatch({error, not_found},
+                     macula_remote_advertise_registry:lookup(
+                       Pid, ?REALM, <<"_p">>))
+    after
+        teardown(Pid)
+    end.
