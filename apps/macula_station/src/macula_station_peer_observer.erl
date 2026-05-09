@@ -156,8 +156,17 @@ peers(Pid) -> gen_server:call(Pid, peers).
 %% per BEAM, so a stale pid does not matter.
 -spec conn_for(pid(), macula_identity:pubkey()) ->
     {ok, pid()} | error.
-conn_for(_Pid, <<_:256>> = NodeId) ->
-    primary_conn_lookup(ets_find_conns(NodeId)).
+conn_for(Pid, <<_:256>> = NodeId) ->
+    on_ets_lookup(ets_find_conns(NodeId), Pid, NodeId).
+
+on_ets_lookup(table_missing, Pid, NodeId) ->
+    %% Stub observers in tests don't own the table; defer to their
+    %% gen_server:call handler. Production peer_observer always
+    %% creates the table in init/1, so this clause is unreachable
+    %% in production paths.
+    gen_server:call(Pid, {conn_for, NodeId});
+on_ets_lookup(Result, _Pid, _NodeId) ->
+    primary_conn_lookup(Result).
 
 %%==================================================================
 %% gen_server
@@ -316,10 +325,16 @@ write_conn_table(NodeId, PeerConns) ->
 delete_conn_table(NodeId) ->
     ets:delete(?CONNS_TABLE, NodeId).
 
+%% Tolerant of missing table: tests that swap in a stub observer
+%% via `macula_station_peer_observer` API expect the gen_server:call
+%% fallback path. Fall through to that when the named ETS table
+%% isn't present in this BEAM.
 ets_find_conns(NodeId) ->
-    case ets:lookup(?CONNS_TABLE, NodeId) of
+    try ets:lookup(?CONNS_TABLE, NodeId) of
         [{_, PeerConns}] -> {ok, PeerConns};
         []               -> error
+    catch
+        error:badarg -> table_missing
     end.
 
 empty_peer_conns() ->
