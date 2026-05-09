@@ -74,7 +74,7 @@
 
 -type opts() :: #{tombstone_ms => non_neg_integer()}.
 
--define(TOMBSTONE_TTL_MS, 10_000).
+-define(TOMBSTONE_TTL_MS, 30_000).
 
 -type tombstone() :: {Timer :: reference(),
                       Marker :: reference(),
