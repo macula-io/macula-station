@@ -106,7 +106,8 @@ handle_put_block(_Other) ->
     {error, bad_request}.
 
 classify_put_block(ok)                       -> {ok, ok};
-classify_put_block({error, _} = E)           -> E.
+classify_put_block({error, hash_mismatch})   -> {ok, hash_mismatch};
+classify_put_block({error, Other})           -> {ok, {put_block_failed, Other}}.
 
 handle_get_manifest(#{mcid := MCID}) when is_binary(MCID) ->
     classify_get_manifest(macula_content_store:get_manifest(MCID));
