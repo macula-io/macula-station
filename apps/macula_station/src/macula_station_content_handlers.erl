@@ -35,6 +35,16 @@
 
 -export_type([opts/0]).
 
+%% Internal — `_content.put_block' / `_content.get_block' / etc. all
+%% live under the same realm tag the SDK uses (`?CONTENT_REALM' in
+%% macula.erl, `<<0:256>>'). Mirroring the constant here so the
+%% station-to-station iteration call uses the same value.
+-define(CONTENT_REALM, <<0:256>>).
+%% Per-peer timeout for the iterative leg. Smaller than the SDK's
+%% `?CONTENT_BLOCK_TIMEOUT_MS' so the daemon's outer call doesn't
+%% race the iteration's deadline.
+-define(REMOTE_BLOCK_PER_PEER_MS, 5_000).
+
 -type opts() :: #{
     handler_registry := pid()
 }.
@@ -106,8 +116,7 @@ handle_put_block(_Other) ->
     {error, bad_request}.
 
 classify_put_block(ok)                       -> {ok, ok};
-classify_put_block({error, hash_mismatch})   -> {ok, hash_mismatch};
-classify_put_block({error, Other})           -> {ok, {put_block_failed, Other}}.
+classify_put_block({error, hash_mismatch})   -> {ok, hash_mismatch}.
 
 handle_get_manifest(#{mcid := MCID}) when is_binary(MCID) ->
     classify_get_manifest(macula_content_store:get_manifest(MCID));
@@ -117,10 +126,72 @@ handle_get_manifest(_Other) ->
 classify_get_manifest({ok, Manifest})        -> {ok, Manifest};
 classify_get_manifest({error, not_found})    -> {ok, not_found}.
 
-handle_get_block(#{mcid := MCID}) when is_binary(MCID) ->
-    classify_get_block(macula_content_store:get_block(MCID));
+handle_get_block(#{mcid := MCID} = Args) when is_binary(MCID) ->
+    on_local_block(macula_content_store:get_block(MCID), MCID, Args);
 handle_get_block(_Other) ->
     {error, bad_request}.
 
-classify_get_block({ok, Block})              -> {ok, Block};
-classify_get_block({error, not_found})       -> {ok, not_found}.
+%% Local hit short-circuits. Local miss falls back to one-hop
+%% iterative fetch against peer stations — necessary because the v1
+%% put path stores ONLY locally on the writer's relay, and the
+%% reader (here) might be a different relay. Fans
+%% `_content.get_block' RPCs out to every peer link in parallel,
+%% returns the first peer that holds the block.
+%%
+%% The `iterative' arg flag prevents infinite peer-to-peer recursion:
+%% a daemon's first call arrives without it (default = true), an
+%% iteration call passes `iterative => false', and the receiving
+%% handler stops at the local-miss path.
+on_local_block({ok, Block}, _MCID, _Args) ->
+    {ok, Block};
+on_local_block({error, not_found}, MCID, Args) ->
+    on_iterative_decision(maps:get(iterative, Args, true), MCID).
+
+on_iterative_decision(false, _MCID) ->
+    {ok, not_found};
+on_iterative_decision(true, MCID) ->
+    fanout_remote_get_block(MCID).
+
+fanout_remote_get_block(MCID) ->
+    Conns = safe_peer_connections(),
+    on_peer_count(length(Conns), MCID, Conns).
+
+on_peer_count(0, _MCID, _Conns) ->
+    {ok, not_found};
+on_peer_count(_N, MCID, Conns) ->
+    Tag    = make_ref(),
+    Parent = self(),
+    Args   = #{mcid => MCID, iterative => false},
+    [spawn(fun() ->
+        Reply = safe_call(LinkPid, Args),
+        Parent ! {Tag, Reply}
+     end) || {_Url, LinkPid} <- Conns],
+    collect_first_block(Tag, length(Conns),
+                        ?REMOTE_BLOCK_PER_PEER_MS + 200).
+
+safe_peer_connections() ->
+    try macula_station_peer_links:connections()
+    catch _:_ -> []
+    end.
+
+safe_call(LinkPid, Args) ->
+    try macula_station_link:call(LinkPid, ?CONTENT_REALM,
+                                  <<"_content.get_block">>,
+                                  Args, ?REMOTE_BLOCK_PER_PEER_MS)
+    catch _:_ -> {error, exception}
+    end.
+
+collect_first_block(_Tag, 0, _DeadlineMs) ->
+    {ok, not_found};
+collect_first_block(Tag, Remaining, DeadlineMs) ->
+    Start = erlang:monotonic_time(millisecond),
+    receive
+        {Tag, {ok, Bin}} when is_binary(Bin) ->
+            {ok, Bin};
+        {Tag, _Other} ->
+            Elapsed = erlang:monotonic_time(millisecond) - Start,
+            collect_first_block(Tag, Remaining - 1,
+                                max(0, DeadlineMs - Elapsed))
+    after DeadlineMs ->
+        {ok, not_found}
+    end.
