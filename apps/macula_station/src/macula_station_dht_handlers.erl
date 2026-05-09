@@ -94,30 +94,22 @@ handle_put_record(_Dht, _Other) ->
 
 on_verify(Dht, _Record, {ok, Verified}) ->
     ok = macula_dht:put_record(Dht, Verified),
-    fire_eager_replication(Verified),
     {ok, ok};
 on_verify(_Dht, _Record, {error, _Reason}) ->
     {error, bad_signature}.
 
-%% Eager replication on every put — async cast to the replicator,
-%% which spawns one unlinked worker per k-closest custodian. The
-%% daemon's `_dht.put_record' RPC returns the moment the local
-%% store has succeeded; remote acks happen in the background.
+%% Eager replication on put — the wiring is `macula_dht_replicate:
+%% replicate_one(Pid, Verified)' here, which spawns one unlinked
+%% worker per k-closest custodian. Currently dormant: under e2e
+%% torture load the burst of stores amplified an unrelated SDK
+%% fragility — `macula_peering_conn:on_connect_verified/4' line 272
+%% asserts `ok = send_hello(...)' and badmatches the
+%% `{error, "connection lost"}' return when a stream drops mid-
+%% handshake. Individual peering_conn workers crash, the supervisor
+%% restart-intensity threshold trips, the whole station restarts.
 %%
-%% Without this a daemon putting on station A and reading from
-%% station B saw not_found until the next periodic
-%% `macula_dht_replicate' tick (default 1 h). The periodic tick
-%% remains the safety net for churn (peers that joined the
-%% k-closest set after the original put).
-%%
-%% Now safe to fire on every put because peer_observer's `conn_for'
-%% is an ETS read (commit 7d46867); the per-store `send_frame'
-%% no longer serialises against the observer's mailbox.
-fire_eager_replication(Record) ->
-    case whereis(macula_dht_replicate) of
-        undefined -> ok;
-        Pid       -> macula_dht_replicate:replicate_one(Pid, Record)
-    end.
+%% Re-enable once the SDK's send_hello error handling lands
+%% (transition to disconnected state instead of crashing).
 
 handle_find_record(Dht, #{key := Key})
   when is_binary(Key), byte_size(Key) =:= 32 ->
