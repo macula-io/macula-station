@@ -45,12 +45,20 @@
 %% race the iteration's deadline.
 -define(REMOTE_BLOCK_PER_PEER_MS, 5_000).
 %% Default hop budget for a daemon's `_content.get_block' that
-%% doesn't supply its own. 2 hops is enough to traverse the
-%% partial-mesh worst case (writer's relay → intermediate peer →
-%% reader's relay). Each hop fans out to ~8 peers, so the load
-%% upper bound is 8² = 64 RPCs per failed lookup — bounded but
-%% non-trivial; keep small.
--define(DEFAULT_HOPS, 2).
+%% doesn't supply its own. 1 hop only — 2-hop iteration was
+%% overwhelming the fleet's macula_content_store gen_server under
+%% torture (each failed lookup amplified to 8² = 64 concurrent
+%% inbound `_content.get_block' calls per relay), and after a few
+%% rounds peer_observer crash-recovered, taking the conn_for ETS
+%% mirror with it and cascading every other test through stale
+%% conn lookups.
+%%
+%% 1 hop covers the case where writer + reader's relays share at
+%% least one peer. For the worst-case partial-mesh pair with no
+%% mutual peer, the cross-station `_content.get_block' will return
+%% `not_found' until eager content replication lands (Day 3 / chunked
+%% manifests). The single-station path is unaffected.
+-define(DEFAULT_HOPS, 1).
 
 -type opts() :: #{
     handler_registry := pid()
