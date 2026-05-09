@@ -61,6 +61,7 @@
          start_cache/1, start_rebootstrap/1,
          start_handler_registry/1, start_remote_advertise_registry/1,
          start_pubsub_registry/1, start_dht_handlers/1,
+         start_content_handlers/1,
          start_dht_replicate/1, start_dht_republish/1, start_dht_expire/1,
          start_announcer/1, start_content_announcer/1,
          start_forwarder_sup/0, start_bloom_exchange/1,
@@ -76,6 +77,7 @@
 -define(REMOTE_ADVERTISE_REGISTRY_NAME,  macula_remote_advertise_registry).
 -define(PUBSUB_REGISTRY_NAME,            hecate_pubsub_registry).
 -define(DHT_HANDLERS_NAME,               macula_station_dht_handlers).
+-define(CONTENT_HANDLERS_NAME,           macula_station_content_handlers).
 -define(DHT_REPLICATE_NAME,              macula_dht_replicate).
 -define(DHT_REPUBLISH_NAME,              macula_dht_republish).
 -define(DHT_EXPIRE_NAME,                 macula_dht_expire).
@@ -175,6 +177,12 @@ start_pubsub_registry(Opts) ->
 start_dht_handlers(Opts) ->
     register_result(macula_station_dht_handlers:start_link(Opts),
                     ?DHT_HANDLERS_NAME).
+
+-spec start_content_handlers(macula_station_content_handlers:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_content_handlers(Opts) ->
+    register_result(macula_station_content_handlers:start_link(Opts),
+                    ?CONTENT_HANDLERS_NAME).
 
 -spec start_dht_replicate(map()) -> {ok, pid()} | {error, term()}.
 start_dht_replicate(Opts) ->

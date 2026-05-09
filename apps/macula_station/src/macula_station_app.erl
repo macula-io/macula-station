@@ -201,6 +201,17 @@ boot_dht_handlers(SupPid, Cfg, DhtPid) ->
 on_dht_handlers(SupPid, _Cfg, _DhtPid, {error, R}) ->
     halt_sup(SupPid, {dht_handlers_start_failed, R});
 on_dht_handlers(SupPid, Cfg, DhtPid, {ok, _Pid}) ->
+    boot_content_handlers(SupPid, Cfg, DhtPid).
+
+boot_content_handlers(SupPid, Cfg, DhtPid) ->
+    HrPid = whereis(macula_handler_registry),
+    Spec  = content_handlers_child(HrPid),
+    on_content_handlers(SupPid, Cfg, DhtPid,
+                        supervisor:start_child(SupPid, Spec)).
+
+on_content_handlers(SupPid, _Cfg, _DhtPid, {error, R}) ->
+    halt_sup(SupPid, {content_handlers_start_failed, R});
+on_content_handlers(SupPid, Cfg, DhtPid, {ok, _Pid}) ->
     boot_dht_custodians(SupPid, Cfg, DhtPid).
 
 boot_dht_custodians(SupPid, Cfg, DhtPid) ->
@@ -459,6 +470,17 @@ dht_handlers_child(HrPid, DhtPid) ->
         shutdown => 5_000,
         type     => worker,
         modules  => [macula_station_dht_handlers]
+    }.
+
+content_handlers_child(HrPid) ->
+    Opts = #{handler_registry => HrPid},
+    #{
+        id       => macula_station_content_handlers,
+        start    => {macula_station_sup, start_content_handlers, [Opts]},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_content_handlers]
     }.
 
 dht_replicate_child(DhtPid) ->
