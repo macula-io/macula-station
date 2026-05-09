@@ -38,7 +38,7 @@
     subscribers/2, topics/1, topic_count/1, subscriber_count/1,
     realm/1,
     publish/3, deliver_event/2, process_frame/3,
-    relay_publish/2,
+    relay_publish/2, relay_event/2,
     stop/1
 ]).
 
@@ -136,6 +136,25 @@ process_frame(Pid, From, Frame) ->
 relay_publish(Pid, Frame) ->
     gen_server:call(Pid, {relay_publish, Frame}).
 
+%% @doc Relay an inbound EVENT frame received from a peer station.
+%% Re-signs the frame with this server's identity (preserving the
+%% original `publisher' / `seq' / `payload' / `delivered_via' fields)
+%% and returns the re-signed frame plus the matched local subscribers.
+%%
+%% Per-hop re-signing keeps `peer_observer''s NodeId-based signature
+%% verification valid across multi-hop relay chains: every receiving
+%% station sees a frame signed by its immediate upstream, which equals
+%% the connection's NodeId. Without this, a station forwarding an
+%% upstream-signed EVENT to its own peer stations would trip
+%% `signature_invalid' on those peers (immediate sender ≠ frame
+%% signer). End-to-end publisher provenance lives in the `publisher'
+%% field, not the wire signature (Phase 1 simplification; Phase 2
+%% tightens to publisher-end-to-end auth via UCAN).
+-spec relay_event(pid(), macula_frame:frame()) ->
+        {macula_frame:frame(), [<<_:256>>]} | {error, realm_mismatch}.
+relay_event(Pid, Frame) ->
+    gen_server:call(Pid, {relay_event, Frame}).
+
 -spec stop(pid()) -> ok.
 stop(Pid) ->
     gen_server:stop(Pid).
@@ -188,6 +207,8 @@ handle_call({process_frame, From, Frame}, _From, S) ->
     {reply, Subs, S#state{pubsub = PS2}};
 handle_call({relay_publish, Frame}, _From, S) ->
     {reply, do_relay_publish(Frame, S), S};
+handle_call({relay_event, Frame}, _From, S) ->
+    {reply, do_relay_event(Frame, S), S};
 handle_call(_Request, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -213,6 +234,30 @@ build_relay_event(#{topic := T, realm := R, publisher := Pub,
         seq           => Seq,
         payload       => Pl,
         delivered_via => direct
+    }), Id).
+
+%%====================================================================
+%% Internals — event relay (per-hop re-sign)
+%%====================================================================
+
+do_relay_event(#{frame_type := event, realm := R} = Frame,
+               #state{realm = R} = S) ->
+    Re_signed = re_sign_event(Frame, S),
+    Matched   = hecate_pubsub:deliver_event(S#state.pubsub, Re_signed),
+    {Re_signed, Matched};
+do_relay_event(_Frame, _S) ->
+    {error, realm_mismatch}.
+
+re_sign_event(#{topic := T, realm := R, publisher := Pub,
+                seq := Seq, payload := Pl, delivered_via := Via},
+              #state{identity = Id}) ->
+    macula_frame:sign(macula_frame:event(#{
+        topic         => T,
+        realm         => R,
+        publisher     => Pub,
+        seq           => Seq,
+        payload       => Pl,
+        delivered_via => Via
     }), Id).
 
 handle_cast(_Msg, S) ->
