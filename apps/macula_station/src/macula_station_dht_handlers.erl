@@ -94,105 +94,18 @@ handle_put_record(_Dht, _Other) ->
 
 on_verify(Dht, _Record, {ok, Verified}) ->
     ok = macula_dht:put_record(Dht, Verified),
-    fire_eager_replication(Verified),
     {ok, ok};
 on_verify(_Dht, _Record, {error, _Reason}) ->
     {error, bad_signature}.
 
-%% Eager replication on every put — fan STORE out to the k-closest
-%% custodians for this record's storage key. Async (gen_server cast)
-%% so the daemon's `_dht.put_record' RPC returns the moment the
-%% local store has succeeded; we don't gate on remote acks.
-%%
-%% Without this, a daemon that puts on station A and then reads from
-%% station B sees `not_found' for up to one full
-%% `macula_dht_replicate' tick (default 1 h). The periodic tick
-%% remains the safety net for churn (peers that joined the k-closest
-%% set after the original put), but normal write-then-read traffic
-%% needs the on-write fan-out.
-%%
-%% Resilient to the replicator not being registered (e.g. a station
-%% started without `macula_dht_replicate' for some reason) — falls
-%% back to silent best-effort, which is fine because the record
-%% still landed in the local store.
-fire_eager_replication(Record) ->
-    case whereis(macula_dht_replicate) of
-        undefined -> ok;
-        Pid       -> macula_dht_replicate:replicate_one(Pid, Record)
-    end.
-
 handle_find_record(Dht, #{key := Key})
   when is_binary(Key), byte_size(Key) =:= 32 ->
-    on_local_hit(macula_dht:find_local_record(Dht, Key), Dht, Key);
+    classify_local_lookup(macula_dht:find_local_record(Dht, Key));
 handle_find_record(_Dht, _Other) ->
     {error, bad_request}.
 
-%% Local hit short-circuits — record is already on this station.
-%% Local miss falls back to a one-hop iterative lookup against the
-%% k-closest peers in our routing table. With eager replication
-%% on put, the writer's k-closest custodians hold the record;
-%% the reader (which may not be in the writer's k-closest set)
-%% needs to walk out one hop to find a custodian.
-on_local_hit([Record | _], _Dht, _Key) ->
-    {ok, Record};
-on_local_hit([], Dht, Key) ->
-    on_remote_lookup(remote_find_value(Dht, Key), Dht, Key).
-
-on_remote_lookup({ok, Record}, _Dht, _Key) ->
-    {ok, Record};
-on_remote_lookup(not_found, _Dht, _Key) ->
-    {ok, not_found}.
-
-%% Ask every routing-table peer in parallel; first peer that
-%% returns `{value, [Record | _]}' wins. Other replies (nodes /
-%% errors / timeouts) are ignored — for the e2e probe's
-%% put-then-find pattern, the writer's k-closest custodians
-%% reply quickly with the record. Per-peer timeout caps the
-%% wait so a slow peer cannot stall the lookup.
-%%
-%% NOT a full Kademlia iterative walk: we don't recurse into
-%% the `{nodes, ...}' response to chase closer custodians. One
-%% hop is sufficient for the partial-mesh sizes we operate at
-%% (≤ low hundreds of stations) because eager replication
-%% places copies on the writer's k-closest, and the reader
-%% reaches some of them in one hop with k = 20. Bigger meshes
-%% will want the full multi-round walk; that is a Phase 4+
-%% concern.
--define(REMOTE_FIND_PER_PEER_MS, 1_500).
-
-remote_find_value(Dht, Key) ->
-    Entries = macula_dht:k_closest(Dht, Key, 20),
-    SelfId  = macula_dht:self_id(Dht),
-    PeerIds = [Id || E <- Entries,
-                     (Id = macula_dht_entry:node_id(E)) =/= SelfId],
-    fanout_find_value(Dht, Key, PeerIds).
-
-fanout_find_value(_Dht, _Key, []) ->
-    not_found;
-fanout_find_value(Dht, Key, PeerIds) ->
-    Tag    = make_ref(),
-    Parent = self(),
-    [spawn(fun() ->
-        Parent ! {Tag, macula_dht:find_value(Dht, Key, Pid,
-                                              ?REMOTE_FIND_PER_PEER_MS)}
-     end) || Pid <- PeerIds],
-    collect_first_value(Tag, length(PeerIds),
-                        ?REMOTE_FIND_PER_PEER_MS + 200).
-
-collect_first_value(_Tag, 0, _DeadlineMs) ->
-    not_found;
-collect_first_value(Tag, Remaining, DeadlineMs) ->
-    Start = erlang:monotonic_time(millisecond),
-    receive
-        {Tag, {value, [Record | _]}} ->
-            {ok, Record};
-        {Tag, _Other} ->
-            Elapsed  = erlang:monotonic_time(millisecond) - Start,
-            collect_first_value(Tag, Remaining - 1,
-                                max(0, DeadlineMs - Elapsed))
-    after DeadlineMs ->
-        not_found
-    end.
+classify_local_lookup([])           -> {ok, not_found};
+classify_local_lookup([Record | _]) -> {ok, Record}.
 
 handle_find_records_by_type(Dht, #{type := Type})
   when is_integer(Type), Type >= 0, Type =< 255 ->
