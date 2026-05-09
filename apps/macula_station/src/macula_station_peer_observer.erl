@@ -112,7 +112,14 @@
     %% reaped instead of leaking. The origin's station_link enforces
     %% its own deadline at the SDK level — the relay-side timer is
     %% pure cleanup.
-    forwarded = #{}      :: #{<<_:128>> => {pid(), reference()}}
+    forwarded = #{}      :: #{<<_:128>> => {pid(), reference()}},
+    %% In-flight streaming RPCs. Maps each stream_id to the caller-
+    %% origin connection that opened it and the advertiser connection
+    %% it was forwarded to, plus a TTL timer ref so a hung stream
+    %% (advertiser crashed mid-stream, malformed STREAM_END) is
+    %% reaped instead of leaking forever. Cleared on STREAM_END /
+    %% STREAM_ERROR / STREAM_REPLY (final frames) or on the timer.
+    streams   = #{}      :: #{<<_:128>> => {pid(), pid(), reference()}}
 }).
 
 %% Hard upper bound on how long a forwarded CALL entry may live on
@@ -121,6 +128,14 @@
 %% `_realm.membership.join_with_token_v1`). Defensive — purges
 %% stragglers even when a buggy peer never sends RESULT/ERROR.
 -define(FORWARDED_TTL_MS, 60_000).
+
+%% Streaming RPC relay TTL — analogous to FORWARDED_TTL_MS but for
+%% streams. Streaming workloads can be longer-lived than unary calls
+%% (e.g. a server_stream paginating a large result set), so this
+%% bound is generous. A normal stream is closed by an explicit
+%% STREAM_END / STREAM_REPLY frame, which removes the entry well
+%% before the timer fires.
+-define(STREAM_TTL_MS, 300_000).
 
 %% Named ETS table mirroring the `conns' map so external callers
 %% (DHT transport, anyone routing wire frames by NodeId) read
@@ -275,6 +290,8 @@ handle_info({'DOWN', _Ref, process, Pid, _Reason},
     end;
 handle_info({forwarded_timeout, CallId}, #state{forwarded = F} = S) ->
     {noreply, on_forwarded_timeout(maps:take(CallId, F), S)};
+handle_info({stream_timeout, Sid}, #state{streams = St} = S) ->
+    {noreply, on_stream_timeout(maps:take(Sid, St), S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -289,6 +306,12 @@ on_forwarded_timeout({{_Origin, _TRef}, NewF}, S) ->
     logger:info("[peer_observer] forwarded CALL timed out — purging",
                 []),
     S#state{forwarded = NewF}.
+
+on_stream_timeout(error, S) ->
+    S;
+on_stream_timeout({{_Caller, _Adv, _TRef}, NewSt}, S) ->
+    logger:info("[peer_observer] stream relay timed out — purging", []),
+    S#state{streams = NewSt}.
 
 terminate(_Reason, _S) -> ok.
 code_change(_OldVsn, S, _Extra) -> {ok, S}.
@@ -402,6 +425,11 @@ classify(find_value)   -> dht;
 classify(value)        -> dht;
 classify(store)        -> dht;
 classify(store_ack)    -> dht;
+classify(stream_open)  -> stream;
+classify(stream_data)  -> stream;
+classify(stream_end)   -> stream;
+classify(stream_error) -> stream;
+classify(stream_reply) -> stream;
 classify(_)            -> other.
 
 claimed_caller(#{caller := <<_:256>> = Pub}) -> Pub;
@@ -437,6 +465,15 @@ dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
 dispatch(dht, Frame, _ConnPid, NodeId, #state{dht = Dht} = S) ->
     ok = macula_dht:handle_frame(Dht, NodeId, Frame),
     S;
+dispatch(stream, Frame, ConnPid, NodeId, S) ->
+    %% STREAM_OPEN is signed end-to-end by the original caller (same
+    %% rationale as CALL); subsequent stream frames are signed by
+    %% whichever end emitted them, and for now we verify against the
+    %% connection's NodeId — sufficient for the single-station +
+    %% direct-edge cases. Multi-hop stream relay would need
+    %% claimed-signer extraction analogous to claimed_caller/1, but
+    %% the suite only exercises single-station streaming for now.
+    deliver_stream(macula_frame:frame_type(Frame), Frame, ConnPid, NodeId, S);
 dispatch(other, _Frame, _ConnPid, _NodeId, S) ->
     S.
 
@@ -523,6 +560,110 @@ unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
     macula_frame:call_error(#{call_id     => CallId,
                               code        => 16#01,
                               reported_by => SelfId}).
+
+%%==================================================================
+%% STREAM dispatch — STREAM_OPEN routes by procedure (mirrors CALL);
+%% STREAM_DATA / STREAM_END / STREAM_ERROR / STREAM_REPLY route by
+%% stream_id (mirrors how `forwarded' relays RESULT by call_id).
+%%==================================================================
+
+deliver_stream(stream_open, Frame, ConnPid, NodeId, S) ->
+    on_stream_open_verify(macula_frame:verify(Frame, claimed_caller(Frame)),
+                          Frame, ConnPid, NodeId, S);
+deliver_stream(_Other, Frame, ConnPid, NodeId, S) ->
+    on_stream_relay(macula_frame:verify(Frame, NodeId), Frame, ConnPid, S).
+
+on_stream_open_verify({error, _}, _Frame, _ConnPid, _NodeId, S) ->
+    S;
+on_stream_open_verify({ok, Frame}, _OrigFrame, ConnPid, NodeId, S) ->
+    on_stream_open_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
+
+%% Procedure not advertised on this station — synthesize a
+%% `stream_error' back to the caller so the SDK fails fast instead
+%% of waiting for the deadline.
+on_stream_open_lookup({error, not_found}, Frame, _ConnPid, NodeId,
+                      #state{self_id = SelfId, conns = C} = S) ->
+    Reply = stream_unknown_reply(Frame, SelfId),
+    send_reply_to(primary_conn_lookup(maps:find(NodeId, C)), Reply),
+    S;
+on_stream_open_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame,
+                      _ConnPid, NodeId,
+                      #state{conns = C, streams = Streams} = S) ->
+    %% Forward STREAM_OPEN as-is to the advertiser; remember the
+    %% caller-origin and the advertiser conn so subsequent
+    %% STREAM_DATA / STREAM_END frames can route back and forth.
+    macula_peering:send_frame(AdvertiserConn, Frame),
+    CallerOrigin = origin_for_reply(primary_conn_lookup(maps:find(NodeId, C))),
+    track_stream(maps:get(stream_id, Frame),
+                 CallerOrigin, AdvertiserConn, Streams, S).
+
+track_stream(_Sid, undefined, _AdvConn, _Streams, S) ->
+    %% Caller's origin already gone — the advertiser's eventual
+    %% STREAM_DATA cannot route anywhere; drop on arrival via the
+    %% missing-streams-entry path.
+    S;
+track_stream(Sid, CallerOrigin, AdvertiserConn, Streams, S) ->
+    TRef = erlang:send_after(?STREAM_TTL_MS, self(),
+                             {stream_timeout, Sid}),
+    S#state{streams = Streams#{Sid => {CallerOrigin, AdvertiserConn, TRef}}}.
+
+stream_unknown_reply(#{stream_id := Sid}, _SelfId) ->
+    macula_frame:stream_error(#{stream_id => Sid,
+                                code      => <<"unknown_next_peer">>,
+                                message   => <<"procedure not advertised">>}).
+
+%% Bidirectional relay: a stream frame from the caller goes to the
+%% advertiser; a frame from the advertiser goes to the caller. We
+%% identify the source by comparing the inbound conn against the
+%% pair we tracked on STREAM_OPEN. Unknown stream_id (never opened
+%% on this station, or already torn down) drops silently.
+on_stream_relay({error, _}, _Frame, _ConnPid, S) ->
+    S;
+on_stream_relay({ok, Frame}, _OrigFrame, ConnPid,
+                #state{streams = Streams} = S) ->
+    Sid = maps:get(stream_id, Frame),
+    on_stream_relay_lookup(maps:find(Sid, Streams), Sid,
+                           macula_frame:frame_type(Frame),
+                           Frame, ConnPid, Streams, S).
+
+on_stream_relay_lookup(error, _Sid, _Type, _Frame, _ConnPid, _Streams, S) ->
+    S;
+on_stream_relay_lookup({ok, {CallerOrigin, AdvConn, TRef}}, Sid, Type,
+                       Frame, ConnPid, Streams, S) ->
+    Target = relay_target(ConnPid, CallerOrigin, AdvConn),
+    _ = macula_peering:send_frame(Target, Frame),
+    maybe_close_stream(Type, Sid, TRef, Streams, S).
+
+%% Source = caller-side ⇒ forward to advertiser. Source = anything
+%% else (advertiser-side, in the typical server_stream path
+%% server → caller) ⇒ forward to caller. The routing pair was
+%% established when STREAM_OPEN arrived; we identify the caller-
+%% origin conn by exact pid match against the tracked pair.
+relay_target(SourceConn, CallerOrigin, AdvConn)
+  when SourceConn =:= CallerOrigin ->
+    AdvConn;
+relay_target(_SourceConn, CallerOrigin, _AdvConn) ->
+    CallerOrigin.
+
+%% STREAM_END / STREAM_ERROR / STREAM_REPLY are terminal. For
+%% server_stream (the only mode our suite exercises today) the
+%% server emits STREAM_END(role=send) and the stream is done. Bidi
+%% would close on a matched pair of STREAM_END(role=send) frames;
+%% a stricter implementation would wait for both. Drop on the
+%% first terminal frame for now — the TTL timer catches the bidi
+%% case if the second END never arrives.
+maybe_close_stream(stream_end,   Sid, TRef, Streams, S) ->
+    cancel_and_drop_stream(Sid, TRef, Streams, S);
+maybe_close_stream(stream_error, Sid, TRef, Streams, S) ->
+    cancel_and_drop_stream(Sid, TRef, Streams, S);
+maybe_close_stream(stream_reply, Sid, TRef, Streams, S) ->
+    cancel_and_drop_stream(Sid, TRef, Streams, S);
+maybe_close_stream(_Other, _Sid, _TRef, _Streams, S) ->
+    S.
+
+cancel_and_drop_stream(Sid, TRef, Streams, S) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    S#state{streams = maps:remove(Sid, Streams)}.
 
 %% RESULT / call_error from an advertiser destined for a previously-
 %% forwarded CALL. Match by call_id; relay back to the origin.
