@@ -63,6 +63,7 @@ Nothing runs yet. This is Phase 0 — acceptance is "empty umbrella compiles + C
 
 - [`docs/PUBSUB_RESIGN_LOOP_LESSON.md`](docs/PUBSUB_RESIGN_LOOP_LESSON.md) — why the `[peer_observer] pubsub frame verify failed: signature_invalid` warning is load-bearing, what four protocol-side fixes regressed, and what a Phase 2 publisher-end-to-end signature attempt needs to know. Read before touching the relay path.
 - [`docs/CASCADE_INVESTIGATION.md`](docs/CASCADE_INVESTIGATION.md) — root-cause investigation of the e2e torture cascade. Confirmed mechanism (sync `gen_server:call` from `peer_observer` to `macula_dht:observe` times out under accumulated daemon-conn state, peer_observer dies, supervisor restart drops named ETS, fleet-wide cascade). Tactical fix shipped in commit `b0340b7`; conn-aging follow-up scoped from data.
+- [`docs/SUBSCRIBE_RECORDS_GAP.md`](docs/SUBSCRIBE_RECORDS_GAP.md) — `macula:subscribe_records/3` (SDK) subscribes to `_dht.records.<type>.stored`; `macula_station_record_fanout` (substrate) publishes to `_mesh.station.announced_v1` etc. Different topics, callback never fires. Surfaced by the e2e probes `subscribe_records_local` / `subscribe_records_cross_station`. Affects DNS-over-mesh slice's cache-invalidation PM design.
 
 ---
 
