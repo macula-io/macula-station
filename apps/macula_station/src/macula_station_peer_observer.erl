@@ -397,7 +397,24 @@ on_connected_directional(Direction, ConnPid, NodeId,
     %% Empirical evidence: cascade root-cause investigation 2026-05-10
     %% caught peer_observer dying with mailbox=504, exit=
     %% gen_server:call timeout to macula_dht:observe.
-    macula_dht:observe_async(Dht, direct_peer_spec(NodeId)),
+    %%
+    %% Only OUTBOUND-dialled peers go into the DHT routing table.
+    %% Stations dial each other in the partial mesh (this station's
+    %% outbound_link → that station); daemons only dial stations
+    %% and never accept inbound. So `Direction == outbound' is a
+    %% reliable filter: observed = station-class peer; not observed
+    %% = inbound-only counterpart, which is either a daemon (must
+    %% NOT pollute the routing table — they don't run macula_dht
+    %% and silently drop find_value RPC, causing iterative finds
+    %% to return not_found even when stations have the record) or
+    %% a station that we'll also outbound-dial separately.
+    %% See docs/CASCADE_INVESTIGATION.md follow-up + task #15.
+    case Direction of
+        outbound ->
+            macula_dht:observe_async(Dht, direct_peer_spec(NodeId));
+        inbound ->
+            ok
+    end,
     ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
     %% Monitor ConnPid so observer cleans up on death without
     %% depending on a `disconnected' event flowing through some

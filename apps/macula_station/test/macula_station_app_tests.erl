@@ -114,7 +114,7 @@ cache_and_rebootstrap_children_start_when_configured_test_() ->
 %% records the peer into the DHT with tier=t0 and SWIM learns it.
 %%==================================================================
 
-external_peer_dial_lands_in_dht_and_swim_test_() ->
+external_peer_dial_lands_in_swim_not_in_dht_test_() ->
     {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
         {timeout, 30,
          fun() ->
@@ -128,7 +128,8 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                  {ok, Dht}  = macula_station:dht(),
                  {ok, Swim} = macula_station:swim(),
                  {_Bind, Port} = macula_station:listen_addr(),
-                 %% External peer with its own identity dials our listener.
+                 %% External peer with its own identity dials our listener
+                 %% (= inbound from this station's perspective).
                  ExtKp = macula_identity:generate(),
                  ExtId = macula_identity:public(ExtKp),
                  {ok, _ClientPid} = macula_peering:connect(#{
@@ -141,16 +142,22 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                                           port => Port,
                                           timeout_ms => 3_000}
                  }),
+                 %% SWIM picks up every peering connection, regardless
+                 %% of direction (cast in macula_swim:add_peer/3).
                  ok = wait_until(fun() ->
-                     macula_dht:contains(Dht, ExtId) andalso
                      lists:any(fun(#{node_id := N}) -> N =:= ExtId end,
                                macula_swim:members(Swim))
                  end, 10_000),
-                 %% Observer-admitted entries are tier t0.
-                 {ok, Entry} = macula_dht:find(Dht, ExtId),
-                 ?assertEqual(t0, macula_dht_entry:tier(Entry)),
-                 %% Pre-existing stub-tier peer + external = 2 entries.
-                 ?assertEqual(2, macula_dht:size(Dht)),
+                 %% DHT routing table does NOT include the external dialer.
+                 %% Inbound-only peers are intentionally not observed
+                 %% (peer_observer:on_connected_directional/4 gates
+                 %% macula_dht:observe_async on Direction == outbound)
+                 %% to keep daemon-class clients out of the routing
+                 %% table — they don't run macula_dht_server and would
+                 %% silently break the iterative-find fan-out.
+                 ?assertEqual(false, macula_dht:contains(Dht, ExtId)),
+                 %% Pre-existing stub-tier peer remains.
+                 ?assertEqual(1, macula_dht:size(Dht)),
                  ok = cleanup_sup(Sup)
              after
                  rm_rf(Dir)
