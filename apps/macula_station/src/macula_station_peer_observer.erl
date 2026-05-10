@@ -142,19 +142,6 @@
 %% without serializing against the observer's gen_server mailbox.
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
 
-%% All-zeros realm carries mesh-infrastructure traffic (bloom gossip
-%% on `_mesh.bloom', etc). Mesh-realm EVENTs traverse a mutual-
-%% SUBSCRIBE topology between every pair of stations, which made
-%% per-hop re-sign loop forever in the naive 2026-05-09 attempt
-%% (commit 9693b2f, reverted in 4f8161e). For the mesh realm we
-%% route inbound EVENTs through `hecate_pubsub_server:relay_event/2'
-%% which re-signs AND dedupes on `{publisher, seq}' to terminate
-%% the loop. User realms keep the cheaper `deliver_event/2' path
-%% — they don't have the mutual-subscription topology and the
-%% residual `signature_invalid' warnings they produce are
-%% non-blocking per the original 2026-05-09 handover.
--define(MESH_REALM, <<0:256>>).
-
 %%==================================================================
 %% API
 %%==================================================================
@@ -784,13 +771,6 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       Conns);
-deliver_pubsub_typed(event, ?MESH_REALM, _NodeId, Verified,
-                     #state{pubsub_registry = Reg, conns = Conns}) ->
-    %% Mesh-realm relay: dedup + re-sign before fan-out. The mutual
-    %% bloom-subscription topology requires explicit loop kill
-    %% (see ?MESH_REALM macro definition above).
-    deliver_inbound_event_mesh(safe_lookup(Reg, ?MESH_REALM),
-                               Verified, Conns);
 deliver_pubsub_typed(event, Realm, _NodeId, Verified,
                      #state{pubsub_registry = Reg, conns = Conns}) ->
     %% Inbound EVENT — typically a cross-station relay from a peer
@@ -844,31 +824,6 @@ deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
               end,
     fan_out_event(EventFrame, Matched, Conns);
 deliver_inbound_event(_Other, _EventFrame, _Conns) ->
-    ok.
-
-%% Mesh-realm event relay: re-sign with this station's identity AND
-%% dedup on `{publisher, seq}' before fan-out. Re-sign keeps verify
-%% valid at the next hop's NodeId; dedup terminates the mutual
-%% bloom-subscription loop. See ?MESH_REALM definition for full
-%% rationale and project_pubsub_resign_loop_lesson for the failure
-%% modes this design avoids.
-deliver_inbound_event_mesh({ok, Server}, EventFrame, Conns) ->
-    on_mesh_relay(safe_relay_event(Server, EventFrame), Conns);
-deliver_inbound_event_mesh(_Other, _EventFrame, _Conns) ->
-    ok.
-
-safe_relay_event(Server, EventFrame) ->
-    try hecate_pubsub_server:relay_event(Server, EventFrame)
-    catch _:_ -> {error, relay_event_unavailable}
-    end.
-
-on_mesh_relay({Re_signed, Matched}, Conns) when is_list(Matched) ->
-    fan_out_event(Re_signed, Matched, Conns);
-on_mesh_relay(_Other, _Conns) ->
-    %% Duplicate, realm mismatch, or pubsub_server unreachable:
-    %% the loop ends here. Local SDK delivery to bloom_exchange
-    %% has already happened in `outbound_link:deliver_event/2'
-    %% before forwarding the frame to peer_observer.
     ok.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->
