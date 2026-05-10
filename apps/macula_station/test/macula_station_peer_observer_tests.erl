@@ -79,10 +79,7 @@ duplicate_connected_touches_test_() ->
         fun() ->
             NodeId  = random_node_id(),
             ConnPid = spawn_dummy(),
-            %% Use connected_outbound so the peer enters the DHT
-            %% (inbound is intentionally not observed — see
-            %% peer_observer:on_connected_directional/4).
-            Obs ! {macula_peering, connected_outbound, ConnPid, NodeId},
+            Obs ! {macula_peering, connected, ConnPid, NodeId},
             wait_for(fun() -> macula_dht:size(Dht) =:= 1 end, 500),
             %% A direct call confirms the DHT's own idempotence and
             %% matches what the observer's next event would do.
@@ -90,29 +87,6 @@ duplicate_connected_touches_test_() ->
                      asn => 0, country => <<"??">>, tier => t0},
             ?assertEqual(touched, macula_dht:observe(Dht, Spec)),
             _ = Ctx
-        end
-    end}.
-
-%% Locks the inbound-skip contract: a peer that arrives via the
-%% bare `connected' event (= inbound from the listener) is
-%% registered in `peers' (so we know about it for routing wire
-%% replies) but is intentionally NOT observed in the DHT routing
-%% table. Stations dial each other; daemons only inbound. Keeping
-%% daemons out of the DHT routing table is what fixes the
-%% iterative-find pollution surfaced by task #15.
-inbound_does_not_observe_into_dht_test_() ->
-    {setup, fun setup/0, fun teardown/1, fun(#{obs := Obs,
-                                               dht := Dht} = _Ctx) ->
-        fun() ->
-            NodeId  = random_node_id(),
-            ConnPid = spawn_dummy(),
-            Obs ! {macula_peering, connected, ConnPid, NodeId},
-            timer:sleep(150),    % give the gen_server time to process
-            ?assertEqual(0, macula_dht:size(Dht)),
-            %% But the peer IS in the local peers map (so reply
-            %% routing still works for whatever frame the peer sends).
-            ?assertMatch([{ConnPid, NodeId}],
-                         macula_station_peer_observer:peers(Obs))
         end
     end}.
 
@@ -750,14 +724,7 @@ one_connected_peer(#{obs := Obs, dht := Dht, swim := Swim,
                      peer_kp := PeerKp}) ->
     NodeId  = macula_identity:public(PeerKp),
     ConnPid = spawn_dummy(),
-    %% `connected_outbound' (we dialled the peer) is what registers
-    %% the peer in the DHT routing table; bare `connected' (peer
-    %% dialled us) is treated as inbound and intentionally NOT
-    %% observed in DHT — see peer_observer:on_connected_directional/4
-    %% comment, which gates `macula_dht:observe' on outbound to keep
-    %% daemon-class connections out of the routing table (the
-    %% iterative-find pollution fix).
-    Obs ! {macula_peering, connected_outbound, ConnPid, NodeId},
+    Obs ! {macula_peering, connected, ConnPid, NodeId},
     wait_for(fun() -> macula_dht:size(Dht) =:= 1 end, 500),
     {Obs, Dht, Swim, NodeId, ConnPid}.
 
