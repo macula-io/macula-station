@@ -142,6 +142,13 @@
 %% without serializing against the observer's gen_server mailbox.
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
 
+%% All-zeros realm carries mesh-infrastructure traffic (bloom gossip
+%% on `_mesh.bloom', etc). Mesh-realm EVENTs are 1-hop by design:
+%% each station gossips its OWN topic set, never re-fans a peer's
+%% bloom further. See `deliver_pubsub_typed/5' for the relay
+%% short-circuit and `bloom_exchange.erl' for the publish side.
+-define(MESH_REALM, <<0:256>>).
+
 %%==================================================================
 %% API
 %%==================================================================
@@ -771,6 +778,20 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       Conns);
+deliver_pubsub_typed(event, ?MESH_REALM, _NodeId, _Verified, _S) ->
+    %% Mesh-realm EVENTs (`_mesh.bloom' gossip, future infrastructure
+    %% topics) are 1-hop by design: each station broadcasts its OWN
+    %% bloom to its peers, never re-fans a peer's bloom further. The
+    %% legitimate inbound delivery has already happened in the SDK
+    %% callback path (`outbound_link:deliver_event/2' fires before it
+    %% forwards the frame to peer_observer). Re-fanning here would
+    %% loop back through the mutual `_mesh.bloom' subscriptions every
+    %% station holds on every peer station, saturating cross-station
+    %% bandwidth and starving CALL / DHT / content traffic. See
+    %% project_pubsub_resign_loop_lesson for the empirical evidence
+    %% (43 600 relay events / 8 min on a single station during the
+    %% failed re-sign attempt of 2026-05-09).
+    ok;
 deliver_pubsub_typed(event, Realm, _NodeId, Verified,
                      #state{pubsub_registry = Reg, conns = Conns}) ->
     %% Inbound EVENT — typically a cross-station relay from a peer
