@@ -150,11 +150,34 @@ fan_out(Record, #{} = Wiring) ->
 classify(16#01, Record, Wiring) ->
     Topic   = node_announce_topic(record_kind(Record)),
     Payload = macula_record:encode(Record),
-    publish_on(Wiring, Topic, Payload);
+    publish_on(Wiring, Topic, Payload),
+    publish_record_stored(16#01, Payload, Wiring);
 classify(16#0C, Record, Wiring) ->
-    classify_tombstone(macula_record:payload(Record), Record, Wiring);
-classify(_Type, _Record, _Wiring) ->
-    ok.
+    Payload = macula_record:encode(Record),
+    classify_tombstone(macula_record:payload(Record), Record, Wiring),
+    publish_record_stored(16#0C, Payload, Wiring);
+classify(Type, Record, Wiring) ->
+    %% No type-specific `_mesh.*' publication for unrecognised types,
+    %% but still emit on the per-type `_dht.records.<type>.stored'
+    %% topic the SDK's `subscribe_records/3' subscribes to. Without
+    %% this, every type other than node_record + tombstone has a
+    %% silent-drop SDK API.
+    publish_record_stored(Type, macula_record:encode(Record), Wiring).
+
+%% Per-type record-stored publication. The SDK's
+%% `macula:subscribe_records/3' subscribes to
+%% `_dht.records.<type>.stored' on the all-zeros mesh realm; this
+%% is the substrate half of that contract. Adding the topic here
+%% keeps the existing `_mesh.station.*' / `_mesh.daemon.*'
+%% publications intact for whichever consumer needs them.
+%%
+%% See macula-station/docs/SUBSCRIBE_RECORDS_GAP.md for the gap
+%% report that drove this fix.
+publish_record_stored(Type, Payload, Wiring) ->
+    Topic = iolist_to_binary([<<"_dht.records.">>,
+                              integer_to_binary(Type),
+                              <<".stored">>]),
+    publish_on(Wiring, Topic, Payload).
 
 classify_tombstone(#{{text, <<"superseded_type">>} := 16#01} = P,
                    Record, Wiring) ->
