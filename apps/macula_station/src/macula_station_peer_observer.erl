@@ -819,31 +819,11 @@ safe_lookup(Reg, Realm) ->
     end.
 
 deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
-    %% Re-sign with this station's identity before fan-out so peer
-    %% stations downstream see a frame whose signer matches their
-    %% connection's NodeId. Without this, the upstream-station
-    %% signature triggers `signature_invalid' on every multi-hop
-    %% relay receiver. Per-hop re-sign is safe because pubsub_server
-    %% dedups on `{publisher, seq}' before re-signing — the bloom-
-    %% mesh mutual-SUBSCRIBE loop terminates on duplicate hits in
-    %% the seen-cache (see project_pubsub_resign_loop_lesson).
-    on_relay_event(safe_relay_event(Server, EventFrame), Conns);
+    Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
+              catch _:_ -> []
+              end,
+    fan_out_event(EventFrame, Matched, Conns);
 deliver_inbound_event(_Other, _EventFrame, _Conns) ->
-    ok.
-
-safe_relay_event(Server, EventFrame) ->
-    try hecate_pubsub_server:relay_event(Server, EventFrame)
-    catch _:_ -> {error, relay_event_unavailable}
-    end.
-
-on_relay_event({Re_signed, Matched}, Conns) when is_list(Matched) ->
-    fan_out_event(Re_signed, Matched, Conns);
-on_relay_event(_Other, _Conns) ->
-    %% Duplicate, realm mismatch, or pubsub_server unreachable —
-    %% the loop ends here. Local SDK delivery for inbound EVENTs
-    %% has already happened in `outbound_link:deliver_event/2'
-    %% before forwarding the frame to peer_observer, so we don't
-    %% lose anything by short-circuiting on duplicate.
     ok.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->

@@ -38,7 +38,7 @@
     subscribers/2, topics/1, topic_count/1, subscriber_count/1,
     realm/1,
     publish/3, deliver_event/2, process_frame/3,
-    relay_publish/2, relay_event/2,
+    relay_publish/2,
     stop/1
 ]).
 
@@ -46,40 +46,14 @@
 
 -export_type([opts/0]).
 
-%% Default time-to-live for the seen-message dedup cache. Must be
-%% larger than any realistic propagation delay across the cross-
-%% station partial mesh (3 outbound peers per station, max 3-4
-%% hops to reach any node) so loop-back duplicates always hit a
-%% live entry rather than re-flooding. 60s gives ample margin
-%% over the 30s bloom rebuild tick.
--define(DEFAULT_SEEN_TTL_MS, 60_000).
-
-%% Periodic sweep of the seen-cache. Half the TTL keeps memory
-%% bounded without prematurely evicting still-relevant entries.
--define(SEEN_SWEEP_INTERVAL_MS, 30_000).
-
--type opts() :: #{
-    realm        := <<_:256>>,
-    identity     := macula_identity:key_pair(),
-    seen_ttl_ms  => non_neg_integer()
-}.
+-type opts() :: #{realm := <<_:256>>, identity := macula_identity:key_pair()}.
 
 -record(state, {
-    realm        :: <<_:256>>,
-    identity     :: macula_identity:key_pair(),
-    self_id      :: <<_:256>>,
-    pubsub       :: hecate_pubsub:state(),
-    next_seq     :: non_neg_integer(),
-    %% Seen-message dedup cache for relay paths. Keyed by
-    %% {Publisher, Seq} (preserved end-to-end across hops by both
-    %% PUBLISH→EVENT and per-hop EVENT re-sign), value is the
-    %% monotonic insert timestamp. Required for safe per-hop
-    %% re-signing: without dedup, mutual cross-station SUBSCRIBEs
-    %% would let re-signed EVENTs loop forever (see
-    %% project_pubsub_resign_loop_lesson). Local pubsub_server
-    %% creates the table privately; one table per realm namespace.
-    seen         :: ets:tid(),
-    seen_ttl_ms  :: non_neg_integer()
+    realm    :: <<_:256>>,
+    identity :: macula_identity:key_pair(),
+    self_id  :: <<_:256>>,
+    pubsub   :: hecate_pubsub:state(),
+    next_seq :: non_neg_integer()
 }).
 
 %%====================================================================
@@ -158,34 +132,9 @@ process_frame(Pid, From, Frame) ->
 %% does not match this server's realm. The registry routes by realm
 %% so this should never fire in practice — defensive check.
 -spec relay_publish(pid(), macula_frame:frame()) ->
-        {macula_frame:frame(), [<<_:256>>]}
-        | {error, realm_mismatch | duplicate}.
+        {macula_frame:frame(), [<<_:256>>]} | {error, realm_mismatch}.
 relay_publish(Pid, Frame) ->
     gen_server:call(Pid, {relay_publish, Frame}).
-
-%% @doc Relay an inbound EVENT frame received from a peer station.
-%% Re-signs the frame with this server's identity (preserving the
-%% original `publisher' / `seq' / `payload' / `delivered_via' fields)
-%% and returns the re-signed frame plus the matched local subscribers.
-%%
-%% Per-hop re-sign keeps `peer_observer''s NodeId-based signature
-%% verification valid across multi-hop relay chains: every receiving
-%% station sees a frame signed by its immediate upstream, which equals
-%% the connection's NodeId. End-to-end publisher provenance lives in
-%% the preserved `publisher' field, not the wire signature (Phase 1
-%% simplification; Phase 2 tightens to publisher-end-to-end auth via
-%% UCAN).
-%%
-%% Loop prevention: dedup keyed by `{publisher, seq}'. Duplicates
-%% return `{error, duplicate}' and are dropped before re-signing /
-%% local delivery / fan-out. Without dedup, mutual cross-station
-%% SUBSCRIBEs (the bloom-gossip topology) would let re-signed EVENTs
-%% loop forever (see project_pubsub_resign_loop_lesson 2026-05-09).
--spec relay_event(pid(), macula_frame:frame()) ->
-        {macula_frame:frame(), [<<_:256>>]}
-        | {error, realm_mismatch | duplicate}.
-relay_event(Pid, Frame) ->
-    gen_server:call(Pid, {relay_event, Frame}).
 
 -spec stop(pid()) -> ok.
 stop(Pid) ->
@@ -195,17 +144,13 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init(#{realm := Realm, identity := Kp} = Opts) ->
-    Seen = ets:new(seen_messages, [set, private]),
-    erlang:send_after(?SEEN_SWEEP_INTERVAL_MS, self(), seen_sweep),
+init(#{realm := Realm, identity := Kp}) ->
     {ok, #state{
-        realm       = Realm,
-        identity    = Kp,
-        self_id     = macula_identity:public(Kp),
-        pubsub      = hecate_pubsub:new(Realm),
-        next_seq    = 0,
-        seen        = Seen,
-        seen_ttl_ms = maps:get(seen_ttl_ms, Opts, ?DEFAULT_SEEN_TTL_MS)
+        realm    = Realm,
+        identity = Kp,
+        self_id  = macula_identity:public(Kp),
+        pubsub   = hecate_pubsub:new(Realm),
+        next_seq = 0
     }}.
 
 handle_call({subscribe, Topic, Sub}, _From, S) ->
@@ -243,8 +188,6 @@ handle_call({process_frame, From, Frame}, _From, S) ->
     {reply, Subs, S#state{pubsub = PS2}};
 handle_call({relay_publish, Frame}, _From, S) ->
     {reply, do_relay_publish(Frame, S), S};
-handle_call({relay_event, Frame}, _From, S) ->
-    {reply, do_relay_event(Frame, S), S};
 handle_call(_Request, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -254,13 +197,9 @@ handle_call(_Request, _From, S) ->
 
 do_relay_publish(#{frame_type := publish, realm := R} = Frame,
                  #state{realm = R} = S) ->
-    on_seen_check(check_seen(Frame, S),
-                  fun() ->
-                      EventFrame = build_relay_event(Frame, S),
-                      Matched    = hecate_pubsub:deliver_event(
-                                       S#state.pubsub, EventFrame),
-                      {EventFrame, Matched}
-                  end);
+    EventFrame = build_relay_event(Frame, S),
+    Matched    = hecate_pubsub:deliver_event(S#state.pubsub, EventFrame),
+    {EventFrame, Matched};
 do_relay_publish(_Frame, _S) ->
     {error, realm_mismatch}.
 
@@ -276,76 +215,11 @@ build_relay_event(#{topic := T, realm := R, publisher := Pub,
         delivered_via => direct
     }), Id).
 
-%%====================================================================
-%% Internals — event relay (per-hop re-sign + dedup)
-%%====================================================================
-
-do_relay_event(#{frame_type := event, realm := R} = Frame,
-               #state{realm = R} = S) ->
-    on_seen_check(check_seen(Frame, S),
-                  fun() ->
-                      Re_signed = re_sign_event(Frame, S),
-                      Matched   = hecate_pubsub:deliver_event(
-                                      S#state.pubsub, Re_signed),
-                      {Re_signed, Matched}
-                  end);
-do_relay_event(_Frame, _S) ->
-    {error, realm_mismatch}.
-
-re_sign_event(#{topic := T, realm := R, publisher := Pub,
-                seq := Seq, payload := Pl, delivered_via := Via},
-              #state{identity = Id}) ->
-    macula_frame:sign(macula_frame:event(#{
-        topic         => T,
-        realm         => R,
-        publisher     => Pub,
-        seq           => Seq,
-        payload       => Pl,
-        delivered_via => Via
-    }), Id).
-
-%%====================================================================
-%% Internals — seen-message dedup cache
-%%====================================================================
-
-%% Insert-if-absent into the seen-cache. The publisher pubkey + seq
-%% pair uniquely identifies an EVENT end-to-end across the relay
-%% mesh: PUBLISH→EVENT preserves both fields, and per-hop re-sign
-%% likewise preserves them. Returns `seen' on duplicate (drop the
-%% frame) and `fresh' on first arrival.
-check_seen(#{publisher := Pub, seq := Seq},
-           #state{seen = Seen}) when is_binary(Pub), is_integer(Seq) ->
-    Now = erlang:monotonic_time(millisecond),
-    case ets:insert_new(Seen, {{Pub, Seq}, Now}) of
-        true  -> fresh;
-        false -> seen
-    end;
-check_seen(_Frame, _S) ->
-    %% Malformed frame missing publisher/seq — treat as fresh so the
-    %% caller's existing pattern matches still trigger realm-mismatch
-    %% / function-clause behaviour rather than a silent dedup drop.
-    fresh.
-
-on_seen_check(seen, _ProduceFn) ->
-    {error, duplicate};
-on_seen_check(fresh, ProduceFn) ->
-    ProduceFn().
-
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info(seen_sweep, #state{seen = Seen,
-                                seen_ttl_ms = TtlMs} = S) ->
-    sweep_seen(Seen, TtlMs),
-    erlang:send_after(?SEEN_SWEEP_INTERVAL_MS, self(), seen_sweep),
-    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
-
-sweep_seen(Seen, TtlMs) ->
-    Cutoff = erlang:monotonic_time(millisecond) - TtlMs,
-    ets:select_delete(Seen,
-        [{{'_', '$1'}, [{'<', '$1', Cutoff}], [true]}]).
 
 terminate(_Reason, _State) ->
     ok.
