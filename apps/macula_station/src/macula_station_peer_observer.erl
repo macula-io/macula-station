@@ -119,7 +119,16 @@
     %% (advertiser crashed mid-stream, malformed STREAM_END) is
     %% reaped instead of leaking forever. Cleared on STREAM_END /
     %% STREAM_ERROR / STREAM_REPLY (final frames) or on the timer.
-    streams   = #{}      :: #{<<_:128>> => {pid(), pid(), reference()}}
+    streams   = #{}      :: #{<<_:128>> => {pid(), pid(), reference()}},
+    %% Per-ConnPid `last_frame_at' (monotonic ms). Updated on every
+    %% inbound application frame. Drives the periodic conn-aging
+    %% sweep that force-closes daemon-class connections whose
+    %% counterpart has gone silent — peering_conn doesn't detect
+    %% dead daemon BEAMs until QUIC's idle-timeout fires (minutes),
+    %% which leaks conns_tab + DHT routing-table entries fast enough
+    %% to trip the cascade documented in
+    %% docs/CASCADE_INVESTIGATION.md.
+    last_frame_at = #{}  :: #{pid() => integer()}
 }).
 
 %% Hard upper bound on how long a forwarded CALL entry may live on
@@ -136,6 +145,17 @@
 %% STREAM_END / STREAM_REPLY frame, which removes the entry well
 %% before the timer fires.
 -define(STREAM_TTL_MS, 300_000).
+
+%% Conn-aging sweep cadence + idle threshold. A station-station
+%% peering_conn sees bloom + SWIM frames every few seconds;
+%% daemon-class peering_conn typically sees subscribe / publish /
+%% RPC frames at non-trivial intervals. 300_000 ms (5 min) is a
+%% generous threshold — anything older than that on a non-undefined
+%% slot in the conns map is presumed-dead and force-closed via
+%% `macula_peering:close/2'. The close fires DOWN naturally, which
+%% routes to `on_disconnected' for the normal cleanup path.
+-define(CONN_SWEEP_INTERVAL_MS, 60_000).
+-define(CONN_IDLE_THRESHOLD_MS, 300_000).
 
 %% Named ETS table mirroring the `conns' map so external callers
 %% (DHT transport, anyone routing wire frames by NodeId) read
@@ -210,6 +230,7 @@ init(#{dht := Dht, swim := Swim} = Opts)
                     self_id          = maps:get(self_id, Opts, undefined),
                     peers            = #{},
                     conns            = #{}},
+    erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
     %% Self-forming: derive the initial peers/conns view from the
     %% peer_links registry (canonical source of truth for outbound
     %% dials) instead of relying on having received every `connected'
@@ -274,7 +295,7 @@ handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId}, S) ->
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     logger:debug("[peer_observer] frame pid=~p type=~p",
                  [ConnPid, macula_frame:frame_type(Frame)]),
-    {noreply, on_frame(ConnPid, Frame, S)};
+    {noreply, on_frame(ConnPid, Frame, touch_conn(ConnPid, S))};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info({macula_peering, disconnected_outbound, ConnPid, _Reason}, S) ->
@@ -292,8 +313,49 @@ handle_info({forwarded_timeout, CallId}, #state{forwarded = F} = S) ->
     {noreply, on_forwarded_timeout(maps:take(CallId, F), S)};
 handle_info({stream_timeout, Sid}, #state{streams = St} = S) ->
     {noreply, on_stream_timeout(maps:take(Sid, St), S)};
+handle_info(conn_sweep, S) ->
+    erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
+    {noreply, run_conn_sweep(S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
+
+%% Update last-frame timestamp for ConnPid. Called on every inbound
+%% application frame. Cheap — single map insert. Entries for
+%% unknown ConnPids are tolerated (frames may arrive between
+%% `connected' and the on_connected_directional handler running).
+touch_conn(ConnPid, #state{last_frame_at = LF} = S) ->
+    S#state{last_frame_at = LF#{ConnPid => now_ms()}}.
+
+%% Conn-aging sweep. Walks `last_frame_at' and force-closes any
+%% ConnPid that has been silent for longer than the idle threshold.
+%% The close fires DOWN naturally (peering_conn is monitored), which
+%% routes to `on_disconnected' for the standard cleanup. Stations
+%% that are talking (bloom + SWIM every few seconds) never trip
+%% this; daemon-class connections whose counterpart BEAM has gone
+%% silent get drained within one threshold window.
+%%
+%% Also prunes `last_frame_at' entries whose ConnPid is no longer
+%% in the `peers' map — defensive, in case a DOWN message was lost.
+run_conn_sweep(#state{last_frame_at = LF, peers = P} = S) ->
+    Cutoff = now_ms() - ?CONN_IDLE_THRESHOLD_MS,
+    {Stale, Live} =
+        maps:fold(
+          fun(Pid, Last, {StaleAcc, LiveAcc}) ->
+              case {maps:is_key(Pid, P), Last < Cutoff} of
+                  {false, _}    -> {StaleAcc, LiveAcc};   % orphan, drop silently
+                  {true,  true} -> {[Pid | StaleAcc], LiveAcc#{Pid => Last}};
+                  {true, false} -> {StaleAcc, LiveAcc#{Pid => Last}}
+              end
+          end, {[], #{}}, LF),
+    case Stale of
+        [] -> ok;
+        _  ->
+            logger:info("[peer_observer] conn_sweep closing ~p stale conns "
+                        "(idle >~p ms)",
+                        [length(Stale), ?CONN_IDLE_THRESHOLD_MS])
+    end,
+    [catch macula_peering:close(Pid, conn_idle_timeout) || Pid <- Stale],
+    S#state{last_frame_at = Live}.
 
 %% TTL fired with no reply ever arriving. The origin's station_link
 %% has already given up at the SDK level (its own deadline timer
@@ -323,7 +385,8 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 on_connected_directional(Direction, ConnPid, NodeId,
                          #state{dht = Dht, swim = Swim,
                                 peers = P, conns = C,
-                                direction_of_pid = D} = S) ->
+                                direction_of_pid = D,
+                                last_frame_at = LF} = S) ->
     %% Fire-and-forget admit. `macula_dht:observe/2' is a sync
     %% gen_server:call; under accumulated daemon-conn load the DHT
     %% server gets slow enough that the call times out (5s default)
@@ -347,7 +410,10 @@ on_connected_directional(Direction, ConnPid, NodeId,
     write_conn_table(NodeId, Updated),
     S#state{peers            = P#{ConnPid => NodeId},
             conns            = C#{NodeId => Updated},
-            direction_of_pid = D#{ConnPid => Direction}}.
+            direction_of_pid = D#{ConnPid => Direction},
+            last_frame_at    = LF#{ConnPid => now_ms()}}.
+
+now_ms() -> erlang:monotonic_time(millisecond).
 
 %% ETS mirror writers — must run from the gen_server process (table
 %% is `protected'). Both write the same value the `conns' map sees,
@@ -870,21 +936,41 @@ send_event_to_sub(_, _EventFrame) ->
 %% disconnected
 %%==================================================================
 
-on_disconnected(ConnPid, #state{swim = Swim, peers = P, conns = C,
+on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
+                                peers = P, conns = C,
                                 direction_of_pid = D,
                                 forwarded = F,
-                                remote_advertise = R} = S) ->
+                                remote_advertise = R,
+                                last_frame_at = LF} = S) ->
     NodeId    = maps:get(ConnPid, P, undefined),
     Direction = maps:get(ConnPid, D, undefined),
     NewConns  = drop_directional_conn(NodeId, Direction, ConnPid, C),
     %% Remove the peer from SWIM only when BOTH directions are gone —
     %% a mutual-peer with one direction still alive is still reachable.
     maybe_remove_if_isolated(NodeId, NewConns, Swim),
+    %% Same isolation rule for DHT: only forget when both directions
+    %% are gone. DHT routing-table entries are expensive to rebuild
+    %% (re-discovery via cross-station propagation), so keep them as
+    %% long as ANY connection to the NodeId remains. When isolation
+    %% IS reached, prune — without this, daemon entries leak forever
+    %% and macula_dht's mailbox grows unbounded under sustained load
+    %% (see docs/CASCADE_INVESTIGATION.md).
+    maybe_forget_if_isolated(NodeId, NewConns, Dht),
     maybe_purge_advertise(R, ConnPid),
     S#state{peers            = maps:remove(ConnPid, P),
             conns            = NewConns,
             direction_of_pid = maps:remove(ConnPid, D),
-            forwarded        = drop_forwarded_for(ConnPid, F)}.
+            forwarded        = drop_forwarded_for(ConnPid, F),
+            last_frame_at    = maps:remove(ConnPid, LF)}.
+
+maybe_forget_if_isolated(undefined, _NewConns, _Dht) ->
+    ok;
+maybe_forget_if_isolated(NodeId, NewConns, Dht) ->
+    case maps:find(NodeId, NewConns) of
+        error                                                -> macula_dht:forget(Dht, NodeId);
+        {ok, #{inbound := undefined, outbound := undefined}} -> macula_dht:forget(Dht, NodeId);
+        _                                                    -> ok
+    end.
 
 drop_directional_conn(undefined, _Direction, _ConnPid, C) ->
     C;
