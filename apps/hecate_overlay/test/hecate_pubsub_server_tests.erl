@@ -161,3 +161,125 @@ deliver_event_for_other_realm_returns_empty_test() ->
     }), Kp),
     ?assertEqual([], hecate_pubsub_server:deliver_event(Pid, External)),
     hecate_pubsub_server:stop(Pid).
+
+%%---------------------------------------------------------------------
+%% relay_event — per-hop re-sign + dedup
+%%---------------------------------------------------------------------
+
+relay_event_re_signs_with_server_identity_test() ->
+    R           = realm(),
+    SelfKp      = keypair(),
+    SelfPub     = macula_identity:public(SelfKp),
+    UpstreamKp  = keypair(),
+    UpstreamPub = macula_identity:public(UpstreamKp),
+    OriginPub   = id(7),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R, identity => SelfKp}),
+    ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
+    Inbound = macula_frame:sign(macula_frame:event(#{
+        topic         => <<"t">>,
+        realm         => R,
+        publisher     => OriginPub,
+        seq           => 99,
+        payload       => <<"x">>,
+        delivered_via => plumtree
+    }), UpstreamKp),
+    {ReSigned, Matched} = hecate_pubsub_server:relay_event(Pid, Inbound),
+    ?assertEqual([id(1)], Matched),
+    ?assertMatch({ok, _}, macula_frame:verify(ReSigned, SelfPub)),
+    ?assertMatch({error, signature_invalid},
+                 macula_frame:verify(ReSigned, UpstreamPub)),
+    ?assertEqual(OriginPub, maps:get(publisher,     ReSigned)),
+    ?assertEqual(99,        maps:get(seq,           ReSigned)),
+    ?assertEqual(plumtree,  maps:get(delivered_via, ReSigned)),
+    hecate_pubsub_server:stop(Pid).
+
+relay_event_dedups_on_publisher_seq_test() ->
+    R   = realm(),
+    Kp  = keypair(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R, identity => Kp}),
+    ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
+    Frame = macula_frame:sign(macula_frame:event(#{
+        topic         => <<"t">>,
+        realm         => R,
+        publisher     => id(42),
+        seq           => 7,
+        payload       => <<"x">>,
+        delivered_via => direct
+    }), keypair()),
+    %% First arrival: process normally.
+    ?assertMatch({_ReSigned, [_]}, hecate_pubsub_server:relay_event(Pid, Frame)),
+    %% Second arrival of same {publisher, seq}: dropped as duplicate.
+    ?assertEqual({error, duplicate}, hecate_pubsub_server:relay_event(Pid, Frame)),
+    %% Different seq for same publisher: not a duplicate.
+    Frame2 = macula_frame:sign(macula_frame:event(#{
+        topic         => <<"t">>,
+        realm         => R,
+        publisher     => id(42),
+        seq           => 8,
+        payload       => <<"y">>,
+        delivered_via => direct
+    }), keypair()),
+    ?assertMatch({_ReSigned, [_]}, hecate_pubsub_server:relay_event(Pid, Frame2)),
+    hecate_pubsub_server:stop(Pid).
+
+relay_publish_dedups_on_publisher_seq_test() ->
+    R = realm(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R, identity => keypair()}),
+    ok = hecate_pubsub_server:subscribe(Pid, <<"t">>, id(1)),
+    Frame = macula_frame:sign(macula_frame:publish(#{
+        topic           => <<"t">>,
+        realm           => R,
+        publisher       => id(42),
+        seq             => 0,
+        payload         => <<"x">>,
+        published_at_ms => 0
+    }), keypair()),
+    ?assertMatch({_EventFrame, [_]}, hecate_pubsub_server:relay_publish(Pid, Frame)),
+    ?assertEqual({error, duplicate},
+                 hecate_pubsub_server:relay_publish(Pid, Frame)),
+    hecate_pubsub_server:stop(Pid).
+
+relay_event_dedup_evicts_after_ttl_test() ->
+    R = realm(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R,
+                    identity => keypair(),
+                    seen_ttl_ms => 50}),
+    Frame = macula_frame:sign(macula_frame:event(#{
+        topic         => <<"t">>,
+        realm         => R,
+        publisher     => id(42),
+        seq           => 1,
+        payload       => <<"x">>,
+        delivered_via => direct
+    }), keypair()),
+    ?assertMatch({_, _}, hecate_pubsub_server:relay_event(Pid, Frame)),
+    ?assertEqual({error, duplicate}, hecate_pubsub_server:relay_event(Pid, Frame)),
+    %% Drive a manual sweep; the periodic timer is 30s so we trigger
+    %% it directly to keep the test fast.
+    timer:sleep(80),
+    Pid ! seen_sweep,
+    timer:sleep(20),
+    %% After eviction, the same frame is fresh again.
+    ?assertMatch({_, _}, hecate_pubsub_server:relay_event(Pid, Frame)),
+    hecate_pubsub_server:stop(Pid).
+
+relay_event_for_other_realm_returns_error_test() ->
+    R1 = realm(),
+    R2 = realm(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R1, identity => keypair()}),
+    Inbound = macula_frame:sign(macula_frame:event(#{
+        topic         => <<"t">>,
+        realm         => R2,
+        publisher     => id(7),
+        seq           => 1,
+        payload       => <<"x">>,
+        delivered_via => direct
+    }), keypair()),
+    ?assertEqual({error, realm_mismatch},
+                 hecate_pubsub_server:relay_event(Pid, Inbound)),
+    hecate_pubsub_server:stop(Pid).
