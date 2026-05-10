@@ -59,6 +59,12 @@ Nothing runs yet. This is Phase 0 — acceptance is "empty umbrella compiles + C
 
 ---
 
+## Operational lessons
+
+- [`docs/PUBSUB_RESIGN_LOOP_LESSON.md`](docs/PUBSUB_RESIGN_LOOP_LESSON.md) — why the `[peer_observer] pubsub frame verify failed: signature_invalid` warning is load-bearing, what four protocol-side fixes regressed, and what a Phase 2 publisher-end-to-end signature attempt needs to know. Read before touching the relay path.
+
+---
+
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE).
