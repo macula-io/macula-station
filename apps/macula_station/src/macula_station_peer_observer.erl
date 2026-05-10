@@ -324,7 +324,17 @@ on_connected_directional(Direction, ConnPid, NodeId,
                          #state{dht = Dht, swim = Swim,
                                 peers = P, conns = C,
                                 direction_of_pid = D} = S) ->
-    _ = macula_dht:observe(Dht, direct_peer_spec(NodeId)),
+    %% Fire-and-forget admit. `macula_dht:observe/2' is a sync
+    %% gen_server:call; under accumulated daemon-conn load the DHT
+    %% server gets slow enough that the call times out (5s default)
+    %% and crashes peer_observer, taking the named conns ETS table
+    %% with it and triggering a fleet-wide cascade as the supervisor
+    %% restarts. The admit-result is unused here, so the cast variant
+    %% is strictly safer. SWIM is already cast (see `add_peer/3').
+    %% Empirical evidence: cascade root-cause investigation 2026-05-10
+    %% caught peer_observer dying with mailbox=504, exit=
+    %% gen_server:call timeout to macula_dht:observe.
+    macula_dht:observe_async(Dht, direct_peer_spec(NodeId)),
     ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
     %% Monitor ConnPid so observer cleans up on death without
     %% depending on a `disconnected' event flowing through some

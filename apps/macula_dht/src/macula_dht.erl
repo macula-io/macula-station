@@ -28,6 +28,7 @@
     start_link/1,
     stop/1,
     observe/2,
+    observe_async/2,
     touch/2,
     forget/2,
     self_id/1,
@@ -90,6 +91,17 @@ stop(Dht) ->
 -spec observe(dht(), macula_dht_entry:spec()) -> observe_result().
 observe(Dht, Spec) ->
     macula_dht_server:observe(Dht, Spec).
+
+%% @doc Fire-and-forget variant of `observe/2'. The peer is admitted
+%% to the routing table on a best-effort basis with no admit-result
+%% returned. Used on hot paths (e.g. `peer_observer:on_connected') so
+%% caller responsiveness doesn't depend on DHT-server load — a
+%% wedged DHT under accumulated peer state would otherwise time the
+%% caller's `gen_server:call' out and crash the caller.
+%% Mirrors `macula_swim:add_peer/3' which is also a cast.
+-spec observe_async(dht(), macula_dht_entry:spec()) -> ok.
+observe_async(Dht, Spec) ->
+    macula_dht_server:observe_async(Dht, Spec).
 
 -spec touch(dht(), macula_dht_xor:id()) -> ok.
 touch(Dht, Id) ->

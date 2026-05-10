@@ -42,6 +42,7 @@
     start_link/1,
     stop/1,
     observe/2,
+    observe_async/2,
     touch/2,
     forget/2,
     self_id/1,
@@ -177,6 +178,14 @@ stop(Pid) ->
 -spec observe(pid(), macula_dht_entry:spec()) -> observe_result().
 observe(Pid, Spec) when is_map(Spec) ->
     gen_server:call(Pid, {observe, Spec}).
+
+%% Fire-and-forget admit; same state mutation as `observe/2' but no
+%% admit-result reply. See `macula_dht:observe_async/2' for the
+%% why — short version: hot-path callers (peer_observer) shouldn't
+%% block on DHT-server load and shouldn't crash if it's wedged.
+-spec observe_async(pid(), macula_dht_entry:spec()) -> ok.
+observe_async(Pid, Spec) when is_map(Spec) ->
+    gen_server:cast(Pid, {observe_async, Spec}).
 
 -spec touch(pid(), macula_dht_xor:id()) -> ok.
 touch(Pid, <<_:256>> = Id) ->
@@ -422,6 +431,10 @@ handle_call({delete_record, Record}, _From, #state{record_store = Ets} = S) ->
 
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
+
+handle_cast({observe_async, Spec}, S) ->
+    {reply, _, NewS} = handle_observe(Spec, S),
+    {noreply, NewS};
 
 handle_cast({touch, Id}, #state{rt = Rt, sibs = Sibs} = S) ->
     Now = erlang:monotonic_time(millisecond),
