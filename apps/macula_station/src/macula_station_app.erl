@@ -42,6 +42,7 @@
 -define(MESH_REALM, <<0:256>>).
 
 start(_StartType, _StartArgs) ->
+    ok = macula_station_log_filters:install(),
     boot(macula_station_sup:start_link()).
 
 prep_stop(State) ->
