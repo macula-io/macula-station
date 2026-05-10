@@ -1,5 +1,11 @@
 # `subscribe_records/3` — substrate-SDK topic mismatch
 
+**Status: RESOLVED 2026-05-10.** Both probes green. Fix shipped in macula `v4.2.9` (SDK callback decode) + macula-station commit `57f4c8d` (per-type substrate publication on `_dht.records.<type>.stored`).
+
+This document is preserved as a record of what the gap was and how it was closed, for whichever future engineer hits a similar substrate-SDK contract mismatch.
+
+## Original report
+
 Surfaced 2026-05-10 by the new e2e probes `subscribe_records_local` and `subscribe_records_cross_station`. The SDK API doesn't fire because the substrate publishes record-stored events on a different pubsub topic than the SDK subscribes to.
 
 ## What the probes show
@@ -71,5 +77,10 @@ The DNS slice scaffold can proceed; the cache-invalidation PM should be sketched
 
 ## Commits
 
-- `12345...` (e2e) — added `subscribe_records_local` + `subscribe_records_cross_station` probes that surface this gap
-- (future) — substrate or SDK fix that closes the gap
+- `8831d1e` (macula-e2e) — added `subscribe_records_local` + `subscribe_records_cross_station` probes that surfaced the gap
+- `4a599c6` (macula-io/macula `v4.2.9`) — SDK side: `wrap_record_callback` decodes the wire payload via `macula_record:decode/1` before invoking the user fun
+- `57f4c8d` (macula-station) — substrate side: `record_fanout` publishes on `_dht.records.<type>.stored` for every record type, alongside the existing `_mesh.station.*` / `_mesh.daemon.*` topics
+- `983307f` (macula-station) — bumps macula dep 4.2.8 → 4.2.9 (hex)
+- `5c2cf1c` (macula-e2e) — same dep bump for the suite
+
+Verification: `subscribe_records_local` + `subscribe_records_cross_station` pass 6/6 across consecutive runs after the fix lands.
