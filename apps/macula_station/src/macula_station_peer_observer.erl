@@ -819,27 +819,11 @@ safe_lookup(Reg, Realm) ->
     end.
 
 deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
-    %% Re-sign with this station's identity before fan-out so peer
-    %% stations downstream see a frame whose signer matches their
-    %% connection's NodeId. Without this, the original publisher /
-    %% upstream-station signature triggers `signature_invalid' on
-    %% every multi-hop relay receiver. Same reasoning as the CALL /
-    %% RESULT claimed-signer fix in commit 05e0fbe, but applied via
-    %% per-hop re-sign rather than claimed-signer extraction —
-    %% pubsub EVENTs lack a publisher-end-to-end signature today
-    %% (Phase 1 simplification; see hecate_pubsub_server:relay_event/2).
-    on_relay_event(safe_relay_event(Server, EventFrame), Conns);
+    Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
+              catch _:_ -> []
+              end,
+    fan_out_event(EventFrame, Matched, Conns);
 deliver_inbound_event(_Other, _EventFrame, _Conns) ->
-    ok.
-
-safe_relay_event(Server, EventFrame) ->
-    try hecate_pubsub_server:relay_event(Server, EventFrame)
-    catch _:_ -> {error, relay_event_unavailable}
-    end.
-
-on_relay_event({Re_signed, Matched}, Conns) when is_list(Matched) ->
-    fan_out_event(Re_signed, Matched, Conns);
-on_relay_event(_Other, _Conns) ->
     ok.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->
