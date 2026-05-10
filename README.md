@@ -62,6 +62,7 @@ Nothing runs yet. This is Phase 0 — acceptance is "empty umbrella compiles + C
 ## Operational lessons
 
 - [`docs/PUBSUB_RESIGN_LOOP_LESSON.md`](docs/PUBSUB_RESIGN_LOOP_LESSON.md) — why the `[peer_observer] pubsub frame verify failed: signature_invalid` warning is load-bearing, what four protocol-side fixes regressed, and what a Phase 2 publisher-end-to-end signature attempt needs to know. Read before touching the relay path.
+- [`docs/CASCADE_INVESTIGATION.md`](docs/CASCADE_INVESTIGATION.md) — root-cause investigation of the e2e torture cascade. Confirmed mechanism (sync `gen_server:call` from `peer_observer` to `macula_dht:observe` times out under accumulated daemon-conn state, peer_observer dies, supervisor restart drops named ETS, fleet-wide cascade). Tactical fix shipped in commit `b0340b7`; conn-aging follow-up scoped from data.
 
 ---
 
