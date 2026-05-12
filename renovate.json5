@@ -1,0 +1,25 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // This repo consumes the `macula` SDK (and the macula_* helper
+  // packages). Renovate keeps them in lock-step with the latest
+  // published version and auto-merges the bump once CI is green — so a
+  // `macula` release rolls out here (and, via the image rebuild +
+  // watchtower / podman-auto-update, to the running fleet) with no
+  // hand edit. Scoped to the macula family only; everything else is
+  // left to the maintainer.
+  extends: ["config:recommended", ":dependencyDashboard"],
+  packageRules: [
+    {
+      matchPackageNames: ["!/^macula($|_)/"],
+      enabled: false,
+    },
+    {
+      matchPackageNames: ["/^macula($|_)/"],
+      groupName: "macula SDK",
+      automerge: true,
+      platformAutomerge: true,
+      minimumReleaseAge: "0 days",
+    },
+  ],
+  rebaseWhen: "behind-base-branch",
+}
