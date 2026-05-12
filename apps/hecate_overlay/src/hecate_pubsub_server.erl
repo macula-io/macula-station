@@ -204,16 +204,30 @@ do_relay_publish(_Frame, _S) ->
     {error, realm_mismatch}.
 
 build_relay_event(#{topic := T, realm := R, publisher := Pub,
-                    seq := Seq, payload := Pl},
+                    seq := Seq, payload := Pl} = PubFrame,
                   #state{identity = Id}) ->
-    macula_frame:sign(macula_frame:event(#{
-        topic         => T,
-        realm         => R,
-        publisher     => Pub,
-        seq           => Seq,
-        payload       => Pl,
-        delivered_via => direct
-    }), Id).
+    Spec0 = #{topic         => T,
+              realm         => R,
+              publisher     => Pub,
+              seq           => Seq,
+              payload       => Pl,
+              delivered_via => direct},
+    %% Carry the publisher-end-to-end signature onto the EVENT if the
+    %% inbound PUBLISH had one (pubsub Phase 2: a daemon with
+    %% `pubsub_emit_publisher_sig' enabled attaches it). Consumers and
+    %% relay stations then verify EVENT authenticity against the
+    %% publisher, not the relaying station — so the EVENT can be
+    %% relayed beyond one hop. We still attach our own per-hop
+    %% signature below: pre-4.4.0 stations on a relay path verify
+    %% against the conn NodeId, and that mismatch is still the loop
+    %% kill for EVENTs that carry no `publisher_sig'. `canonical_unsigned/1'
+    %% (macula >= 4.4.0) excludes `publisher_sig', so signing after
+    %% adding it leaves the per-hop signature valid.
+    Spec = case maps:get(publisher_sig, PubFrame, undefined) of
+               <<Sig:64/binary>> -> Spec0#{publisher_sig => Sig};
+               _                 -> Spec0
+           end,
+    macula_frame:sign(macula_frame:event(Spec), Id).
 
 handle_cast(_Msg, S) ->
     {noreply, S}.

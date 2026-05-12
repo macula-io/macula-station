@@ -536,7 +536,7 @@ dispatch(advertise, Frame, ConnPid, NodeId, S) ->
     deliver_advertise(macula_frame:verify(Frame, NodeId), Frame, ConnPid, NodeId, S),
     S;
 dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
-    deliver_pubsub(macula_frame:verify(Frame, NodeId), Frame, NodeId, S),
+    deliver_pubsub(verify_pubsub(Frame, NodeId), Frame, NodeId, S),
     S;
 dispatch(dht, Frame, _ConnPid, NodeId, #state{dht = Dht} = S) ->
     ok = macula_dht:handle_frame(Dht, NodeId, Frame),
@@ -844,6 +844,12 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
     %% Inbound PUBLISH from a remote daemon. Build the EVENT frame
     %% in the realm's pubsub_server, fan out to each matched local
     %% subscriber's peering connection.
+    %%
+    %% Seed the (publisher,seq) dedup at the origin so a looped-back
+    %% EVENT for this publish is recognised as a duplicate here too —
+    %% the cache is otherwise only `record'ed on the inbound EVENT
+    %% path, which would let the origin re-fan one extra round-trip.
+    record_origin_seq(Verified),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       Conns);
@@ -858,14 +864,21 @@ deliver_pubsub_typed(event, Realm, _NodeId, Verified,
     %% arrived at our listener but never reached the daemons that
     %% subscribed for the topic.
     %%
-    %% Pubsub Phase 2 step 2: feed (publisher, seq) to the dedup
-    %% cache and log loop-backs. We still deliver the duplicate — the
-    %% accidental verify mismatch is still the live loop kill (see
-    %% docs/PUBSUB_RESIGN_LOOP_LESSON.md). Step 3 makes the dedup the
-    %% loop kill (drop here) alongside switching EVENT verify to the
-    %% publisher signature and removing the relay re-sign.
-    note_event_dedup(Verified),
-    deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns);
+    %% Pubsub Phase 2 step 3: feed (publisher, seq) to the dedup
+    %% cache. A repeat of an EVENT that carries a publisher signature
+    %% is a loop-back we DROP — for publisher-signed EVENTs the dedup
+    %% cache is the cross-station loop kill (they verify end-to-end at
+    %% every hop, so the old verify-fail accident no longer bounds
+    %% them). A repeat of an EVENT WITHOUT a publisher_sig (a daemon
+    %% not yet emitting it) is logged but still delivered — those are
+    %% still bounded by the verify-fail mismatch one hop out, so the
+    %% dedup is observe-only for them.
+    case event_dedup_disposition(Verified) of
+        drop ->
+            ok;
+        deliver ->
+            deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns)
+    end;
 deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg}) ->
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
@@ -915,20 +928,58 @@ deliver_inbound_event(_Other, _EventFrame, _Conns) ->
 %% verify-fail accident currently kills, and that the dedup will kill
 %% in step 3). Never affects delivery here. Tolerates the cache being
 %% momentarily down (boot/restart) and frames missing the fields.
-note_event_dedup(#{publisher := Pub, seq := Seq} = Verified)
+%% Pubsub Phase 2 step 3 — record (publisher, seq) for an inbound
+%% EVENT and decide whether to deliver it or drop it as a loop-back.
+%%
+%%   * first sight              → `deliver'
+%%   * repeat + has publisher_sig → `drop' (the dedup IS the loop kill
+%%     for publisher-signed EVENTs; they verify end-to-end at every
+%%     hop, so the verify-fail accident no longer bounds them)
+%%   * repeat + no publisher_sig  → `deliver' (still bounded by the
+%%     verify-fail mismatch one hop out; the dedup just observes)
+%%   * missing publisher/seq     → `deliver' (cannot dedup; never drop
+%%     something we cannot key)
+event_dedup_disposition(#{publisher := Pub, seq := Seq} = V)
   when is_binary(Pub), is_integer(Seq) ->
-    case macula_station_event_dedup:seen_or_record(Pub, Seq) of
-        duplicate ->
-            logger:debug(
-              "[event_dedup] repeat event publisher=~s seq=~p topic=~s"
-              " (still delivered — verify-fail is the live loop kill;"
-              " dedup becomes the loop kill in step 3)",
-              [short_hex(Pub), Seq, maps:get(topic, Verified, <<>>)]);
-        new ->
-            ok
-    end;
-note_event_dedup(_Verified) ->
+    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V);
+event_dedup_disposition(_V) ->
+    deliver.
+
+classify_event_dup(new, _V) ->
+    deliver;
+classify_event_dup(duplicate, #{publisher_sig := _} = V) ->
+    logger:debug("[event_dedup] dropped loop-back EVENT publisher=~s seq=~p topic=~s",
+                 [short_hex(maps:get(publisher, V)), maps:get(seq, V),
+                  maps:get(topic, V, <<>>)]),
+    drop;
+classify_event_dup(duplicate, V) ->
+    logger:debug("[event_dedup] repeat EVENT publisher=~s seq=~p topic=~s"
+                 " (no publisher_sig — still delivered)",
+                 [short_hex(maps:get(publisher, V)), maps:get(seq, V),
+                  maps:get(topic, V, <<>>)]),
+    deliver.
+
+%% Seed the dedup cache from an inbound PUBLISH at its origin station,
+%% so a later looped-back EVENT for that publish is a recognised
+%% duplicate here too. Best-effort; ignores the result.
+record_origin_seq(#{publisher := Pub, seq := Seq})
+  when is_binary(Pub), is_integer(Seq) ->
+    _ = macula_station_event_dedup:seen_or_record(Pub, Seq),
+    ok;
+record_origin_seq(_Verified) ->
     ok.
+
+%% Pubsub Phase 2 step 3 — verify an inbound pubsub frame. An EVENT
+%% carrying a publisher-end-to-end signature is verified against the
+%% publisher (so it passes at any relay hop, not just one); loops are
+%% killed by `event_dedup_disposition/1', not by a verify mismatch.
+%% Everything else — SUBSCRIBE / UNSUBSCRIBE / PUBLISH, and EVENTs
+%% from a daemon not yet emitting `publisher_sig' — is verified
+%% against the connection's NodeId, exactly as before.
+verify_pubsub(#{frame_type := event, publisher_sig := _} = Frame, _NodeId) ->
+    macula_frame:verify_publisher(Frame);
+verify_pubsub(Frame, NodeId) ->
+    macula_frame:verify(Frame, NodeId).
 
 short_hex(B) when is_binary(B), byte_size(B) > 0 ->
     binary:encode_hex(binary:part(B, 0, min(8, byte_size(B))));

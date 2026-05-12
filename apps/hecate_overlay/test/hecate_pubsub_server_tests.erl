@@ -161,3 +161,50 @@ deliver_event_for_other_realm_returns_empty_test() ->
     }), Kp),
     ?assertEqual([], hecate_pubsub_server:deliver_event(Pid, External)),
     hecate_pubsub_server:stop(Pid).
+
+%%---------------------------------------------------------------------
+%% relay_publish — publisher_sig carried onto the EVENT (Phase 2)
+%%---------------------------------------------------------------------
+
+relay_publish_carries_publisher_sig_test() ->
+    R = realm(),
+    Pub = keypair(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R, identity => keypair()}),
+    Publish = macula_frame:sign_publisher(
+                macula_frame:publish(#{
+                    topic           => <<"io.macula/x/y/v1">>,
+                    realm           => R,
+                    publisher       => macula_identity:public(Pub),
+                    seq             => 9,
+                    payload         => #{a => 1},
+                    published_at_ms => 1_000}),
+                Pub),
+    {EventFrame, _Matched} = hecate_pubsub_server:relay_publish(Pid, Publish),
+    ?assertEqual(event, macula_frame:frame_type(EventFrame)),
+    ?assert(maps:is_key(publisher_sig, EventFrame)),
+    ?assertEqual(macula_identity:public(Pub), maps:get(publisher, EventFrame)),
+    %% The carried signature is still the *publisher's* — verifiable
+    %% end-to-end against the EVENT's own `publisher' field, no matter
+    %% which relay built the EVENT.
+    ?assertMatch({ok, _}, macula_frame:verify_publisher(EventFrame)),
+    %% ...and the relay's own per-hop signature is still intact (it is
+    %% covered separately; `publisher_sig' is excluded from those bytes).
+    ?assert(maps:is_key(signature, EventFrame)),
+    hecate_pubsub_server:stop(Pid).
+
+relay_publish_without_publisher_sig_yields_plain_event_test() ->
+    R = realm(),
+    Pub = keypair(),
+    {ok, Pid} = hecate_pubsub_server:start_link(
+                  #{realm => R, identity => keypair()}),
+    Publish = macula_frame:publish(#{
+                topic           => <<"t">>,
+                realm           => R,
+                publisher       => macula_identity:public(Pub),
+                seq             => 0,
+                payload         => ok,
+                published_at_ms => 1}),
+    {EventFrame, _} = hecate_pubsub_server:relay_publish(Pid, Publish),
+    ?assertNot(maps:is_key(publisher_sig, EventFrame)),
+    hecate_pubsub_server:stop(Pid).
