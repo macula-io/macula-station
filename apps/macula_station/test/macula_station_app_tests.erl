@@ -25,13 +25,18 @@ disabled_env_yields_static_children_only_test_() ->
             process_flag(trap_exit, true),
             {ok, Sup} = macula_station_app:start(normal, []),
             ?assert(is_pid(Sup)),
-            %% Two always-on infrastructure children:
-            %% record_fanout (singleton DHT-record fan-out) +
+            %% Three always-on infrastructure children:
+            %% event_dedup ((publisher,seq) pubsub-event dedup cache),
+            %% record_fanout (singleton DHT-record fan-out),
             %% peer_links (outbound station_link registry).
             %% supervisor:which_children/1 returns them in
-            %% reverse-start order, so fanout comes first.
+            %% reverse-start order, so the last-started (event_dedup)
+            %% comes first.
             Children = supervisor:which_children(Sup),
-            ?assertMatch([{macula_station_record_fanout,
+            ?assertMatch([{macula_station_event_dedup,
+                           _, worker,
+                           [macula_station_event_dedup]},
+                          {macula_station_record_fanout,
                            _, worker,
                            [macula_station_record_fanout]},
                           {macula_station_peer_links,

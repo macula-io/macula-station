@@ -857,6 +857,14 @@ deliver_pubsub_typed(event, Realm, _NodeId, Verified,
     %% the cross-station propagation chain — without it, EVENTs
     %% arrived at our listener but never reached the daemons that
     %% subscribed for the topic.
+    %%
+    %% Pubsub Phase 2 step 2: feed (publisher, seq) to the dedup
+    %% cache and log loop-backs. We still deliver the duplicate — the
+    %% accidental verify mismatch is still the live loop kill (see
+    %% docs/PUBSUB_RESIGN_LOOP_LESSON.md). Step 3 makes the dedup the
+    %% loop kill (drop here) alongside switching EVENT verify to the
+    %% publisher signature and removing the relay re-sign.
+    note_event_dedup(Verified),
     deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns);
 deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg}) ->
@@ -901,6 +909,31 @@ deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
     fan_out_event(EventFrame, Matched, Conns);
 deliver_inbound_event(_Other, _EventFrame, _Conns) ->
     ok.
+
+%% Pubsub Phase 2 step 2 — observe-only. Record (publisher, seq) in
+%% the dedup cache; on a repeat, log it (this is the loop-back the
+%% verify-fail accident currently kills, and that the dedup will kill
+%% in step 3). Never affects delivery here. Tolerates the cache being
+%% momentarily down (boot/restart) and frames missing the fields.
+note_event_dedup(#{publisher := Pub, seq := Seq} = Verified)
+  when is_binary(Pub), is_integer(Seq) ->
+    case macula_station_event_dedup:seen_or_record(Pub, Seq) of
+        duplicate ->
+            logger:debug(
+              "[event_dedup] repeat event publisher=~s seq=~p topic=~s"
+              " (still delivered — verify-fail is the live loop kill;"
+              " dedup becomes the loop kill in step 3)",
+              [short_hex(Pub), Seq, maps:get(topic, Verified, <<>>)]);
+        new ->
+            ok
+    end;
+note_event_dedup(_Verified) ->
+    ok.
+
+short_hex(B) when is_binary(B), byte_size(B) > 0 ->
+    binary:encode_hex(binary:part(B, 0, min(8, byte_size(B))));
+short_hex(_) ->
+    <<"?">>.
 
 on_relay_publish({ok, EventFrame, Matched}, Conns) ->
     fan_out_event(EventFrame, Matched, Conns);

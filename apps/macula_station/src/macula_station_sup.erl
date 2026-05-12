@@ -94,7 +94,23 @@ start_link() ->
 init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok, {SupFlags, [peer_links_child(),
-                     record_fanout_child()]}}.
+                     record_fanout_child(),
+                     event_dedup_child()]}}.
+
+%% `(publisher, seq)' pubsub-event dedup cache. Config-independent
+%% (one idle gen_server + a small ETS table when no traffic flows),
+%% so it lives here in `init/1' rather than the boot pipeline — like
+%% `peer_links' and `record_fanout'. Observe-only today (pubsub
+%% Phase 2 step 2); becomes the cross-station loop kill in step 3.
+event_dedup_child() ->
+    #{
+        id       => macula_station_event_dedup,
+        start    => {macula_station_event_dedup, start_link, []},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_event_dedup]
+    }.
 
 %% Outbound station_link registry — empty until an outbound dialer
 %% registers something. Started early because cross-relay fabric
