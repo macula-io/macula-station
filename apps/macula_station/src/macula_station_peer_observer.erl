@@ -802,13 +802,24 @@ on_advertise_match(true, R, Realm, Proc, Adv, ConnPid) ->
             ok;
         {error, not_found} ->
             macula_remote_advertise_registry:register(
-              R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid})
+              R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}),
+            %% Kick the router to re-propagate this fresh procedure to
+            %% our peers NOW, rather than waiting up to ?TICK_MS for
+            %% the next periodic sync. Mirrors what SUBSCRIBE does
+            %% (deliver_pubsub_typed(subscribe, ...) → notify_router_change/0).
+            %% Without this, ADVERTISE propagation is ~2s/hop, which
+            %% raced the e2e probes' 1.5s settle and surfaced as
+            %% `unknown_next_peer' on cross-station CALLs (and made
+            %% daemon catch-up RPC to macula-realm flaky).
+            notify_router_change()
     end.
 
 on_unadvertise_match(false, _R, _Realm, _Proc) ->
     ok;
 on_unadvertise_match(true, R, Realm, Proc) ->
-    macula_remote_advertise_registry:unregister(R, Realm, Proc).
+    macula_remote_advertise_registry:unregister(R, Realm, Proc),
+    %% Propagate the removal promptly too (see on_advertise_match/6).
+    notify_router_change().
 
 send_reply_to(error, _Reply) ->
     %% Caller's connection is gone — RESULT goes nowhere. The
