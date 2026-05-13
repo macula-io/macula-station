@@ -270,15 +270,42 @@ prune_dropped_peers(Advertised, PeerConns) ->
 %% direction rationale — bytes route to the peer's outbound_link →
 %% peer_observer dispatches ADVERTISE → registers in remote_advertise
 %% with us as the next-hop target).
+%%
+%% Reads from peer_observer's public ETS mirror
+%% (`macula_station_peer_observer_conns'), written by
+%% `write_conn_table/2' on every connection-state change. The earlier
+%% implementation called `sys:get_state(peer_observer, 1000)' here,
+%% which serialises behind peer_observer's gen_server mailbox. Under
+%% live-fleet DHT load that mailbox runs persistently 200-400 deep
+%% (~85% `{frame, store}'/`{frame, store_ack}'), so each tick spent
+%% ~1 s just reading state — and the router's own queue stayed ~320
+%% ticks deep, making `notify_router_change' kicks effectively
+%% invisible (cross_station_unary_rpc needed ?ADVERTISE_SETTLE_MS
+%% above 2 s to converge). Measured 2026-05-13:
+%%   - sys:get_state(peer_observer, 1000): 700-1000 ms per call
+%%   - ets:tab2list(?CONNS_TABLE):              50-100 µs per call
 peer_observer_conns() ->
+    try ets:tab2list(macula_station_peer_observer_conns) of
+        Entries ->
+            lists:foldl(fun({NodeId, PeerConns}, Acc) ->
+                pick_one_conn(NodeId, PeerConns, Acc)
+            end, #{}, Entries)
+    catch
+        error:badarg ->
+            %% Table missing — peer_observer not yet booted, or a
+            %% stub observer in tests doesn't own the named table.
+            %% Fall back to the gen_server path so the test seam
+            %% still works.
+            fallback_peer_observer_conns()
+    end.
+
+fallback_peer_observer_conns() ->
     case whereis(macula_station_peer_observer) of
         undefined -> #{};
         Pid       -> safe_peer_observer_conns(Pid)
     end.
 
 safe_peer_observer_conns(Pid) ->
-    %% sys:get_state is reasonable for a once-per-tick cost; the
-    %% peer_observer carries no large per-call state, just maps.
     try sys:get_state(Pid, 1_000) of
         State -> extract_conn_map(State)
     catch _:_ ->
