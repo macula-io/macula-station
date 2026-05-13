@@ -133,7 +133,7 @@ deliver_typed(publish, Realm, _NodeId, Verified, Reg, CT) ->
     record_origin_seq(Verified),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
-      read_conns(CT));
+      CT);
 
 %% Inbound EVENT — cross-station relay. Find local subscribers and
 %% fan out. The (publisher, seq) dedup cache is the loop-kill for
@@ -146,8 +146,7 @@ deliver_typed(event, Realm, _NodeId, Verified, Reg, CT) ->
         drop ->
             ok;
         deliver ->
-            deliver_inbound_event(safe_lookup(Reg, Realm), Verified,
-                                  read_conns(CT))
+            deliver_inbound_event(safe_lookup(Reg, Realm), Verified, CT)
     end;
 
 deliver_typed(subscribe, Realm, NodeId, Verified, Reg, _CT) ->
@@ -189,33 +188,39 @@ safe_lookup(Reg, Realm) ->
     catch _:_ -> {error, registry_unavailable}
     end.
 
-%% Read the (NodeId → #{inbound, outbound}) conns map from peer_observer's
-%% public ETS mirror — same bypass the router uses to avoid blocking on
-%% peer_observer's gen_server mailbox.
-read_conns(CT) ->
-    try ets:tab2list(CT) of
-        L -> maps:from_list(L)
-    catch _:_ -> #{}
-    end.
-
-deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
+deliver_inbound_event({ok, Server}, EventFrame, CT) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
-    fan_out_event(EventFrame, Matched, Conns);
-deliver_inbound_event(_Other, _EventFrame, _Conns) ->
+    fan_out_event(EventFrame, Matched, CT);
+deliver_inbound_event(_Other, _EventFrame, _CT) ->
     ok.
 
-on_relay_publish({ok, EventFrame, Matched}, Conns) ->
-    fan_out_event(EventFrame, Matched, Conns);
-on_relay_publish({error, _Reason}, _Conns) ->
+on_relay_publish({ok, EventFrame, Matched}, CT) ->
+    fan_out_event(EventFrame, Matched, CT);
+on_relay_publish({error, _Reason}, _CT) ->
     ok.
 
-fan_out_event(_EventFrame, [], _Conns) ->
+%% Fan-out walks the matched subscriber list and looks each one up in
+%% the conns ETS table directly. Previously this function received a
+%% pre-materialised map, but rebuilding that map for EVERY inbound
+%% event (via `ets:tab2list/1' + `maps:from_list/1' over a 40-entry
+%% table) added milliseconds-per-event of overhead — under the
+%% bypass the dispatcher mailbox climbed to 365k as a result.
+%% Per-NodeId `ets:lookup/2' is O(1) and ~µs.
+fan_out_event(_EventFrame, [], _CT) ->
     ok;
-fan_out_event(EventFrame, [Sub | Rest], Conns) ->
-    send_event_to_sub(maps:find(Sub, Conns), EventFrame),
-    fan_out_event(EventFrame, Rest, Conns).
+fan_out_event(EventFrame, [Sub | Rest], CT) ->
+    send_event_to_sub(ets_lookup_conn(CT, Sub), EventFrame),
+    fan_out_event(EventFrame, Rest, CT).
+
+ets_lookup_conn(CT, NodeId) ->
+    try ets:lookup(CT, NodeId) of
+        [{_, PeerConns}] -> {ok, PeerConns};
+        []               -> error
+    catch
+        _:_ -> error
+    end.
 
 %% EVENT delivery PREFERS the inbound conn — the one the peer originally
 %% sent its SUBSCRIBE through. Sending via outbound would land on the
