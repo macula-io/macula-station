@@ -362,12 +362,21 @@ dial_opts() ->
     compose_dial(observer(), persistent_term:get(?DIAL_KEY, undefined)).
 
 compose_dial({ok, Observer}, #{identity := _} = Template) ->
-    {ok, Template#{
+    Opts = Template#{
         role            => client,
         controlling_pid => Observer
-    }};
+    },
+    %% See macula_station_listener:peering_opts/1 for the rationale —
+    %% station→station outbound dials use the same direct-to-DHT
+    %% fast path as the accept side.
+    {ok, maybe_set_dht_recipient(Opts, whereis(macula_dht))};
 compose_dial(_ObserverResult, _Template) ->
     {error, not_started}.
+
+maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
+    Opts#{dht_recipient => DhtPid};
+maybe_set_dht_recipient(Opts, _) ->
+    Opts.
 
 resolve(Name) ->
     deliver(whereis(Name)).

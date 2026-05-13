@@ -403,7 +403,7 @@ maybe_close_old_worker(_, _, _) ->
 
 peering_opts(#{identity := Id, realms := R, capabilities := C,
                observer := Observer}) ->
-    #{
+    Base = #{
         role            => server,
         identity        => Id,
         realms          => R,
@@ -414,7 +414,20 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
         %% moment it transitions from `handshaking' to `connected'.
         %% Drives the handshaking → connected slot migration.
         accept_owner    => self()
-    }.
+    },
+    %% Route DHT-class frames directly to the DHT server, bypassing
+    %% the observer's mailbox. peer_observer at steady state runs
+    %% 200-400 deep under live DHT chatter (~85% of inbound frames
+    %% are store/store_ack); funnelling all of that through the same
+    %% gen_server delays everything else. SDK >= 4.4.3 honours this
+    %% opt; earlier SDKs ignore it and DHT frames flow via
+    %% controlling_pid (backward-compatible).
+    maybe_set_dht_recipient(Base, whereis(macula_dht)).
+
+maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
+    Opts#{dht_recipient => DhtPid};
+maybe_set_dht_recipient(Opts, _) ->
+    Opts.
 
 %% DOWN routing — a monitored worker died. Could be in either lifecycle
 %% map. Probe both; the matching entry is removed. Always also drop

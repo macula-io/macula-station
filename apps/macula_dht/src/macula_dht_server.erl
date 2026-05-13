@@ -467,6 +467,17 @@ handle_info({find_value_timeout, Key, PeerId}, S) ->
 handle_info({send_store_timeout, Key, PeerId}, S) ->
     {noreply, on_send_store_timeout(Key, PeerId, S)};
 
+%% Direct DHT-frame ingress from `macula_peering_conn' (when the SDK's
+%% `dht_recipient' opt is set to this server's pid). Bypasses the
+%% `macula_station_peer_observer' mailbox so DHT chatter — typically
+%% 85%+ of inbound frames at steady state — does not queue behind
+%% handler-dispatch and pubsub work in the observer. Same downstream
+%% as `handle_cast({frame, _, _})'.
+handle_info({macula_peering, dht_frame, _ConnPid, FromNodeId, Frame}, S)
+        when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32,
+             is_map(Frame) ->
+    {noreply, dispatch_frame(FromNodeId, Frame, S)};
+
 handle_info(_Msg, S) ->
     {noreply, S}.
 
