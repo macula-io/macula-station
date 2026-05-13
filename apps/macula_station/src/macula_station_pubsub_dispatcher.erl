@@ -112,8 +112,17 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %% Dispatch
 %%==================================================================
 
-handle_pubsub_frame({error, Reason}, _NodeId, _Frame, _S) ->
-    logger:warning("[pubsub_dispatcher] verify failed: ~p", [Reason]),
+handle_pubsub_frame({error, Reason}, NodeId, Frame, _S) ->
+    logger:warning(
+      "[pubsub_dispatcher] verify failed: ~p type=~p topic=~s "
+      "realm=~s peer_node_id=~s publisher=~s has_publisher_sig=~p",
+      [Reason,
+       macula_frame:frame_type(Frame),
+       maps:get(topic, Frame, <<>>),
+       short_hex(maps:get(realm, Frame, <<>>)),
+       short_hex(NodeId),
+       short_hex(maps:get(publisher, Frame, <<>>)),
+       maps:is_key(publisher_sig, Frame)]),
     ok;
 handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
                     #state{pubsub_registry = Reg,
