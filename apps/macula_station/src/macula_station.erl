@@ -362,20 +362,28 @@ dial_opts() ->
     compose_dial(observer(), persistent_term:get(?DIAL_KEY, undefined)).
 
 compose_dial({ok, Observer}, #{identity := _} = Template) ->
-    Opts = Template#{
+    Opts0 = Template#{
         role            => client,
         controlling_pid => Observer
     },
     %% See macula_station_listener:peering_opts/1 for the rationale —
-    %% station→station outbound dials use the same direct-to-DHT
-    %% fast path as the accept side.
-    {ok, maybe_set_dht_recipient(Opts, whereis(macula_dht))};
+    %% station→station outbound dials use the same direct-to-DHT /
+    %% direct-to-pubsub-dispatcher fast paths as the accept side.
+    Opts1 = maybe_set_dht_recipient(Opts0, whereis(macula_dht)),
+    Opts2 = maybe_set_pubsub_recipient(Opts1,
+                                       whereis(macula_station_pubsub_dispatcher)),
+    {ok, Opts2};
 compose_dial(_ObserverResult, _Template) ->
     {error, not_started}.
 
 maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
     Opts#{dht_recipient => DhtPid};
 maybe_set_dht_recipient(Opts, _) ->
+    Opts.
+
+maybe_set_pubsub_recipient(Opts, Pid) when is_pid(Pid) ->
+    Opts#{pubsub_recipient => Pid};
+maybe_set_pubsub_recipient(Opts, _) ->
     Opts.
 
 resolve(Name) ->

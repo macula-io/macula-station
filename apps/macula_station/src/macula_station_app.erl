@@ -139,6 +139,15 @@ boot_pubsub_registry(SupPid, #station_cfg{identity = Kp} = Cfg) ->
 on_pubsub_registry(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {pubsub_registry_start_failed, R});
 on_pubsub_registry(SupPid, Cfg, {ok, _Pid}) ->
+    boot_pubsub_dispatcher(SupPid, Cfg).
+
+boot_pubsub_dispatcher(SupPid, Cfg) ->
+    Spec = pubsub_dispatcher_child(),
+    on_pubsub_dispatcher(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
+
+on_pubsub_dispatcher(SupPid, _Cfg, {error, R}) ->
+    halt_sup(SupPid, {pubsub_dispatcher_start_failed, R});
+on_pubsub_dispatcher(SupPid, Cfg, {ok, _Pid}) ->
     boot_outbound_links(SupPid, Cfg).
 
 %%==================================================================
@@ -428,6 +437,17 @@ pubsub_registry_child(Kp) ->
         shutdown => 5_000,
         type     => worker,
         modules  => [hecate_pubsub_registry]
+    }.
+
+pubsub_dispatcher_child() ->
+    Opts = #{pubsub_registry => whereis(hecate_pubsub_registry)},
+    #{
+        id       => macula_station_pubsub_dispatcher,
+        start    => {macula_station_sup, start_pubsub_dispatcher, [Opts]},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_pubsub_dispatcher]
     }.
 
 outbound_links_sup_child(Kp, Caps, Peers) ->

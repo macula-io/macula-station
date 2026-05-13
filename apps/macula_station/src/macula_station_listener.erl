@@ -422,11 +422,25 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
     %% gen_server delays everything else. SDK >= 4.4.3 honours this
     %% opt; earlier SDKs ignore it and DHT frames flow via
     %% controlling_pid (backward-compatible).
-    maybe_set_dht_recipient(Base, whereis(macula_dht)).
+    Base1 = maybe_set_dht_recipient(Base, whereis(macula_dht)),
+    %% Route pubsub-class frames (subscribe, unsubscribe, publish,
+    %% event) to the dedicated pubsub dispatcher. After the DHT
+    %% bypass shipped (4.4.3), `event' frames became the dominant
+    %% load on peer_observer — multi-publisher cases fire bursts of
+    %% Ed25519-verify-per-event work. SDK >= 4.4.4 honours this opt;
+    %% earlier SDKs ignore it and pubsub frames flow via
+    %% controlling_pid (backward-compatible).
+    maybe_set_pubsub_recipient(Base1,
+                               whereis(macula_station_pubsub_dispatcher)).
 
 maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
     Opts#{dht_recipient => DhtPid};
 maybe_set_dht_recipient(Opts, _) ->
+    Opts.
+
+maybe_set_pubsub_recipient(Opts, Pid) when is_pid(Pid) ->
+    Opts#{pubsub_recipient => Pid};
+maybe_set_pubsub_recipient(Opts, _) ->
     Opts.
 
 %% DOWN routing — a monitored worker died. Could be in either lifecycle
