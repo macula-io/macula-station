@@ -144,3 +144,38 @@ Attempts 1–4 all kept the re-signing and tried to bolt loop prevention on top 
 - **`seq` persistence:** does a publisher's `seq` need to survive a daemon restart? If not, a restarted daemon resets `seq` to 0 → collides with cached `{publisher, seq}` from before the restart → its first events get deduped-as-duplicates and dropped. Mitigations: seed `seq` from `erlang:system_time/0` at boot; or include a per-session nonce in the dedup key; or accept the ≤ TTL-window blackout after restart.
 - **Authorization vs authenticity:** the publisher signature proves *authenticity* (this daemon emitted it), not *authorization* (this daemon may publish on this realm/topic). Realm-level publish authz is out of scope here — it belongs with realm membership credentials, not the station relay. Note it; don't conflate.
 - **`hecate_plumtree`:** retire it, or is it the intended long-term replacement for the `peering_router` + `fan_out_event` relay? If the latter, Phase 2 should land *into* a plumtree-based relay rather than the current ad-hoc one. Decide before step 3.
+
+---
+
+## Status (2026-05-13)
+
+| Step | What | State |
+|---|---|---|
+| 1 | `publisher_sig` frame plumbing (`macula_frame:sign_publisher/2`, `verify_publisher/1`; `canonical_unsigned/1` excludes it) | ✅ macula **4.4.0** |
+| 1b | `macula_station_link` emits `publisher_sig` on PUBLISH, gated on app env `pubsub_emit_publisher_sig` (default off) | ✅ macula **4.4.1** |
+| 2 | `macula_station_event_dedup` `(publisher,seq)` cache, observe-only; wired into `peer_observer:deliver_pubsub_typed(event,…)` | ✅ macula-station |
+| 3 | relay (`build_relay_event`) carries `publisher_sig` onto the EVENT; `peer_observer:dispatch(pubsub,…)` verifies EVENTs-with-`publisher_sig` against the publisher; dedup **drops** publisher-signed loop-backs; origin records its `(publisher,seq)` | ✅ macula-station |
+| 4 | `macula_station_link` verifies `publisher_sig` on inbound EVENTs (lenient; strict via `pubsub_strict_publisher_sig`); `hecate_app` mirrors `HECATE_PUBSUB_PUBLISHER_SIG`/`HECATE_PUBSUB_STRICT_PUBLISHER_SIG` env vars into those macula app envs | ✅ macula **4.4.2** + hecate-daemon |
+| 5 | delete dead `macula_station_peering_forwarder`/`_sup`; gut the forwarder bits from `peering_router` | ✅ (this commit) |
+
+### Cutover
+
+`HECATE_PUBSUB_PUBLISHER_SIG=true` was set on the beam daemon fleet 2026-05-13 (macula-demo `infrastructure/*/hecate-daemon.env.example` + `update-beam-relays.sh`). Verified: beam logs show `[hecate] macula pubsub_emit_publisher_sig enabled`; station `macula_station_event_dedup` live and counting loop-backs; no storm, no crashes.
+
+### macula-e2e (2026-05-13, against the live Leuven fleet, BOOTSTRAP=centrum BOOTSTRAP_OTHER=kessel-lo)
+
+- **cutover ON** (e2e pools also emit `publisher_sig`): **17/28** passed.
+- cutover OFF (baseline): 13/28 passed.
+
+→ The cutover is **non-regressive — slightly beneficial** (+4 cross-station probes). The remaining failures (`cross_station_pubsub` → `{no_event_in,75000}`; `cross_station_unary_rpc`/`streaming_rpc` → `unknown_next_peer`; the `*_many_concurrent_*` ones cascading off the e2e "other" pool going `noproc` mid-run) **fail in the baseline too** — they are pre-existing fleet cross-station-routing / e2e-flakiness issues, not Phase 2.
+
+### Still NOT done (deliberately — gated on cross-station pubsub actually being green)
+
+- **Drop the `replication_factor => 99` stopgap in hecate-daemon** (`hecate_mesh_client`). It's still what keeps mpong/pubsub working in the demo — `cross_station_pubsub` e2e is still red, so the stopgap (publish to *all* station links) is load-bearing until that's fixed.
+- **Remove the `signature_invalid` logger filter** (`macula_station_log_filters`). Still fires for unsigned EVENTs (`_mesh.bloom` gossip etc.), of which there are plenty.
+
+### Open follow-ups (separate from Phase 2)
+
+1. Why `cross_station_pubsub` doesn't deliver even with publisher-signed EVENTs — is it the e2e "other" pool crashing, or genuine non-delivery between specific stations? (centrum↔kessel-lo are direct peers, so 1-hop should suffice.)
+2. The `unknown_next_peer` cross-station RPC routing gap — the beam daemons hit it too on catch-up (`[catch_up.realm_licenses] replay RPC failed: {call_error,1,unknown_next_peer}`). The `peering_router`'s single-hop ADVERTISE propagation isn't covering the partial mesh.
+3. `seq` persistence across daemon restart (open question #2 in §5 above) — `macula_station_link`'s `publish_seq` resets to 0 on respawn → collides with cached `(publisher, 0)` in the dedup window.
