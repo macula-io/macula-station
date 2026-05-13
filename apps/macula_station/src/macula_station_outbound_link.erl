@@ -313,15 +313,45 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% remains complete; for `event' / `result' / `error' the observer
 %% path is a no-op for our consumers but it keeps logging + diagnostics
 %% intact.
-on_inbound_frame(Frame, Msg, S) ->
+on_inbound_frame(Frame, Msg, #state{peer_node_id = PeerNodeId,
+                                    conn_pid     = ConnPid} = S) ->
     NewS = case macula_frame:frame_type(Frame) of
         event  -> deliver_event(Frame, S);
         result -> deliver_result(Frame, S);
         error  -> deliver_call_error(Frame, S);
         _Other -> S
     end,
-    forward_to_observer(Msg),
+    forward_dispatch(macula_frame:frame_type(Frame), Frame,
+                     ConnPid, PeerNodeId, Msg),
     NewS.
+
+%% Route the wire frame to the right downstream observer. Pubsub frames
+%% go to the dedicated dispatcher (mirrors macula_peering_conn's
+%% pubsub_recipient route — see SDK 4.4.4); everything else still flows
+%% to peer_observer so its SWIM / DHT / advertise-registry / logging
+%% view stays complete. The local-subscriber delivery in `deliver_event`
+%% above already handled SDK-side fan-out for THIS link's subscribers
+%% (e.g. peering_router subscribing for cross-station mesh gossip);
+%% dispatcher additionally handles per-station pubsub_server fan-out
+%% to any daemons connected directly to this station.
+forward_dispatch(Type, Frame, ConnPid, NodeId, _Msg)
+        when (Type =:= subscribe orelse Type =:= unsubscribe orelse
+              Type =:= publish   orelse Type =:= event),
+             is_pid(ConnPid), is_binary(NodeId) ->
+    forward_pubsub(whereis(macula_station_pubsub_dispatcher),
+                   ConnPid, NodeId, Frame);
+forward_dispatch(_OtherType, _Frame, _ConnPid, _NodeId, Msg) ->
+    forward_to_observer(Msg).
+
+forward_pubsub(undefined, _ConnPid, _NodeId, _Frame) ->
+    %% Dispatcher not running (boot edge / restart); silently drop
+    %% rather than fall back to observer, since the observer's pubsub
+    %% paths have already been removed from the hot path in this
+    %% station version.
+    ok;
+forward_pubsub(Pid, ConnPid, NodeId, Frame) when is_pid(Pid) ->
+    Pid ! {macula_peering, pubsub_frame, ConnPid, NodeId, Frame},
+    ok.
 
 deliver_event(#{realm := Realm, topic := Topic} = Frame,
               #state{topic_index = Idx} = S) ->
