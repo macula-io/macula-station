@@ -20,7 +20,6 @@
 %%   <li>`macula_content_announcer' — content manifest announcer.</li>
 %%   <li>`macula_station_bloom_exchange' / `macula_station_peering_router' /
 %%       `macula_station_relay_ping' — cross-relay fabric.</li>
-%%   <li>`macula_station_forwarder_sup' — outbound forwarder pool.</li>
 %%   <li>`macula_station_peer_links' — outbound station_link registry.</li>
 %% </ul>
 %%
@@ -64,7 +63,7 @@
          start_content_handlers/1,
          start_dht_replicate/1, start_dht_republish/1, start_dht_expire/1,
          start_announcer/1, start_content_announcer/1,
-         start_forwarder_sup/0, start_bloom_exchange/1,
+         start_bloom_exchange/1,
          start_peering_router/1, start_relay_ping/1]).
 
 -define(DHT_NAME,                        macula_dht).
@@ -83,7 +82,6 @@
 -define(DHT_EXPIRE_NAME,                 macula_dht_expire).
 -define(ANNOUNCER_NAME,                  macula_station_announcer).
 -define(CONTENT_ANNOUNCER_NAME,          macula_content_announcer).
--define(FORWARDER_SUP_NAME,              macula_station_forwarder_sup).
 -define(BLOOM_EXCHANGE_NAME,             macula_station_bloom_exchange).
 -define(PEERING_ROUTER_NAME,             macula_station_peering_router).
 -define(RELAY_PING_NAME,                 macula_station_relay_ping).
@@ -226,11 +224,6 @@ start_announcer(Opts) ->
 start_content_announcer(Opts) ->
     register_result(macula_content_announcer:start_link(Opts),
                     ?CONTENT_ANNOUNCER_NAME).
-
--spec start_forwarder_sup() -> {ok, pid()} | {error, term()}.
-start_forwarder_sup() ->
-    register_result(macula_station_forwarder_sup:start_link(),
-                    ?FORWARDER_SUP_NAME).
 
 -spec start_bloom_exchange(macula_station_bloom_exchange:opts()) ->
     {ok, pid()} | {error, term()}.

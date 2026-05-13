@@ -23,8 +23,8 @@
 %%        dht_handlers → DHT custodians (replicate / republish /
 %%        expire) → SWIM → observer → listener → record_fanout
 %%        wiring + DHT callback install → announcer →
-%%        content_announcer (when enabled) → forwarder_sup →
-%%        bloom_exchange → peering_router → relay_ping →
+%%        content_announcer (when enabled) → bloom_exchange →
+%%        peering_router → relay_ping →
 %%        cache (optional) → rebootstrap (optional) → admin
 %%        (optional).
 %%
@@ -293,8 +293,8 @@ boot_record_fanout_wiring(SupPid, #station_cfg{identity = Kp} = Cfg,
     boot_announcer(SupPid, Cfg, DhtPid, ObserverPid).
 
 %%==================================================================
-%% Cross-relay fabric — announcer, content_announcer, forwarder_sup,
-%% bloom_exchange, peering_router, relay_ping.
+%% Cross-relay fabric — announcer, content_announcer, bloom_exchange,
+%% peering_router, relay_ping.
 %%==================================================================
 
 boot_announcer(SupPid, Cfg, DhtPid, ObserverPid) ->
@@ -315,29 +315,19 @@ boot_content_announcer(SupPid, Cfg, DhtPid) ->
 on_content_announcer(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {content_announcer_start_failed, R});
 on_content_announcer(SupPid, Cfg, {ok, _Pid}) ->
-    boot_forwarder_sup(SupPid, Cfg).
+    boot_bloom_exchange(SupPid, Cfg).
 
-boot_forwarder_sup(SupPid, Cfg) ->
-    Spec = forwarder_sup_child(),
-    on_forwarder_sup(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
-
-on_forwarder_sup(SupPid, _Cfg, {error, R}) ->
-    halt_sup(SupPid, {forwarder_sup_start_failed, R});
-on_forwarder_sup(SupPid, Cfg, {ok, FwdSup}) ->
-    boot_bloom_exchange(SupPid, Cfg, FwdSup).
-
-boot_bloom_exchange(SupPid, Cfg, FwdSup) ->
+boot_bloom_exchange(SupPid, Cfg) ->
     Spec = bloom_exchange_child(Cfg),
-    on_bloom_exchange(SupPid, Cfg, FwdSup,
-                      supervisor:start_child(SupPid, Spec)).
+    on_bloom_exchange(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
 
-on_bloom_exchange(SupPid, _Cfg, _FwdSup, {error, R}) ->
+on_bloom_exchange(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {bloom_exchange_start_failed, R});
-on_bloom_exchange(SupPid, Cfg, FwdSup, {ok, _Pid}) ->
-    boot_peering_router(SupPid, Cfg, FwdSup).
+on_bloom_exchange(SupPid, Cfg, {ok, _Pid}) ->
+    boot_peering_router(SupPid, Cfg).
 
-boot_peering_router(SupPid, Cfg, FwdSup) ->
-    Spec = peering_router_child(Cfg, FwdSup),
+boot_peering_router(SupPid, Cfg) ->
+    Spec = peering_router_child(Cfg),
     on_peering_router(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
 
 on_peering_router(SupPid, _Cfg, {error, R}) ->
@@ -642,16 +632,6 @@ content_announcer_child(#station_cfg{identity = Kp, bind = Bind, port = Port},
         modules  => [macula_content_announcer]
     }.
 
-forwarder_sup_child() ->
-    #{
-        id       => macula_station_forwarder_sup,
-        start    => {macula_station_sup, start_forwarder_sup, []},
-        restart  => permanent,
-        shutdown => 5_000,
-        type     => supervisor,
-        modules  => [macula_station_forwarder_sup]
-    }.
-
 bloom_exchange_child(#station_cfg{identity = Kp}) ->
     Opts = #{
         pubsub_registry => whereis(hecate_pubsub_registry),
@@ -666,16 +646,15 @@ bloom_exchange_child(#station_cfg{identity = Kp}) ->
         modules  => [macula_station_bloom_exchange]
     }.
 
-peering_router_child(#station_cfg{identity = Kp}, FwdSup) ->
+peering_router_child(#station_cfg{identity = Kp}) ->
     %% No `realm' opt — the router enumerates every materialised realm
     %% via `hecate_pubsub_registry:list_realms/1' on each tick and
-    %% reconciles forwarders + subscriptions per (Realm, Topic, Peer)
+    %% reconciles the subscribe-on-peer set per (Realm, Topic, Peer)
     %% triple. Pre-Gap-B versions hard-coded ?MESH_REALM here, which
     %% silently dropped every user-realm topic on the floor.
     Opts = #{
         pubsub_registry => whereis(hecate_pubsub_registry),
-        identity        => Kp,
-        forwarder_sup   => FwdSup
+        identity        => Kp
     },
     #{
         id       => macula_station_peering_router,
