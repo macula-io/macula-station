@@ -222,6 +222,11 @@ init(#{dht := Dht, swim := Swim} = Opts)
     ?CONNS_TABLE = ets:new(?CONNS_TABLE,
                            [named_table, protected, set,
                             {read_concurrency, true}]),
+    %% Telemetry histograms — see macula_station_frame_telemetry. Init
+    %% here so dispatch sites (in this module, the DHT server, and the
+    %% pubsub_dispatcher) can write without checking whether the table
+    %% exists. Idempotent.
+    ok = macula_station_frame_telemetry:init(),
     State0 = #state{dht              = Dht,
                     swim             = Swim,
                     handler_registry = maps:get(handler_registry, Opts, undefined),
@@ -293,9 +298,25 @@ handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId}, S) ->
                 [ConnPid, PeerNodeId]),
     {noreply, on_connected_directional(outbound, ConnPid, PeerNodeId, S)};
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
-    logger:debug("[peer_observer] frame pid=~p type=~p",
-                 [ConnPid, macula_frame:frame_type(Frame)]),
-    {noreply, on_frame(ConnPid, Frame, touch_conn(ConnPid, S))};
+    %% Legacy 4-tuple from peering_conn without `timing_enabled' — no
+    %% mailbox-wait timestamp available. Still record dispatch latency.
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
+    NewS = on_frame(ConnPid, Frame, touch_conn(ConnPid, S)),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    {noreply, NewS};
+handle_info({macula_peering, frame, ConnPid, Frame, RecvAtUs}, S) ->
+    %% 5-tuple from a peering_conn with `timing_enabled = true'. Compute
+    %% mailbox wait first, then time the dispatch body separately.
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, recv_to_dispatch,
+                                          T0 - RecvAtUs),
+    NewS = on_frame(ConnPid, Frame, touch_conn(ConnPid, S)),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    {noreply, NewS};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info({macula_peering, disconnected_outbound, ConnPid, _Reason}, S) ->

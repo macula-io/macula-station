@@ -413,7 +413,13 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
         %% {macula_peering, handshake_complete, self()} message the
         %% moment it transitions from `handshaking' to `connected'.
         %% Drives the handshaking → connected slot migration.
-        accept_owner    => self()
+        accept_owner    => self(),
+        %% Stamp `RecvAtUs' on every inbound-frame notification so
+        %% peer_observer / dht / pubsub_dispatcher can compute mailbox
+        %% wait. Requires macula >= 4.4.7; older SDK runtimes ignore
+        %% this opt and emit the legacy tuple shapes (which all three
+        %% recipients still match for backward compatibility).
+        timing_enabled  => true
     },
     %% Route DHT-class frames directly to the DHT server, bypassing
     %% the observer's mailbox. peer_observer at steady state runs

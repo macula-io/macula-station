@@ -94,13 +94,35 @@ handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame},
             #state{pubsub_registry = Reg} = S)
         when is_binary(NodeId), byte_size(NodeId) =:= 32,
              is_map(Frame), Reg =/= undefined ->
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
     handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame, S),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    {noreply, S};
+%% 6-tuple variant — peering_conn with `timing_enabled=true' (macula
+%% >= 4.4.7) stamps `RecvAtUs' at decode-time. Compute mailbox wait
+%% first, then time the dispatch body separately.
+handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame, RecvAtUs},
+            #state{pubsub_registry = Reg} = S)
+        when is_binary(NodeId), byte_size(NodeId) =:= 32,
+             is_map(Frame), Reg =/= undefined ->
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, recv_to_dispatch,
+                                          T0 - RecvAtUs),
+    handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame, S),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
     {noreply, S};
 handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame}, S) ->
     %% No registry yet — drop. peer_observer used to log a warning
     %% here; we keep the behaviour quiet because this branch only
     %% fires for a brief boot window or in tests that don't wire
     %% the registry.
+    {noreply, S};
+handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame, _T}, S) ->
+    %% Same fall-through for the 6-tuple shape.
     {noreply, S};
 handle_info(_Msg, S) ->
     {noreply, S}.

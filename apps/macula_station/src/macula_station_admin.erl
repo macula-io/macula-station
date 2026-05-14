@@ -233,6 +233,9 @@ dispatch(<<"GET">>,  [<<"ready">>],                   _Req) -> ready();
 dispatch(<<"GET">>,  [<<"status">>],                  _Req) -> status();
 dispatch(<<"GET">>,  [<<"dht">>, <<"stats">>],        _Req) -> dht_stats();
 dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
+dispatch(<<"GET">>,  [<<"telemetry">>, <<"frames">>], _Req) -> telemetry_frames();
+dispatch(<<"POST">>, [<<"telemetry">>, <<"frames">>, <<"reset">>], _Req) ->
+    telemetry_frames_reset();
 dispatch(<<"POST">>, [<<"bootstrap">>, <<"rerun">>],  _Req) -> bootstrap_rerun();
 dispatch(_Method, _Segments, _Req) ->
     not_found().
@@ -309,6 +312,29 @@ swim_members() ->
         _ ->
             json_response(503, not_started_body())
     end.
+
+telemetry_frames() ->
+    %% Snapshot of per-frame, per-phase, per-bucket histograms. The
+    %% station instruments three phases per inbound frame:
+    %%   recv_to_dispatch  — mailbox wait at the receiver (requires
+    %%                       SDK >= 4.4.7 with timing_enabled=true on
+    %%                       the source peering_conn; rows absent if
+    %%                       the conn predates that)
+    %%   dispatch_self     — CPU in the dispatch handler
+    %%   forward_send      — outbound relay send latency (not yet wired
+    %%                       in this commit; reserved for a follow-up)
+    json_response(200, #{
+        uptime_ms => uptime_ms(),
+        frames    => macula_station_frame_telemetry:snapshot()
+    }).
+
+telemetry_frames_reset() ->
+    ok = macula_station_frame_telemetry:reset(),
+    json_response(200, #{reset => true}).
+
+uptime_ms() ->
+    {Wallclock, _} = erlang:statistics(wall_clock),
+    Wallclock.
 
 bootstrap_rerun() ->
     run_rebootstrap(macula_station:dht()).

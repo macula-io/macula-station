@@ -476,7 +476,25 @@ handle_info({send_store_timeout, Key, PeerId}, S) ->
 handle_info({macula_peering, dht_frame, _ConnPid, FromNodeId, Frame}, S)
         when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32,
              is_map(Frame) ->
-    {noreply, dispatch_frame(FromNodeId, Frame, S)};
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
+    NewS = dispatch_frame(FromNodeId, Frame, S),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    {noreply, NewS};
+%% 6-tuple variant — peering_conn with `timing_enabled=true' stamps
+%% `RecvAtUs' at decode-time. Mailbox wait + dispatch split.
+handle_info({macula_peering, dht_frame, _ConnPid, FromNodeId, Frame, RecvAtUs}, S)
+        when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32,
+             is_map(Frame) ->
+    Type = macula_frame:frame_type(Frame),
+    T0 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, recv_to_dispatch,
+                                          T0 - RecvAtUs),
+    NewS = dispatch_frame(FromNodeId, Frame, S),
+    T1 = erlang:monotonic_time(microsecond),
+    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    {noreply, NewS};
 
 handle_info(_Msg, S) ->
     {noreply, S}.
