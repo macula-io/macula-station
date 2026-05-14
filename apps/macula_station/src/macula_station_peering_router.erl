@@ -120,9 +120,24 @@ handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info(tick, S) ->
+    %% Coalesce: every direct ADVERTISE / SUBSCRIBE on this station
+    %% sends `Pid ! tick' to nudge the router. Under load (lots of
+    %% daemons advertising at once), this can flood the mailbox with
+    %% thousands of idempotent ticks the router cannot drain — each
+    %% sync/1 call takes hundreds of ms because it touches every peer
+    %% conn. Drain queued ticks here so each pass of the mailbox
+    %% triggers exactly one sync.
+    ok = drain_ticks(),
     {noreply, schedule_tick(sync(S))};
 handle_info(_, S) ->
     {noreply, S}.
+
+drain_ticks() ->
+    receive
+        tick -> drain_ticks()
+    after 0 ->
+        ok
+    end.
 
 terminate(_Reason, _S) -> ok.
 
