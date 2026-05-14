@@ -608,8 +608,23 @@ local_lookup(Frame, #state{handler_registry = Registry}) ->
 on_call_lookup({ok, _Handler}, Frame, _ConnPid, NodeId,
                #state{handler_registry = Registry,
                       self_id = SelfId, conns = C} = S) ->
-    Reply = macula_handler_dispatch:dispatch_call(Frame, Registry, SelfId),
-    send_reply_to(primary_conn_lookup(maps:find(NodeId, C)), Reply),
+    %% Spawn a worker per local CALL so the observer doesn't block on
+    %% handler execution. DHT primitives like `_dht.find_record' do a
+    %% one-hop fanout that can sit for up to 1.7s waiting on remote
+    %% peers (?REMOTE_FIND_PER_PEER_MS = 1500ms + a small buffer);
+    %% running that inline serialised every concurrent CALL on this
+    %% station behind one another and turned 10 parallel finds into
+    %% ~17s, which surfaced as `cross_station_many_concurrent_dht_records'
+    %% timeouts. Observer state is read-only for the duration of the
+    %% handler — we snapshot the target ConnPid here and let the worker
+    %% send the reply over it directly.
+    Target = primary_conn_lookup(maps:find(NodeId, C)),
+    _ = spawn(fun() ->
+                  Reply = macula_handler_dispatch:dispatch_call(Frame,
+                                                                Registry,
+                                                                SelfId),
+                  send_reply_to(Target, Reply)
+              end),
     S;
 on_call_lookup({error, not_found}, Frame, ConnPid, NodeId, S) ->
     on_remote_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
