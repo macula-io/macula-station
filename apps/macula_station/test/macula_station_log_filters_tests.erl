@@ -20,6 +20,19 @@ drops_pubsub_signature_invalid_for_other_reasons_too_test() ->
     ?assertEqual(stop,
                  macula_station_log_filters:drop_pubsub_sig_invalid(Event, [])).
 
+drops_dispatcher_verify_failed_warning_test() ->
+    %% SDK 4.4.4 dispatcher path emits its own verify-failed warning
+    %% with a richer format. Same load-bearing loop-kill, same drop.
+    Event = #{level => warning,
+              msg   => {"[pubsub_dispatcher] verify failed: ~p type=~p "
+                        "topic=~s realm=~s peer_node_id=~s publisher=~s "
+                        "has_publisher_sig=~p",
+                        [signature_invalid, event, <<"_mesh.bloom">>,
+                         <<"abc">>, <<"def">>, <<"ghi">>, false]},
+              meta  => #{}},
+    ?assertEqual(stop,
+                 macula_station_log_filters:drop_pubsub_sig_invalid(Event, [])).
+
 passes_unrelated_warning_test() ->
     Event = #{level => warning,
               msg   => {"[handler_dispatch] handler crashed: ~p", [boom]},
