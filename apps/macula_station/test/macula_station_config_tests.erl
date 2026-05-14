@@ -77,7 +77,12 @@ from_env_json_happy_path_test_() ->
                 ?assertEqual("127.0.0.1",  Cfg#station_cfg.bind),
                 ?assertEqual(9000,         Cfg#station_cfg.port),
                 ?assertEqual(Dir,          Cfg#station_cfg.data_dir),
-                ?assertEqual(0,            Cfg#station_cfg.capabilities),
+                %% Config decode now OR-s in ?CAP_STATION (1 bsl 0)
+                %% so the station's CONNECT advertises its role —
+                %% lets the peer's peer_observer tell gossip relays
+                %% from direct daemon ADVERTISEs. Operator-supplied
+                %% bits add to that base.
+                ?assertEqual(1,            Cfg#station_cfg.capabilities),
                 ?assert(is_map(Cfg#station_cfg.identity)),
                 Expected = macula_station_identity:path_for(Dir),
                 ?assertEqual(Expected, Cfg#station_cfg.identity_file),

@@ -69,7 +69,16 @@
 
 -type entry() :: #{
     advertiser := node_id(),
-    conn_pid   := pid()
+    conn_pid   := pid(),
+    %% Optional. `direct' means the ADVERTISE came straight from the
+    %% peer named in `advertiser' (their connection's NodeId equals
+    %% `advertiser'). `gossip' means a peer station relayed it on
+    %% behalf of another node. The peer_observer's gate uses this to
+    %% decide whether a same-key re-register replaces or no-ops: a
+    %% direct entry trumps gossip, gossip is first-write-wins.
+    %% Pre-existing callers that don't pass `source' default to
+    %% `direct' so legacy registrations stay routable.
+    source     => direct | gossip
 }.
 
 -type opts() :: #{tombstone_ms => non_neg_integer()}.

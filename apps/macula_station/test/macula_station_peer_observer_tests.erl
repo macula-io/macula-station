@@ -7,6 +7,12 @@
 -module(macula_station_peer_observer_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+%% Offset of #state.is_station inside the observer's gen_server state
+%% tuple, for tests that inject the peer-station flag via
+%% sys:replace_state. Counted from the record def (tag=1, dht=2, ..,
+%% is_station=14). Update if the record order changes.
+-define(IS_STATION_INDEX, 14).
+
 %%==================================================================
 %% Connected → observes DHT + adds to SWIM.
 %%==================================================================
@@ -408,6 +414,105 @@ unadvertise_frame_clears_handler_test_() ->
                     _                  -> false
                 end
             end, 500)
+        end
+     end}.
+
+direct_advertise_replaces_gossip_entry_test_() ->
+    %% A station-flagged peer's ADVERTISE is gossip; if no entry
+    %% exists it registers (source=gossip). When the actual daemon
+    %% then connects directly and ADVERTISEs the same (Realm, Proc),
+    %% the direct entry MUST replace the gossip entry (so CALL
+    %% forwarding goes daemon-direct instead of via the relay).
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            StationKp = macula_identity:generate(),
+            StationId = macula_identity:public(StationKp),
+            DaemonId  = macula_identity:public(AdvKp),
+            StationConn = spawn_dummy(),
+            DaemonConn  = spawn_dummy(),
+            Realm    = <<7:256>>,
+            Procedure = <<"_p.gossip_then_direct">>,
+            %% Inject StationId → true into observer state BEFORE the
+            %% connected notify, so the gossip path picks it up.
+            Obs ! {macula_peering, connected, StationConn, StationId},
+            wait_for_peers(Obs, 1, 500),
+            sys:replace_state(Obs, fun(S) ->
+                IsStMap = element(?IS_STATION_INDEX, S),
+                setelement(?IS_STATION_INDEX, S, IsStMap#{StationId => true})
+            end),
+            %% Station gossips an ADVERTISE on behalf of itself (the
+            %% relayer's advertiser field is its own NodeId, per the
+            %% real router behaviour).
+            advertise(Obs, StationConn, StationKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{conn_pid := StationConn, source := gossip}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            %% Now daemon connects directly and ADVERTISEs same key.
+            Obs ! {macula_peering, connected, DaemonConn, DaemonId},
+            wait_for_peers(Obs, 2, 500),
+            advertise(Obs, DaemonConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{conn_pid := DaemonConn, source := direct}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            {ok, Entry} = macula_remote_advertise_registry:lookup(
+                            Ra, Realm, Procedure),
+            ?assertEqual(DaemonConn, maps:get(conn_pid, Entry)),
+            ?assertEqual(DaemonId,   maps:get(advertiser, Entry)),
+            ?assertEqual(direct,     maps:get(source, Entry))
+        end
+     end}.
+
+gossip_does_not_replace_direct_entry_test_() ->
+    %% Opposite of the above: with a direct entry already in place,
+    %% a gossip ADVERTISE for the same key must NOT overwrite it
+    %% (first-write-wins for gossip preserves the optimal route).
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            StationKp = macula_identity:generate(),
+            StationId = macula_identity:public(StationKp),
+            DaemonId  = macula_identity:public(AdvKp),
+            DaemonConn  = spawn_dummy(),
+            StationConn = spawn_dummy(),
+            Realm    = <<7:256>>,
+            Procedure = <<"_p.direct_then_gossip">>,
+            Obs ! {macula_peering, connected, DaemonConn, DaemonId},
+            wait_for_peers(Obs, 1, 500),
+            %% Direct first.
+            advertise(Obs, DaemonConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{conn_pid := DaemonConn, source := direct}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            %% Station connects, flagged as station.
+            Obs ! {macula_peering, connected, StationConn, StationId},
+            wait_for_peers(Obs, 2, 500),
+            sys:replace_state(Obs, fun(S) ->
+                IsStMap = element(?IS_STATION_INDEX, S),
+                setelement(?IS_STATION_INDEX, S, IsStMap#{StationId => true})
+            end),
+            %% Gossip ADVERTISE for the same key — must NOT win.
+            advertise(Obs, StationConn, StationKp, Realm, Procedure),
+            timer:sleep(100),
+            {ok, Entry} = macula_remote_advertise_registry:lookup(
+                            Ra, Realm, Procedure),
+            ?assertEqual(DaemonConn, maps:get(conn_pid, Entry)),
+            ?assertEqual(DaemonId,   maps:get(advertiser, Entry)),
+            ?assertEqual(direct,     maps:get(source, Entry))
         end
      end}.
 

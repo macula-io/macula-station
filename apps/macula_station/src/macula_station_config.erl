@@ -78,6 +78,16 @@
 
 -type station_cfg() :: #station_cfg{}.
 
+%% Capability bit asserting "I am a relay station" — OR'd into every
+%% CONNECT / HELLO frame emitted from this app. The peer's
+%% `peer_observer' reads this on the inbound `connected' notify (via
+%% `macula_peering:peer_capabilities/1', SDK 4.5.0+) to tell
+%% station-to-station gossip ADVERTISEs from direct daemon
+%% ADVERTISEs at frame-dispatch time. Daemons leave the bit unset.
+%% Matches the SDK's `?CAP_STATION' define in `macula_peering.erl';
+%% redefined here because `-define' isn't visible across modules.
+-define(CAP_STATION, 16#0000_0000_0000_0001).
+
 %%==================================================================
 %% Legacy map API — walking-skeleton / chaos CT.
 %%==================================================================
@@ -224,7 +234,7 @@ build_record_from_json(M) ->
         port                   = maps:get(<<"port">>, M),
         certfile               = to_str(maps:get(<<"certfile">>, M)),
         keyfile                = to_str(maps:get(<<"keyfile">>, M)),
-        capabilities           = maps:get(<<"capabilities">>, M, 0),
+        capabilities           = maps:get(<<"capabilities">>, M, 0) bor ?CAP_STATION,
         cache_cfg              = decode_cache_json(maps:get(<<"cache">>, M, undefined)),
         rebootstrap_cfg        = decode_rebootstrap_json(maps:get(<<"rebootstrap">>, M, undefined)),
         admin_cfg              = decode_admin_json(maps:get(<<"admin">>, M, undefined)),
@@ -377,7 +387,7 @@ finalise_app_env(Map0) ->
         port             = ensure_int(maps:get(port, Map)),
         certfile         = maps:get(certfile, Map),
         keyfile          = maps:get(keyfile, Map),
-        capabilities     = maps:get(capabilities, Map, 0),
+        capabilities     = maps:get(capabilities, Map, 0) bor ?CAP_STATION,
         cache_cfg        = decode_cache_app_env(maps:get(cache, Map, undefined)),
         rebootstrap_cfg  = decode_rebootstrap_app_env(maps:get(rebootstrap, Map, undefined)),
         admin_cfg        = decode_admin_app_env(maps:get(admin, Map, undefined))

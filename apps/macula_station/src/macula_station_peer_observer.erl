@@ -128,8 +128,24 @@
     %% which leaks conns_tab + DHT routing-table entries fast enough
     %% to trip the cascade documented in
     %% docs/CASCADE_INVESTIGATION.md.
-    last_frame_at = #{}  :: #{pid() => integer()}
+    last_frame_at = #{}  :: #{pid() => integer()},
+    %% NodeId → boolean asserting "this peer is a relay station".
+    %% Populated on `connected' from the peer's
+    %% `macula_peering:peer_capabilities/1' bitmask (SDK 4.5.0+).
+    %% Drives the direct-vs-gossip distinction in
+    %% `on_advertise_match/6': frames from a station-flagged peer
+    %% are gossip relays (first-write-wins keeps existing direct
+    %% entries); frames from non-station peers are direct daemon
+    %% advertises (always replace, so a daemon's reconnect or
+    %% mobility-across-stations cannot get shadowed by an older
+    %% gossip echo). Pre-4.5.0 SDKs report 0, which evaluates as
+    %% "daemon" — preserves legacy behaviour.
+    is_station    = #{}  :: #{macula_identity:pubkey() => boolean()}
 }).
+
+%% Capability bit asserting a peer is a relay station. Matches
+%% macula_peering:?CAP_STATION (1 bsl 0). See macula_station_config.
+-define(CAP_STATION, 16#0000_0000_0000_0001).
 
 %% Hard upper bound on how long a forwarded CALL entry may live on
 %% the relay. Above any reasonable per-call deadline (the longest
@@ -337,6 +353,16 @@ handle_info({stream_timeout, Sid}, #state{streams = St} = S) ->
 handle_info(conn_sweep, S) ->
     erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
     {noreply, run_conn_sweep(S)};
+handle_info({is_station_resolved, NodeId, Flag}, #state{is_station = IsSt,
+                                                        conns      = C} = S) ->
+    %% Apply the deferred peer_capabilities answer iff the NodeId is
+    %% still connected. A race-disconnect would have already removed
+    %% the entry via `drop_is_station_if_isolated/3'; preserve that
+    %% by gating on conns containing the NodeId.
+    case maps:is_key(NodeId, C) of
+        true  -> {noreply, S#state{is_station = IsSt#{NodeId => Flag}}};
+        false -> {noreply, S}
+    end;
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -429,10 +455,48 @@ on_connected_directional(Direction, ConnPid, NodeId, S0) ->
     Existing = maps:get(NodeId, S1#state.conns, empty_peer_conns()),
     Updated  = Existing#{Direction => ConnPid},
     write_conn_table(NodeId, Updated),
+    %% Async-populate the is_station flag: a synchronous
+    %% `macula_peering:peer_capabilities/1' call here would block the
+    %% observer's gen_server for up to its own timeout (~1s) per
+    %% connect, serialising the entire dispatch path behind it. Spawn
+    %% a transient worker that does the call + casts the answer back
+    %% via `{is_station_resolved, NodeId, bool}'. Default the entry to
+    %% `false' (daemon) so any ADVERTISE arriving before the resolver
+    %% replies is treated as direct — which is the legacy behaviour
+    %% and the right answer for the daemon case (and for the gossip
+    %% case the resolver flips it shortly after, before steady-state
+    %% propagation).
+    spawn_resolve_is_station(ConnPid, NodeId),
     S1#state{peers            = (S1#state.peers)#{ConnPid => NodeId},
              conns            = (S1#state.conns)#{NodeId => Updated},
              direction_of_pid = (S1#state.direction_of_pid)#{ConnPid => Direction},
-             last_frame_at    = (S1#state.last_frame_at)#{ConnPid => now_ms()}}.
+             last_frame_at    = (S1#state.last_frame_at)#{ConnPid => now_ms()},
+             is_station       = maps:put(NodeId,
+                                         maps:get(NodeId, S1#state.is_station, false),
+                                         S1#state.is_station)}.
+
+spawn_resolve_is_station(ConnPid, NodeId) ->
+    Self = self(),
+    spawn(fun() ->
+        Flag = peer_is_station(ConnPid),
+        Self ! {is_station_resolved, NodeId, Flag}
+    end),
+    ok.
+
+%% Read the counterpart's capabilities bitmask post-handshake (SDK
+%% 4.5.0 added the getter; older SDKs report `not_connected', which
+%% we treat as "daemon" — same as if the bit were unset).
+peer_is_station(ConnPid) ->
+    case erlang:function_exported(macula_peering, peer_capabilities, 1) of
+        false -> false;
+        true  ->
+            case macula_peering:peer_capabilities(ConnPid) of
+                {ok, Caps} when is_integer(Caps) ->
+                    (Caps band ?CAP_STATION) =/= 0;
+                _ ->
+                    false
+            end
+    end.
 
 %% Evict any stale ConnPid sitting in the (NodeId, Direction) slot so
 %% the incoming ConnPid starts from a clean lane. Idempotent for the
@@ -849,52 +913,78 @@ relay_forwarded_reply({{Origin, TRef}, NewF}, Frame, S) ->
 deliver_advertise({error, _}, _Frame, _ConnPid, _NodeId, _S) ->
     ok;
 deliver_advertise({ok, Frame}, _OrigFrame, ConnPid, NodeId,
-                  #state{remote_advertise = R}) ->
+                  #state{remote_advertise = R, is_station = IsSt}) ->
     on_advertise_frame(R, macula_frame:frame_type(Frame), Frame,
-                       ConnPid, NodeId).
+                       ConnPid, NodeId, advertise_source(NodeId, IsSt)).
 
-on_advertise_frame(undefined, _Type, _Frame, _ConnPid, _NodeId) ->
+%% Classify an inbound ADVERTISE by whether the connection carrying
+%% it is a relay station (gossip) or a daemon (direct). Stations OR
+%% `?CAP_STATION' into their CONNECT capabilities; daemons leave it
+%% unset. Pre-4.5.0 SDKs read as `daemon` (legacy behaviour).
+advertise_source(NodeId, IsSt) ->
+    case maps:get(NodeId, IsSt, false) of
+        true  -> gossip;
+        false -> direct
+    end.
+
+on_advertise_frame(undefined, _Type, _Frame, _ConnPid, _NodeId, _Src) ->
     ok;
-on_advertise_frame(R, advertise, Frame, ConnPid, NodeId) ->
+on_advertise_frame(R, advertise, Frame, ConnPid, NodeId, Source) ->
     Realm     = maps:get(realm,      Frame),
     Procedure = maps:get(procedure,  Frame),
     Adv       = maps:get(advertiser, Frame),
     %% Reject mismatched advertiser to keep the per-conn invariant.
-    on_advertise_match(Adv =:= NodeId, R, Realm, Procedure, Adv, ConnPid);
-on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId) ->
+    on_advertise_match(Adv =:= NodeId, R, Realm, Procedure, Adv, ConnPid, Source);
+on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId, _Source) ->
     Realm     = maps:get(realm,      Frame),
     Procedure = maps:get(procedure,  Frame),
     Adv       = maps:get(advertiser, Frame),
     on_unadvertise_match(Adv =:= NodeId, R, Realm, Procedure).
 
-on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid) ->
+on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid, _Source) ->
     ok;
-on_advertise_match(true, R, Realm, Proc, Adv, ConnPid) ->
-    %% First-write-wins — a direct daemon ADVERTISE registers for
-    %% real; subsequent gossip echoes from peer stations (the same
-    %% (Realm, Proc) bouncing around the partial mesh via
-    %% peering_router's timer-based propagation) hit the existing
-    %% entry and skip. Without this guard a gossip echo would
-    %% overwrite the direct entry's daemon conn_pid with a peer-
-    %% station conn_pid, and CALL forwarding would bounce around
-    %% the mesh until the deadline expired instead of hitting the
-    %% real handler.
-    case macula_remote_advertise_registry:lookup(R, Realm, Proc) of
-        {ok, _Existing} ->
-            ok;
-        {error, not_found} ->
-            macula_remote_advertise_registry:register(
-              R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid}),
-            %% Kick the router to re-propagate this fresh procedure to
-            %% our peers NOW, rather than waiting up to ?TICK_MS for
-            %% the next periodic sync. Mirrors what SUBSCRIBE does
-            %% (deliver_pubsub_typed(subscribe, ...) → notify_router_change/0).
-            %% Without this, ADVERTISE propagation is ~2s/hop, which
-            %% raced the e2e probes' 1.5s settle and surfaced as
-            %% `unknown_next_peer' on cross-station CALLs (and made
-            %% daemon catch-up RPC to macula-realm flaky).
-            notify_router_change()
-    end.
+on_advertise_match(true, R, Realm, Proc, Adv, ConnPid, Source) ->
+    %% Direct vs gossip gate. A `direct' ADVERTISE comes straight
+    %% from the original daemon's connection (CAP_STATION unset) —
+    %% it always wins, replacing any existing entry. A `gossip'
+    %% ADVERTISE is relayed from another station (CAP_STATION set)
+    %% and is first-write-wins: it never overwrites a live entry.
+    %%
+    %% Without the gate, two failure modes alternate:
+    %%   * Pre-this-fix (gossip-always-skips-existing): a direct
+    %%     ADVERTISE arriving AFTER a gossip echo silently no-ops,
+    %%     so CALL routes via the gossip path (2+ hops) instead of
+    %%     direct, and daemon-mobility-across-stations strands
+    %%     forwarding loops.
+    %%   * No-gate (last-write-wins): a gossip echo bouncing back
+    %%     to the station that originated the direct entry would
+    %%     overwrite the daemon conn_pid with the peer-station
+    %%     conn_pid, sending CALLs on a roundtrip through the mesh.
+    %%
+    %% The router only re-propagates on a notify_router_change/0
+    %% kick, so we kick on every state-change (register OR replace),
+    %% not just on the not_found path. Otherwise a direct replace
+    %% of a stale gossip entry wouldn't trip the gossip-out diff.
+    Existing = macula_remote_advertise_registry:lookup(R, Realm, Proc),
+    on_advertise_gate(Existing, Source, R, Realm, Proc, Adv, ConnPid).
+
+on_advertise_gate({error, not_found}, Source, R, Realm, Proc, Adv, ConnPid) ->
+    macula_remote_advertise_registry:register(
+      R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid, source => Source}),
+    notify_router_change();
+on_advertise_gate({ok, #{conn_pid := ConnPid, advertiser := ExAdv}}, _Source,
+                  _R, _Realm, _Proc, Adv, ConnPid) when ExAdv =:= Adv ->
+    %% Exact same entry already there — no-op. Common case for
+    %% idempotent ADVERTISE replays.
+    ok;
+on_advertise_gate({ok, _Existing}, direct, R, Realm, Proc, Adv, ConnPid) ->
+    %% Direct trumps anything — replace.
+    macula_remote_advertise_registry:register(
+      R, Realm, Proc, #{advertiser => Adv, conn_pid => ConnPid, source => direct}),
+    notify_router_change();
+on_advertise_gate({ok, _Existing}, gossip, _R, _Realm, _Proc, _Adv, _ConnPid) ->
+    %% Gossip never overwrites a live entry; first-write-wins.
+    ok.
 
 on_unadvertise_match(false, _R, _Realm, _Proc) ->
     ok;
@@ -1134,11 +1224,13 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     %% (see docs/CASCADE_INVESTIGATION.md).
     maybe_forget_if_isolated(NodeId, NewConns, Dht),
     maybe_purge_advertise(R, ConnPid),
+    NewIsStation = drop_is_station_if_isolated(NodeId, NewConns, S#state.is_station),
     S#state{peers            = maps:remove(ConnPid, P),
             conns            = NewConns,
             direction_of_pid = maps:remove(ConnPid, D),
             forwarded        = drop_forwarded_for(ConnPid, F),
-            last_frame_at    = maps:remove(ConnPid, LF)}.
+            last_frame_at    = maps:remove(ConnPid, LF),
+            is_station       = NewIsStation}.
 
 maybe_forget_if_isolated(undefined, _NewConns, _Dht) ->
     ok;
@@ -1180,6 +1272,21 @@ on_cleared_peer_conns(NodeId, #{inbound := undefined, outbound := undefined}, C)
 on_cleared_peer_conns(NodeId, Cleared, C) ->
     write_conn_table(NodeId, Cleared),
     C#{NodeId => Cleared}.
+
+%% Drop the NodeId's is_station flag once ALL its conns are gone.
+%% Otherwise the flag would persist across full disconnects and a
+%% same-NodeId reconnect from a peer that has since rebooted with
+%% different capabilities would see stale state. Idempotent for
+%% never-seen NodeIds.
+drop_is_station_if_isolated(undefined, _NewConns, IsStation) ->
+    IsStation;
+drop_is_station_if_isolated(NodeId, NewConns, IsStation) ->
+    case maps:find(NodeId, NewConns) of
+        error -> maps:remove(NodeId, IsStation);
+        {ok, #{inbound := undefined, outbound := undefined}} ->
+            maps:remove(NodeId, IsStation);
+        _ -> IsStation
+    end.
 
 maybe_remove_if_isolated(undefined, _NewConns, _Swim) ->
     ok;
