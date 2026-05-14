@@ -411,6 +411,83 @@ unadvertise_frame_clears_handler_test_() ->
         end
      end}.
 
+reconnect_same_nodeid_purges_stale_advertise_test_() ->
+    %% Same-NodeId reconnect with a different ConnPid must evict the
+    %% old pid's remote-advertise entries synchronously, so a CALL
+    %% arriving immediately after the new `connected' notify finds an
+    %% empty registry instead of forwarding to the dead OldConnPid.
+    %% Closes the "watchtower restart → harness needs stub bounce"
+    %% regression.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            OldConn  = spawn_dummy(),
+            Realm    = <<7:256>>,
+            Procedure = <<"_p.reconnect">>,
+            %% Round 1: connect + advertise.
+            Obs ! {macula_peering, connected, OldConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            advertise(Obs, OldConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{conn_pid := OldConn}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            %% Round 2: SAME NodeId reconnects on a fresh ConnPid
+            %% WITHOUT a `disconnected' for OldConn ever firing.
+            %% Without the purge fix, the registry entry survives
+            %% pointing at OldConn — any inbound CALL would forward
+            %% to a Pid the SDK already considers dead.
+            NewConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, NewConn, AdvId},
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {error, not_found} -> true;
+                    _ -> false
+                end
+            end, 500),
+            ?assertEqual(
+               {error, not_found},
+               macula_remote_advertise_registry:lookup(Ra, Realm, Procedure))
+        end
+     end}.
+
+reconnect_same_pid_is_idempotent_test_() ->
+    %% Refiring `connected' for the SAME (NodeId, ConnPid) must not
+    %% purge the live advertise entries — the purge is gated on
+    %% pid-mismatch.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId    = macula_identity:public(AdvKp),
+            Conn     = spawn_dummy(),
+            Realm    = <<7:256>>,
+            Procedure = <<"_p.idempotent">>,
+            Obs ! {macula_peering, connected, Conn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            advertise(Obs, Conn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, _} -> true;
+                    _ -> false
+                end
+            end, 500),
+            %% Refire same (Conn, AdvId) — entry must survive.
+            Obs ! {macula_peering, connected, Conn, AdvId},
+            timer:sleep(50),
+            ?assertMatch(
+               {ok, #{conn_pid := Conn}},
+               macula_remote_advertise_registry:lookup(Ra, Realm, Procedure))
+        end
+     end}.
+
 inbound_call_forwards_to_advertiser_conn_test_() ->
     {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
      fun(Ctx) ->

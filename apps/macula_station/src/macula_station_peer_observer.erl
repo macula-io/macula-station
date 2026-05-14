@@ -396,11 +396,7 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% connected
 %%==================================================================
 
-on_connected_directional(Direction, ConnPid, NodeId,
-                         #state{dht = Dht, swim = Swim,
-                                peers = P, conns = C,
-                                direction_of_pid = D,
-                                last_frame_at = LF} = S) ->
+on_connected_directional(Direction, ConnPid, NodeId, S0) ->
     %% Fire-and-forget admit. `macula_dht:observe/2' is a sync
     %% gen_server:call; under accumulated daemon-conn load the DHT
     %% server gets slow enough that the call times out (5s default)
@@ -411,21 +407,55 @@ on_connected_directional(Direction, ConnPid, NodeId,
     %% Empirical evidence: cascade root-cause investigation 2026-05-10
     %% caught peer_observer dying with mailbox=504, exit=
     %% gen_server:call timeout to macula_dht:observe.
-    macula_dht:observe_async(Dht, direct_peer_spec(NodeId)),
-    ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
+    macula_dht:observe_async(S0#state.dht, direct_peer_spec(NodeId)),
+    ok = macula_swim:add_peer(S0#state.swim, NodeId, ConnPid),
     %% Monitor ConnPid so observer cleans up on death without
     %% depending on a `disconnected' event flowing through some
     %% controlling_pid we may or may not own. Idempotent re-monitoring
     %% is fine — extra DOWN messages hit `on_disconnected' which is
     %% map-remove based.
     _ = erlang:monitor(process, ConnPid),
-    Existing = maps:get(NodeId, C, empty_peer_conns()),
+    %% Same-NodeId reconnect: an OldConnPid is occupying our slot AND
+    %% it differs from the incoming one. The old QUIC conn died (or
+    %% never surfaced its `disconnected' notify), so cleanup never
+    %% ran for it. Synchronously evict the stale pid's state — remote
+    %% advertise registry entries, peers map mapping, direction map,
+    %% last_frame_at — so the new connection isn't shadowed by stale
+    %% routes pointing at a dead Pid. Without this the registry sends
+    %% inbound CALLs to the dead OldConnPid (silent drop, harness
+    %% timeout) until OldConnPid eventually dies and triggers
+    %% `on_disconnected'. Closes the "needs stub restart" regression.
+    S1 = purge_stale_slot(NodeId, Direction, ConnPid, S0),
+    Existing = maps:get(NodeId, S1#state.conns, empty_peer_conns()),
     Updated  = Existing#{Direction => ConnPid},
     write_conn_table(NodeId, Updated),
-    S#state{peers            = P#{ConnPid => NodeId},
-            conns            = C#{NodeId => Updated},
-            direction_of_pid = D#{ConnPid => Direction},
-            last_frame_at    = LF#{ConnPid => now_ms()}}.
+    S1#state{peers            = (S1#state.peers)#{ConnPid => NodeId},
+             conns            = (S1#state.conns)#{NodeId => Updated},
+             direction_of_pid = (S1#state.direction_of_pid)#{ConnPid => Direction},
+             last_frame_at    = (S1#state.last_frame_at)#{ConnPid => now_ms()}}.
+
+%% Evict any stale ConnPid sitting in the (NodeId, Direction) slot so
+%% the incoming ConnPid starts from a clean lane. Idempotent for the
+%% common no-stale case (slot empty or already pointing at NewPid).
+purge_stale_slot(NodeId, Direction, NewPid,
+                 #state{peers = P, conns = C, direction_of_pid = D,
+                        last_frame_at = LF, remote_advertise = R,
+                        forwarded = F} = S) ->
+    Existing = maps:get(NodeId, C, empty_peer_conns()),
+    case maps:get(Direction, Existing, undefined) of
+        undefined ->
+            S;
+        NewPid ->
+            %% Idempotent re-fire of `connected' for the same pid;
+            %% nothing stale to evict.
+            S;
+        OldPid when is_pid(OldPid) ->
+            maybe_purge_advertise(R, OldPid),
+            S#state{peers            = maps:remove(OldPid, P),
+                    direction_of_pid = maps:remove(OldPid, D),
+                    last_frame_at    = maps:remove(OldPid, LF),
+                    forwarded        = drop_forwarded_for(OldPid, F)}
+    end.
 
 now_ms() -> erlang:monotonic_time(millisecond).
 
