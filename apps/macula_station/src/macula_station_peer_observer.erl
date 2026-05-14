@@ -347,35 +347,28 @@ handle_info(_Msg, S) ->
 touch_conn(ConnPid, #state{last_frame_at = LF} = S) ->
     S#state{last_frame_at = LF#{ConnPid => now_ms()}}.
 
-%% Conn-aging sweep. Walks `last_frame_at' and force-closes any
-%% ConnPid that has been silent for longer than the idle threshold.
-%% The close fires DOWN naturally (peering_conn is monitored), which
-%% routes to `on_disconnected' for the standard cleanup. Stations
-%% that are talking (bloom + SWIM every few seconds) never trip
-%% this; daemon-class connections whose counterpart BEAM has gone
-%% silent get drained within one threshold window.
+%% Conn-aging sweep. Prunes `last_frame_at' entries whose ConnPid is
+%% no longer in the `peers' map — defensive, in case a DOWN message
+%% was lost.
 %%
-%% Also prunes `last_frame_at' entries whose ConnPid is no longer
-%% in the `peers' map — defensive, in case a DOWN message was lost.
+%% Previously this also force-closed any peering_conn that had been
+%% silent at the application layer for >?CONN_IDLE_THRESHOLD_MS. That
+%% was wrong: macula_quic runs a 15s keep_alive PING at the QUIC
+%% layer, so a live but app-idle peer has its QUIC kept alive by
+%% transport pings without sending any Macula frame the observer can
+%% see. Stations chatter on `_mesh.bloom' + SWIM and never trip the
+%% old threshold, but SDK pools that only call on demand (the e2e
+%% harness, ad-hoc CLI tools, anything not on a periodic publish
+%% cadence) do — and the sweep closed perfectly healthy connections
+%% from under them, which surfaced as `_dht.put_record' timeouts the
+%% moment a probe came in 5+ minutes after the last frame. Real
+%% failures (counterpart BEAM crashed, network partition) take down
+%% the QUIC connection within idle_timeout=300s, which fires DOWN
+%% through the peering_conn monitor and routes through
+%% `on_disconnected' for normal cleanup. We don't need a second
+%% app-layer liveness check on top of that.
 run_conn_sweep(#state{last_frame_at = LF, peers = P} = S) ->
-    Cutoff = now_ms() - ?CONN_IDLE_THRESHOLD_MS,
-    {Stale, Live} =
-        maps:fold(
-          fun(Pid, Last, {StaleAcc, LiveAcc}) ->
-              case {maps:is_key(Pid, P), Last < Cutoff} of
-                  {false, _}    -> {StaleAcc, LiveAcc};   % orphan, drop silently
-                  {true,  true} -> {[Pid | StaleAcc], LiveAcc#{Pid => Last}};
-                  {true, false} -> {StaleAcc, LiveAcc#{Pid => Last}}
-              end
-          end, {[], #{}}, LF),
-    case Stale of
-        [] -> ok;
-        _  ->
-            logger:info("[peer_observer] conn_sweep closing ~p stale conns "
-                        "(idle >~p ms)",
-                        [length(Stale), ?CONN_IDLE_THRESHOLD_MS])
-    end,
-    [catch macula_peering:close(Pid, conn_idle_timeout) || Pid <- Stale],
+    Live = maps:filter(fun(Pid, _Last) -> maps:is_key(Pid, P) end, LF),
     S#state{last_frame_at = Live}.
 
 %% TTL fired with no reply ever arriving. The origin's station_link
