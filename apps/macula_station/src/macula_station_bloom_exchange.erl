@@ -174,13 +174,42 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% Rebuild + broadcast
 %%====================================================================
 
-do_rebuild(#state{pubsub_registry = Reg} = S) ->
+do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB} = S) ->
+    %% Local bloom = topics this station's pubsub_registry holds
+    %% subscribers for. Direct interest only.
     Topics = safe_topics(Reg),
-    BF = lists:foldl(fun macula_station_bloom:add/2,
-                     macula_station_bloom:new(), Topics),
-    BloomBin = macula_station_bloom:to_binary(BF),
-    broadcast_filter(BloomBin),
-    S#state{local_bloom = BloomBin}.
+    LocalBF = lists:foldl(fun macula_station_bloom:add/2,
+                          macula_station_bloom:new(), Topics),
+    LocalBin = macula_station_bloom:to_binary(LocalBF),
+    %% Transitive bloom = local OR every peer's bloom. Lets topic
+    %% interest propagate beyond direct peers without an explicit
+    %% subscribe-gossip protocol. Loops are caught at EVENT delivery
+    %% by `macula_station_event_dedup' (`(publisher, seq)' cache,
+    %% Phase 2). Peer X receiving a transitive bloom that includes
+    %% X's own contribution would just forward an EVENT we have
+    %% already seen; dedup drops it. Bandwidth cost is one extra
+    %% EVENT per loop edge, bounded by mesh diameter and tick
+    %% interval. Convergence: log(diameter) ticks for full closure
+    %% — ~30-90s on the 10-station Leuven mesh; acceptable.
+    OutgoingBin = merge_with_peers(LocalBin, PB),
+    broadcast_filter(OutgoingBin),
+    S#state{local_bloom = LocalBin}.
+
+%% Bitwise-OR the local bloom with every peer bloom we've cached.
+%% Both inputs are 1024-byte filters; `macula_station_bloom:merge/2'
+%% is just an XOR-free union (binary OR).
+merge_with_peers(LocalBin, PeerBlooms) when map_size(PeerBlooms) =:= 0 ->
+    LocalBin;
+merge_with_peers(LocalBin, PeerBlooms) ->
+    Local = macula_station_bloom:from_binary(LocalBin),
+    Merged = maps:fold(
+        fun(_Pub, Bin, Acc) when is_binary(Bin), byte_size(Bin) =:= 1024 ->
+                macula_station_bloom:merge(
+                    Acc, macula_station_bloom:from_binary(Bin));
+           (_Pub, _BadBin, Acc) ->
+                Acc
+        end, Local, PeerBlooms),
+    macula_station_bloom:to_binary(Merged).
 
 %% Union of every locally-registered realm's topic set. The bloom is
 %% used by the cross-station forwarder to decide "does this peer care
