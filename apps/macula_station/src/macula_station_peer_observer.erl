@@ -536,6 +536,14 @@ claimed_replier(#{responded_by := <<_:256>> = Pub}) -> Pub;
 claimed_replier(#{reported_by  := <<_:256>> = Pub}) -> Pub;
 claimed_replier(_)                                  -> <<0:256>>.
 
+%% `signer' for non-OPEN stream frames (stream_data / stream_end /
+%% stream_error). SDK >= 4.4.9 stamps the emitter's pubkey here so
+%% multi-hop relays can verify the signature end-to-end. Older SDKs
+%% don't include the field; callers fall back to the inbound conn's
+%% NodeId (single-hop only).
+claimed_signer(#{signer := <<_:256>> = Pub}) -> Pub;
+claimed_signer(_)                            -> undefined.
+
 dispatch(swim, Frame, _ConnPid, NodeId, #state{swim = Swim} = S) ->
     deliver_swim(macula_frame:verify(Frame, NodeId), Frame, NodeId, Swim),
     S;
@@ -667,8 +675,23 @@ unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
 deliver_stream(stream_open, Frame, ConnPid, NodeId, S) ->
     on_stream_open_verify(macula_frame:verify(Frame, claimed_caller(Frame)),
                           Frame, ConnPid, NodeId, S);
+deliver_stream(stream_reply, Frame, ConnPid, _NodeId, S) ->
+    %% Signed end-to-end by `responded_by' — verify against that,
+    %% same pattern as on_call_reply. Multi-hop safe.
+    on_stream_relay(macula_frame:verify(Frame, claimed_replier(Frame)),
+                    Frame, ConnPid, S);
 deliver_stream(_Other, Frame, ConnPid, NodeId, S) ->
-    on_stream_relay(macula_frame:verify(Frame, NodeId), Frame, ConnPid, S).
+    %% stream_data / stream_end / stream_error: SDK >= 4.4.9 stamps the
+    %% emitter's pubkey in `signer'; verify against that. Frames from
+    %% older SDKs have no `signer' field — fall back to the inbound
+    %% conn's NodeId, which is correct for the single-hop direct edge
+    %% but fails on multi-hop. The fallback preserves the pre-4.4.9
+    %% behaviour during the rollout window.
+    Pub = case claimed_signer(Frame) of
+              undefined -> NodeId;
+              Signer    -> Signer
+          end,
+    on_stream_relay(macula_frame:verify(Frame, Pub), Frame, ConnPid, S).
 
 on_stream_open_verify({error, _}, _Frame, _ConnPid, _NodeId, S) ->
     S;
