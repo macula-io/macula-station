@@ -276,14 +276,13 @@ bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
     end.
 
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
-    case whereis(macula_station_bloom_exchange) of
-        undefined ->
-            [];
-        Pid ->
-            Candidates = macula_station_bloom_exchange:peer_matches(
-                           Pid, Topic),
-            filter_fan_candidates(Candidates, Matched, Excluded, CT)
-    end.
+    %% ETS-bypass: read the peer_blooms mirror directly. Avoids the
+    %% per-event `gen_server:call' to bloom_exchange that would
+    %% serialise the entire station's pubsub fan-out path under
+    %% sustained load (torture observed pubsub_dispatcher mailbox
+    %% backing up to 25k+ when this used the gen_server path).
+    Candidates = macula_station_bloom_exchange:peer_matches_ets(Topic),
+    filter_fan_candidates(Candidates, Matched, Excluded, CT).
 
 filter_fan_candidates(Candidates, Matched, Excluded, CT) ->
     Skip = sets:from_list(Matched ++ Excluded),

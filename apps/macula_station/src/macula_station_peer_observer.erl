@@ -1205,18 +1205,13 @@ bloom_fan_extras(EventFrame, Matched, Excluded, Conns) ->
     end.
 
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, Conns) ->
-    case whereis(macula_station_bloom_exchange) of
-        undefined ->
-            [];
-        Pid ->
-            Candidates = macula_station_bloom_exchange:peer_matches(
-                           Pid, Topic),
-            Skip = sets:from_list(Matched ++ Excluded),
-            [NodeId
-             || NodeId <- Candidates,
-                not sets:is_element(NodeId, Skip),
-                maps:is_key(NodeId, Conns)]
-    end.
+    %% ETS-bypass — see dispatcher's note for rationale.
+    Candidates = macula_station_bloom_exchange:peer_matches_ets(Topic),
+    Skip = sets:from_list(Matched ++ Excluded),
+    [NodeId
+     || NodeId <- Candidates,
+        not sets:is_element(NodeId, Skip),
+        maps:is_key(NodeId, Conns)].
 
 %% EVENT delivery deliberately PREFERS the inbound conn — the one
 %% through which the peer originally sent its SUBSCRIBE. The bytes

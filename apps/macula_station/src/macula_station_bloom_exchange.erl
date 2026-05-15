@@ -20,11 +20,20 @@
 -export([start_link/1, stop/1]).
 -export([rebuild_and_broadcast/1, receive_peer_bloom/3,
          notify_local_change/1,
-         get_local_bloom/1, peer_blooms/1, peer_matches/2]).
+         get_local_bloom/1, peer_blooms/1, peer_matches/2,
+         peer_matches_ets/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(REBUILD_INTERVAL_MS, 30_000).
+
+%% Public ETS table mirroring `peer_blooms'. Read-only consumers
+%% (notably `macula_station_pubsub_dispatcher's bloom-fan path) use
+%% this directly to avoid serialising every inbound EVENT through
+%% bloom_exchange's mailbox — a `gen_server:call' per event creates
+%% a per-station bottleneck under sustained pubsub load. Same
+%% pattern as `macula_station_peer_observer_conns' (commit d0f0c8a).
+-define(PEER_BLOOMS_TABLE, macula_station_peer_blooms).
 
 %% Push-on-change debounce. When a peer's bloom CHANGES (new publisher
 %% or a different filter from the same publisher), schedule an
@@ -131,12 +140,34 @@ peer_matches(Pid, Topic) when is_binary(Topic) ->
     catch _:_ -> []
     end.
 
+%% @doc ETS-bypass variant of `peer_matches/2'. Reads the
+%% `?PEER_BLOOMS_TABLE' mirror directly — no `gen_server:call', no
+%% serialisation through `bloom_exchange's mailbox. Use this on the
+%% pubsub hot path; the gen_server variant is for tests + status
+%% pages where the lookup rate is bounded.
+%%
+%% Returns `[]' when the table doesn't exist (boot edge / tests
+%% that don't start `bloom_exchange').
+-spec peer_matches_ets(binary()) -> [<<_:256>>].
+peer_matches_ets(Topic) when is_binary(Topic) ->
+    try ets:tab2list(?PEER_BLOOMS_TABLE) of
+        Entries ->
+            [NodeId
+             || {NodeId, BloomBin} <- Entries,
+                byte_size(BloomBin) =:= 1024,
+                macula_station_bloom:check(
+                  Topic, macula_station_bloom:from_binary(BloomBin))]
+    catch
+        error:badarg -> []
+    end.
+
 %%====================================================================
 %% gen_server
 %%====================================================================
 
 init(#{pubsub_registry := Reg, identity := Kp}) ->
     process_flag(trap_exit, true),
+    ensure_peer_blooms_table(),
     State = #state{
         pubsub_registry = Reg,
         identity        = Kp,
@@ -146,6 +177,19 @@ init(#{pubsub_registry := Reg, identity := Kp}) ->
         debounce_ref    = undefined
     },
     {ok, schedule_rebuild(State)}.
+
+%% Idempotent: a previous bloom_exchange instance owned the table
+%% via `named_table'; on its exit ETS deleted it; we recreate.
+%% `read_concurrency=true' biases the table for parallel reads from
+%% the dispatcher hot path.
+ensure_peer_blooms_table() ->
+    case ets:whereis(?PEER_BLOOMS_TABLE) of
+        undefined ->
+            ets:new(?PEER_BLOOMS_TABLE,
+                    [named_table, public, set, {read_concurrency, true}]);
+        _ ->
+            ?PEER_BLOOMS_TABLE
+    end.
 
 handle_call(get_local_bloom, _From, #state{local_bloom = LB} = S) ->
     {reply, LB, S};
@@ -340,9 +384,12 @@ empty_bloom_bin() ->
 %% (new entry or different bytes for an existing publisher), schedule
 %% a debounced rebuild so the new transitive interest propagates to
 %% our peers within ?DEBOUNCE_MS instead of waiting up to
-%% ?REBUILD_INTERVAL_MS.
+%% ?REBUILD_INTERVAL_MS. Always mirror to the public ETS table so
+%% the dispatcher hot path sees the latest bytes within the same
+%% wall-clock tick.
 record_peer_bloom(Key, BloomBin, PB, S) ->
     Changed = maps:get(Key, PB, undefined) =/= BloomBin,
+    catch ets:insert(?PEER_BLOOMS_TABLE, {Key, BloomBin}),
     S1 = S#state{peer_blooms = PB#{Key => BloomBin}},
     case Changed of
         true  -> schedule_debounced_rebuild(S1);
