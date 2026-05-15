@@ -19,6 +19,7 @@
 
 -export([start_link/1, stop/1]).
 -export([rebuild_and_broadcast/1, receive_peer_bloom/3,
+         notify_local_change/1,
          get_local_bloom/1, peer_blooms/1, peer_matches/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -86,6 +87,17 @@ receive_peer_bloom(Pid, PeerHostname, BloomBin)
   when is_binary(PeerHostname), is_binary(BloomBin) ->
     gen_server:cast(Pid, {peer_bloom, PeerHostname, BloomBin}).
 
+%% @doc Signal that the LOCAL pubsub topic set may have changed
+%% (e.g. an inbound SUBSCRIBE / UNSUBSCRIBE frame registered or
+%% removed a topic on a local pubsub_server). Schedules a debounced
+%% rebuild so the next outgoing Bloom reflects the new topic set
+%% within `?DEBOUNCE_MS' instead of waiting up to
+%% `?REBUILD_INTERVAL_MS' for the periodic tick. Idempotent and
+%% coalescing.
+-spec notify_local_change(pid()) -> ok.
+notify_local_change(Pid) ->
+    gen_server:cast(Pid, local_change).
+
 %% @doc Snapshot of the current local filter.
 -spec get_local_bloom(pid()) -> binary().
 get_local_bloom(Pid) ->
@@ -147,6 +159,12 @@ handle_cast({peer_bloom, Host, BloomBin}, #state{peer_blooms = PB} = S)
     {noreply, record_peer_bloom(Host, BloomBin, PB, S)};
 handle_cast({peer_bloom, _, _}, S) ->
     {noreply, S};
+handle_cast(local_change, S) ->
+    %% Cheap to schedule even if topics haven't actually changed
+    %% — the rebuild reads pubsub_registry which is the source of
+    %% truth, and the debounce coalesces a burst of subscribe /
+    %% unsubscribe frames into a single rebuild.
+    {noreply, schedule_debounced_rebuild(S)};
 handle_cast(_Msg, S) ->
     {noreply, S}.
 

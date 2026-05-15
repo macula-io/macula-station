@@ -188,11 +188,16 @@ deliver_typed(subscribe, Realm, NodeId, Verified, Reg, _CT) ->
     %% rationale as the peer_observer path used to have — without
     %% this trigger, e2e probes time out before the router notices.
     notify_router_change(),
+    %% Also nudge the bloom-exchange: the local topic set just gained
+    %% an entry, so our outgoing Bloom should pick it up on the
+    %% debounce (~2s) instead of the periodic 30s tick.
+    notify_bloom_change(),
     ok;
 
 deliver_typed(unsubscribe, Realm, NodeId, Verified, Reg, _CT) ->
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
     notify_router_change(),
+    notify_bloom_change(),
     ok;
 
 deliver_typed(_Other, Realm, NodeId, Verified, Reg, _CT) ->
@@ -306,6 +311,12 @@ notify_router_change() ->
             %% peers). The router handles a `tick' message identically
             %% to its periodic timer.
             Pid ! tick, ok
+    end.
+
+notify_bloom_change() ->
+    case whereis(macula_station_bloom_exchange) of
+        undefined -> ok;
+        Pid       -> macula_station_bloom_exchange:notify_local_change(Pid)
     end.
 
 short_hex(B) when is_binary(B), byte_size(B) > 0 ->

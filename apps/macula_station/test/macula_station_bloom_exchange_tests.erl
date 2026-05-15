@@ -119,6 +119,26 @@ macula_event_change_schedules_debounce_test() ->
         stop_exchange(Pid)
     end.
 
+%% `notify_local_change/1' is the SDK-subscribe / unsubscribe path:
+%% pubsub_dispatcher calls it on every inbound SUBSCRIBE / UNSUBSCRIBE
+%% frame so the local Bloom rebuilds on the debounce, not on the 30s
+%% periodic tick.
+notify_local_change_schedules_debounce_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        ?assertEqual(undefined, debounce_ref_of(Pid)),
+        ok = macula_station_bloom_exchange:notify_local_change(Pid),
+        Ref = debounce_ref_of(Pid),
+        ?assert(is_reference(Ref)),
+        %% Second call within the debounce window MUST be a no-op
+        %% (idempotent coalescing — same contract as peer_bloom
+        %% changes).
+        ok = macula_station_bloom_exchange:notify_local_change(Pid),
+        ?assertEqual(Ref, debounce_ref_of(Pid))
+    after
+        stop_exchange(Pid)
+    end.
+
 %%------------------------------------------------------------------
 %% Helpers
 %%------------------------------------------------------------------
