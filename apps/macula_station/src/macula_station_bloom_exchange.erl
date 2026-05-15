@@ -25,6 +25,15 @@
 
 -define(REBUILD_INTERVAL_MS, 30_000).
 
+%% Push-on-change debounce. When a peer's bloom CHANGES (new publisher
+%% or a different filter from the same publisher), schedule an
+%% out-of-band rebuild within ?DEBOUNCE_MS instead of waiting up to
+%% ?REBUILD_INTERVAL_MS for the periodic tick. Drops first-delivery
+%% latency for multi-hop pubsub from ~3 * REBUILD_INTERVAL (≈90s on a
+%% 4-hop mesh) to ~3 * DEBOUNCE (≈6s). Debounce coalesces bursts of
+%% peer_bloom updates into one rebuild.
+-define(DEBOUNCE_MS, 2_000).
+
 %% Mesh-level events (including bloom gossip) live in the all-zeros
 %% realm — protocol infrastructure, not bound to any business realm.
 -define(MESH_REALM, <<0:256>>).
@@ -46,7 +55,12 @@
     %% double-subscribe when peer_links reports the same connection
     %% twice across resync ticks.
     subs            :: #{binary() => {pid(), reference()}},
-    timer_ref       :: reference() | undefined
+    timer_ref       :: reference() | undefined,
+    %% Token for an in-flight debounced rebuild. `undefined' means no
+    %% rebuild is pending; any binding means a `{debounced_rebuild,
+    %% Ref}' message is already in flight and further peer_bloom
+    %% changes coalesce into it.
+    debounce_ref    :: reference() | undefined
 }).
 
 %%====================================================================
@@ -107,7 +121,8 @@ init(#{pubsub_registry := Reg, identity := Kp}) ->
         identity        = Kp,
         local_bloom     = empty_bloom_bin(),
         peer_blooms     = #{},
-        subs            = #{}
+        subs            = #{},
+        debounce_ref    = undefined
     },
     {ok, schedule_rebuild(State)}.
 
@@ -129,7 +144,7 @@ handle_cast(rebuild_and_broadcast, S) ->
     {noreply, do_rebuild(S)};
 handle_cast({peer_bloom, Host, BloomBin}, #state{peer_blooms = PB} = S)
   when byte_size(BloomBin) =:= 1024 ->
-    {noreply, S#state{peer_blooms = PB#{Host => BloomBin}}};
+    {noreply, record_peer_bloom(Host, BloomBin, PB, S)};
 handle_cast({peer_bloom, _, _}, S) ->
     {noreply, S};
 handle_cast(_Msg, S) ->
@@ -137,7 +152,22 @@ handle_cast(_Msg, S) ->
 
 handle_info({rebuild, Ref}, #state{timer_ref = Ref} = S) ->
     S1 = sync_inbound_subs(do_rebuild(S)),
-    {noreply, schedule_rebuild(S1)};
+    %% Periodic rebuild satisfies any pending debounce — queued
+    %% `{debounced_rebuild, OldRef}' message arrives later but won't
+    %% match the cleared `debounce_ref' field and is dropped.
+    S2 = S1#state{debounce_ref = undefined},
+    {noreply, schedule_rebuild(S2)};
+handle_info({debounced_rebuild, Ref}, #state{debounce_ref = Ref} = S) ->
+    %% Debounced rebuild fires. Skip `sync_inbound_subs/1' — only the
+    %% periodic tick manages subscriptions, the debounce just refreshes
+    %% the outgoing bloom so freshly-received peer interest propagates
+    %% to OUR peers without waiting up to 30s for the next periodic.
+    S1 = do_rebuild(S),
+    {noreply, S1#state{debounce_ref = undefined}};
+handle_info({debounced_rebuild, _Stale}, S) ->
+    %% Token mismatch — either a periodic rebuild already cleared the
+    %% ref, or the field was reset. Drop the stale tick.
+    {noreply, S};
 %% Inbound EVENT frame for `_mesh.bloom' — outbound_link (and the SDK
 %% station_link) deliver events as
 %% `{macula_event, SubRef, Topic, Payload, Meta}'.
@@ -157,7 +187,7 @@ handle_info({macula_event, _SubRef, <<"_mesh.bloom">>, Payload,
        is_binary(Publisher), byte_size(Publisher) =:= 32 ->
     case Publisher =:= macula_identity:public(Kp) of
         true  -> {noreply, S};  % self-echo from a peer's fan-out — ignore
-        false -> {noreply, S#state{peer_blooms = PB#{Publisher => Payload}}}
+        false -> {noreply, record_peer_bloom(Publisher, Payload, PB, S)}
     end;
 handle_info({macula_event, _SubRef, <<"_mesh.bloom">>, _Payload, _Meta}, S) ->
     %% Missing publisher field, wrong-sized payload, or other malformed
@@ -253,6 +283,29 @@ broadcast_filter(BloomBin) ->
 
 empty_bloom_bin() ->
     macula_station_bloom:to_binary(macula_station_bloom:new()).
+
+%% Update `peer_blooms[Key] = BloomBin'. If the value actually changed
+%% (new entry or different bytes for an existing publisher), schedule
+%% a debounced rebuild so the new transitive interest propagates to
+%% our peers within ?DEBOUNCE_MS instead of waiting up to
+%% ?REBUILD_INTERVAL_MS.
+record_peer_bloom(Key, BloomBin, PB, S) ->
+    Changed = maps:get(Key, PB, undefined) =/= BloomBin,
+    S1 = S#state{peer_blooms = PB#{Key => BloomBin}},
+    case Changed of
+        true  -> schedule_debounced_rebuild(S1);
+        false -> S1
+    end.
+
+%% Idempotent: a second call while a debounce is already scheduled is
+%% a no-op (the coalescing behaviour). The handler clears the field on
+%% fire, and the periodic rebuild also clears it.
+schedule_debounced_rebuild(#state{debounce_ref = undefined} = S) ->
+    Ref = make_ref(),
+    erlang:send_after(?DEBOUNCE_MS, self(), {debounced_rebuild, Ref}),
+    S#state{debounce_ref = Ref};
+schedule_debounced_rebuild(S) ->
+    S.
 
 %%====================================================================
 %% Inbound subscription management

@@ -65,8 +65,89 @@ malformed_peer_bloom_is_skipped_not_crash_test() ->
     ?assert(macula_station_bloom:check(<<"topic.local">>, BF)).
 
 %%------------------------------------------------------------------
+%% Push-on-change debounce — Item 1 (2026-05-15)
+%%
+%% On a peer_bloom CHANGE (new entry, or different bytes for an
+%% existing publisher key), the gen_server schedules an out-of-band
+%% rebuild within ?DEBOUNCE_MS instead of waiting up to
+%% ?REBUILD_INTERVAL_MS for the periodic tick.
+%%
+%% These tests inspect `#state{}' via `sys:get_state/1' and extract
+%% the `debounce_ref' field by position. Keep the position-extractor
+%% in sync with the record def if it grows new fields.
+%%------------------------------------------------------------------
+
+peer_bloom_change_schedules_debounce_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        ?assertEqual(undefined, debounce_ref_of(Pid)),
+        ok = macula_station_bloom_exchange:receive_peer_bloom(
+            Pid, <<"peer-a">>, bloom_with([<<"topic.a">>])),
+        Ref = debounce_ref_of(Pid),
+        ?assert(is_reference(Ref))
+    after
+        stop_exchange(Pid)
+    end.
+
+duplicate_peer_bloom_does_not_reschedule_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        Bloom = bloom_with([<<"topic.a">>]),
+        ok = macula_station_bloom_exchange:receive_peer_bloom(
+            Pid, <<"peer-a">>, Bloom),
+        Ref1 = debounce_ref_of(Pid),
+        ?assert(is_reference(Ref1)),
+        %% Same key, same bytes — must NOT reset the in-flight debounce.
+        ok = macula_station_bloom_exchange:receive_peer_bloom(
+            Pid, <<"peer-a">>, Bloom),
+        ?assertEqual(Ref1, debounce_ref_of(Pid))
+    after
+        stop_exchange(Pid)
+    end.
+
+macula_event_change_schedules_debounce_test() ->
+    {Pid, Kp} = start_exchange(),
+    try
+        Bloom = bloom_with([<<"topic.evt">>]),
+        Publisher = other_pubkey(Kp),
+        Pid ! {macula_event, ignored_sub_ref, <<"_mesh.bloom">>,
+               Bloom, #{publisher => Publisher}},
+        %% Give the gen_server a moment to drain the info message.
+        _ = sys:get_state(Pid),
+        ?assert(is_reference(debounce_ref_of(Pid)))
+    after
+        stop_exchange(Pid)
+    end.
+
+%%------------------------------------------------------------------
 %% Helpers
 %%------------------------------------------------------------------
+
+start_exchange() ->
+    Kp = macula_identity:generate(),
+    {ok, Pid} = macula_station_bloom_exchange:start_link(
+                  #{pubsub_registry => self(), identity => Kp}),
+    {Pid, Kp}.
+
+stop_exchange(Pid) ->
+    catch macula_station_bloom_exchange:stop(Pid).
+
+%% `#state{}' is private to the module. Extract `debounce_ref' by
+%% position (currently the last field). If new tail fields are added
+%% later, this helper must move with them.
+debounce_ref_of(Pid) ->
+    StateRec = sys:get_state(Pid),
+    state = element(1, StateRec),
+    element(tuple_size(StateRec), StateRec).
+
+%% A 32-byte pubkey guaranteed not to equal `macula_identity:public(Kp)'.
+other_pubkey(Kp) ->
+    Self = macula_identity:public(Kp),
+    Cand = <<0:256>>,
+    case Cand =:= Self of
+        true  -> <<1:256>>;
+        false -> Cand
+    end.
 
 bloom_with(Topics) ->
     BF = lists:foldl(fun macula_station_bloom:add/2,
