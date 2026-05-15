@@ -241,6 +241,13 @@ do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB} = S) ->
     %% — ~30-90s on the 10-station Leuven mesh; acceptable.
     OutgoingBin = merge_with_peers(LocalBin, PB),
     broadcast_filter(OutgoingBin),
+    %% Diagnostics: also broadcast the LOCAL-only bloom on a sibling
+    %% topic. Realm-side observers can compare local vs outgoing to
+    %% spot stations that lag the transitive merge (a peer's bloom
+    %% arrived late) or that carry interest no other station has
+    %% (the "I subscribed here, watch it propagate" demo). Bandwidth
+    %% is +1KB per rebuild per station — negligible.
+    broadcast_local_filter(LocalBin),
     S#state{local_bloom = LocalBin}.
 
 %% Bitwise-OR the local bloom with every peer bloom we've cached.
@@ -295,6 +302,20 @@ broadcast_filter(BloomBin) ->
       fun({_Url, LinkPid}) ->
               catch macula_station_link:publish(
                       LinkPid, ?MESH_REALM, <<"_mesh.bloom">>, BloomBin)
+      end,
+      Conns),
+    ok.
+
+%% Broadcast the LOCAL-only filter on a diagnostic sibling topic.
+%% Realm-side dashboards use it to render the local-vs-outgoing
+%% comparison; peering forwarders MUST NOT consume this topic for
+%% routing — only `_mesh.bloom' (transitive) drives interest.
+broadcast_local_filter(LocalBin) ->
+    Conns = macula_station_peer_links:connections(),
+    lists:foreach(
+      fun({_Url, LinkPid}) ->
+              catch macula_station_link:publish(
+                      LinkPid, ?MESH_REALM, <<"_mesh.bloom.local">>, LocalBin)
       end,
       Conns),
     ok.
