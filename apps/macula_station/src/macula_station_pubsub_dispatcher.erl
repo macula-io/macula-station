@@ -49,17 +49,30 @@
          terminate/2, code_change/3]).
 
 -type opts() :: #{
-    pubsub_registry => pid() | undefined,
-    conns_table     => atom()
+    pubsub_registry          => pid() | undefined,
+    conns_table              => atom(),
+    pubsub_verify_workers    => pos_integer()
 }.
 
 -export_type([opts/0]).
 
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
 
+%% Verify-worker pool size. Ed25519 `verify_pubsub' is ~200µs CPU-
+%% bound; doing it on the dispatcher's main loop caps the station at
+%% ~5k EVENT/s and lets sustained pubsub torture back up the mailbox
+%% (observed 25k+ on a 22k-event flood at 1466 pubs/s pre-fix). The
+%% workers hash by NodeId so per-peer frame ordering is preserved
+%% (PUBLISH-then-UNSUBSCRIBE from one peer always lands on the same
+%% worker's FIFO mailbox). Sized to match scheduler count by default
+%% so verify scales with cores. Min 2; using 1 collapses to the
+%% serial path with extra overhead.
+-define(WORKER_POOL_KEY, pubsub_verify_workers).
+
 -record(state, {
     pubsub_registry :: pid() | undefined,
-    conns_table     :: atom()
+    conns_table     :: atom(),
+    workers         :: tuple()       %% tuple of worker pids, 1..N
 }).
 
 %%==================================================================
@@ -78,11 +91,53 @@ stop(Pid) -> gen_server:stop(Pid).
 %%==================================================================
 
 init(Opts) ->
-    State = #state{
-        pubsub_registry = maps:get(pubsub_registry, Opts, undefined),
-        conns_table     = maps:get(conns_table, Opts, ?CONNS_TABLE)
-    },
-    {ok, State}.
+    process_flag(trap_exit, true),
+    Reg = maps:get(pubsub_registry, Opts, undefined),
+    CT  = maps:get(conns_table, Opts, ?CONNS_TABLE),
+    Workers = spawn_workers(worker_pool_size(Opts), Reg, CT),
+    {ok, #state{
+        pubsub_registry = Reg,
+        conns_table     = CT,
+        workers         = Workers
+    }}.
+
+worker_pool_size(Opts) ->
+    Configured = maps:get(?WORKER_POOL_KEY, Opts,
+                          erlang:system_info(schedulers_online)),
+    max(2, Configured).
+
+spawn_workers(N, Reg, CT) ->
+    list_to_tuple([spawn_worker(Reg, CT) || _ <- lists:seq(1, N)]).
+
+spawn_worker(Reg, CT) ->
+    spawn_link(fun() -> worker_loop(Reg, CT) end).
+
+worker_loop(Reg, CT) ->
+    receive
+        {pubsub_frame, NodeId, Frame} ->
+            Type = macula_frame:frame_type(Frame),
+            T0 = erlang:monotonic_time(microsecond),
+            handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
+                                worker_state(Reg, CT)),
+            T1 = erlang:monotonic_time(microsecond),
+            macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+            worker_loop(Reg, CT);
+        {pubsub_frame, NodeId, Frame, RecvAtUs} ->
+            Type = macula_frame:frame_type(Frame),
+            T0 = erlang:monotonic_time(microsecond),
+            macula_station_frame_telemetry:record(Type, recv_to_dispatch,
+                                                  T0 - RecvAtUs),
+            handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
+                                worker_state(Reg, CT)),
+            T1 = erlang:monotonic_time(microsecond),
+            macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+            worker_loop(Reg, CT);
+        stop ->
+            ok
+    end.
+
+worker_state(Reg, CT) ->
+    #state{pubsub_registry = Reg, conns_table = CT, workers = {}}.
 
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
@@ -90,30 +145,22 @@ handle_call(_Msg, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
+%% Dispatcher fans inbound pubsub frames to a per-peer-stable verify
+%% worker. `phash2(NodeId, N)' is deterministic so PUBLISH-then-
+%% UNSUBSCRIBE from one peer always lands on the same worker's FIFO
+%% mailbox — frame ordering for that peer is preserved while
+%% different peers' work runs in parallel across workers.
 handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame},
-            #state{pubsub_registry = Reg} = S)
+            #state{pubsub_registry = Reg, workers = Ws} = S)
         when is_binary(NodeId), byte_size(NodeId) =:= 32,
              is_map(Frame), Reg =/= undefined ->
-    Type = macula_frame:frame_type(Frame),
-    T0 = erlang:monotonic_time(microsecond),
-    handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame, S),
-    T1 = erlang:monotonic_time(microsecond),
-    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    dispatch_to_worker(Ws, NodeId, {pubsub_frame, NodeId, Frame}),
     {noreply, S};
-%% 6-tuple variant — peering_conn with `timing_enabled=true' (macula
-%% >= 4.4.7) stamps `RecvAtUs' at decode-time. Compute mailbox wait
-%% first, then time the dispatch body separately.
 handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame, RecvAtUs},
-            #state{pubsub_registry = Reg} = S)
+            #state{pubsub_registry = Reg, workers = Ws} = S)
         when is_binary(NodeId), byte_size(NodeId) =:= 32,
              is_map(Frame), Reg =/= undefined ->
-    Type = macula_frame:frame_type(Frame),
-    T0 = erlang:monotonic_time(microsecond),
-    macula_station_frame_telemetry:record(Type, recv_to_dispatch,
-                                          T0 - RecvAtUs),
-    handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame, S),
-    T1 = erlang:monotonic_time(microsecond),
-    macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
+    dispatch_to_worker(Ws, NodeId, {pubsub_frame, NodeId, Frame, RecvAtUs}),
     {noreply, S};
 handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame}, S) ->
     %% No registry yet — drop. peer_observer used to log a warning
@@ -124,9 +171,50 @@ handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame}, S) ->
 handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame, _T}, S) ->
     %% Same fall-through for the 6-tuple shape.
     {noreply, S};
+handle_info({'EXIT', Pid, Reason},
+            #state{pubsub_registry = Reg, conns_table = CT,
+                   workers = Ws} = S) ->
+    {noreply, S#state{workers = replace_dead_worker(Ws, Pid, Reason, Reg, CT)}};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
+dispatch_to_worker(Ws, NodeId, Msg) ->
+    Size = tuple_size(Ws),
+    Idx  = erlang:phash2(NodeId, Size) + 1,
+    Worker = element(Idx, Ws),
+    Worker ! Msg,
+    ok.
+
+%% A dead worker is replaced with a fresh spawn-link at the same
+%% slot. The new worker has an empty mailbox — any frames in the
+%% dead worker's mailbox are lost, but a dead worker means a verify
+%% crash on a malformed frame; preserving the rest of the mailbox
+%% would re-crash on the same frame. Logged loud so a recurring
+%% crash pattern is visible.
+replace_dead_worker(Ws, Pid, Reason, Reg, CT) ->
+    case find_worker_index(Ws, Pid, 1) of
+        not_found ->
+            Ws;
+        Idx ->
+            logger:warning(
+              "[pubsub_dispatcher] verify worker died at slot ~p reason=~p — respawning",
+              [Idx, Reason]),
+            setelement(Idx, Ws, spawn_worker(Reg, CT))
+    end.
+
+find_worker_index(Ws, _Pid, Idx) when Idx > tuple_size(Ws) -> not_found;
+find_worker_index(Ws, Pid, Idx) ->
+    case element(Idx, Ws) of
+        Pid   -> Idx;
+        _Else -> find_worker_index(Ws, Pid, Idx + 1)
+    end.
+
+terminate(_Reason, #state{workers = Ws}) ->
+    %% Best-effort orderly shutdown; the EXIT propagation from the
+    %% dispatcher would kill them anyway, but `stop' message lets a
+    %% currently-mid-verify worker finish without an abrupt exit.
+    lists:foreach(fun(W) -> catch (W ! stop) end, tuple_to_list(Ws)),
+    ok;
 terminate(_Reason, _S) -> ok.
 code_change(_Old, S, _Extra) -> {ok, S}.
 
