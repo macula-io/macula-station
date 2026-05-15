@@ -139,16 +139,19 @@ handle_call(_Msg, _From, State) ->
 handle_cast({replicate_one, Record},
             #state{dht = Dht, k = K,
                    per_store_timeout_ms = Tmo} = State) ->
-    %% Async fire-and-forget: each STORE runs in its own worker so
-    %% the gen_server stays responsive. A synchronous fold here
-    %% would block this process for up to (k × per_store_timeout_ms),
-    %% queueing every subsequent eager-replicate cast and stalling
-    %% the periodic tick. The local store has already succeeded
-    %% (the public `_dht.put_record' handler stored before casting
-    %% to us); remote acks are best-effort durability and do NOT
-    %% need to be tracked in the cumulative stats — `replicate_tick'
-    %% remains the authoritative source of repair telemetry.
-    fire_eager_stores(Record, Dht, K, Tmo),
+    %% Spawn a worker for the WHOLE eager-replicate flow, not just
+    %% the per-target STORE. `fire_eager_stores' calls
+    %% `macula_dht:self_id/1' and `macula_dht:k_closest/3' — both
+    %% are sync `gen_server:call' to the (under load) `macula_dht'
+    %% server. Doing them inline blocked us between casts under
+    %% sustained put-record pressure; under torture-test load the
+    %% mailbox grew to 8000+ entries across five stations even
+    %% though each subsequent cast looks "cheap". Moving the whole
+    %% body into a worker lets the gen_server's mailbox drain at
+    %% microsecond rate; the worker still spawns per-target stores
+    %% inside `fire_eager_stores' so durability semantics are
+    %% unchanged.
+    _ = spawn(fun() -> fire_eager_stores(Record, Dht, K, Tmo) end),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.

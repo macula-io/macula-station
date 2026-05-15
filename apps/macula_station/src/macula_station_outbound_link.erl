@@ -43,6 +43,26 @@
 -define(MAX_BACKOFF_MS,     60_000).
 -define(HANDSHAKE_TIMEOUT_MS, 30_000).
 
+%% App-level silence-detection: every healthy outbound peering should
+%% see _mesh.bloom traffic from the peer at least every 30s (the
+%% bloom_exchange periodic rebuild cadence). If we go this long
+%% without ANY inbound frame, the peering connection is half-open —
+%% QUIC keep_alive PINGs ACK at the transport layer (so we don't see
+%% `disconnected`) but the peer's application-level peering_conn
+%% worker is dead (e.g., killed by the handshake-complete dedup
+%% close-cast on the peer side, where the close didn't propagate
+%% back to us). Force-close + reconnect.
+%%
+%% Tuned conservatively: at 30s bloom cadence + 30s slack for normal
+%% jitter, 5 minutes of silence is firmly anomalous on a station-to-
+%% station link. False-positive risk: a peer briefly dropping all
+%% traffic for legitimate reasons (long GC, IO storm) gets reconnected.
+%% Acceptable — reconnect is cheap and the alternative is half-open
+%% silently breaking cross-station pubsub for hours (the bug this
+%% catches).
+-define(SILENCE_THRESHOLD_MS, 300_000).
+-define(SILENCE_CHECK_MS,      60_000).
+
 %% Subscription bookkeeping mirrors macula_station_link in the SDK:
 %% one entry per (Realm, Topic, SubscriberPid) tuple, keyed by an
 %% opaque SubRef returned to the caller. A reverse `topic_index'
@@ -69,7 +89,12 @@
     subscriptions = #{} :: #{reference() => subscription()},
     topic_index   = #{} :: #{{<<_:256>>, binary()} => sets:set(reference())},
     pending       = #{} :: #{<<_:128>> => {gen_server:from(), reference()}},
-    publish_seq   = 0   :: non_neg_integer()
+    publish_seq   = 0   :: non_neg_integer(),
+    %% Monotonic ms timestamp of the last inbound peering frame from
+    %% this connection. Drives silence-based half-open detection.
+    %% `undefined' means no frame received on the current connection
+    %% (set on connect, updated on every inbound frame).
+    last_inbound_at :: integer() | undefined
 }).
 
 %%====================================================================
@@ -180,6 +205,7 @@ init(#{url := Url, identity := Kp} = Opts) ->
     %% us; the `node_id' is filled in once the handshake completes.
     ok = macula_station_peer_links:register(Url, self()),
     self() ! dial,
+    schedule_silence_check(),
     {ok, State}.
 
 handle_call(peer_node_id, _From, #state{peer_node_id = N} = S) ->
@@ -272,8 +298,9 @@ handle_info({macula_peering, connected, ConnPid, NodeId},
     %% Successful handshake — reset backoff for the next disconnect
     %% and replay every active SUBSCRIBE so the peer rebuilds its
     %% interest set after the reconnect.
-    S1 = S#state{peer_node_id = NodeId,
-                 backoff_ms   = ?INITIAL_BACKOFF_MS},
+    S1 = S#state{peer_node_id    = NodeId,
+                 backoff_ms      = ?INITIAL_BACKOFF_MS,
+                 last_inbound_at = now_ms()},
     drain_pending_subscribes(S1),
     {noreply, S1};
 handle_info({macula_peering, disconnected, ConnPid, Reason},
@@ -283,7 +310,8 @@ handle_info({macula_peering, disconnected, ConnPid, Reason},
     {noreply, schedule_reconnect(reset_conn(S1))};
 handle_info({macula_peering, frame, ConnPid, Frame} = Msg,
             #state{conn_pid = ConnPid} = S) ->
-    {noreply, on_inbound_frame(Frame, Msg, S)};
+    S1 = S#state{last_inbound_at = now_ms()},
+    {noreply, on_inbound_frame(Frame, Msg, S1)};
 handle_info({call_timeout, CallId}, #state{pending = P} = S) ->
     {noreply, on_call_timeout(maps:take(CallId, P), S)};
 handle_info({'DOWN', Mon, process, _Pid, _Reason}, S) ->
@@ -291,6 +319,9 @@ handle_info({'DOWN', Mon, process, _Pid, _Reason}, S) ->
 handle_info({'EXIT', ConnPid, _Reason}, #state{conn_pid = ConnPid} = S) ->
     S1 = fail_all_pending({disconnected, peering_exit}, S),
     {noreply, schedule_reconnect(reset_conn(S1))};
+handle_info(silence_check, S) ->
+    schedule_silence_check(),
+    {noreply, maybe_force_reconnect_on_silence(S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -553,7 +584,55 @@ handle_dial_result({error, _Reason}, S) ->
 
 reset_conn(#state{url = Url} = S) ->
     ok = macula_station_peer_links:clear_peer_node_id(Url),
-    S#state{conn_pid = undefined, peer_node_id = undefined}.
+    S#state{conn_pid = undefined,
+            peer_node_id = undefined,
+            last_inbound_at = undefined}.
+
+%% Periodic silence-detection. Half-open peering connections occur
+%% when the peer's listener-side dedup close-cast killed our inbound
+%% counterpart but the close didn't propagate back to us (QUIC stays
+%% alive via keep_alive PINGs at the transport layer). The macula_quic
+%% keep_alive trick masks app-layer death; we need an app-layer
+%% timeout.
+%%
+%% Trigger conditions (all must hold):
+%%   * peer_node_id set (handshake completed at some point)
+%%   * conn_pid alive
+%%   * last_inbound_at older than ?SILENCE_THRESHOLD_MS
+%%
+%% Even an entirely-idle peer should emit `_mesh.bloom` at the
+%% bloom_exchange rebuild cadence (30s by default) plus inbound
+%% station_record announces, SWIM gossip, ADVERTISE, etc. Five
+%% minutes of total silence on a station-to-station link is firmly
+%% anomalous.
+schedule_silence_check() ->
+    erlang:send_after(?SILENCE_CHECK_MS, self(), silence_check),
+    ok.
+
+maybe_force_reconnect_on_silence(#state{peer_node_id = undefined} = S) ->
+    %% Not connected yet — nothing to check.
+    S;
+maybe_force_reconnect_on_silence(#state{last_inbound_at = undefined} = S) ->
+    S;
+maybe_force_reconnect_on_silence(#state{conn_pid = undefined} = S) ->
+    S;
+maybe_force_reconnect_on_silence(#state{conn_pid = ConnPid,
+                                        last_inbound_at = LastAt} = S) ->
+    case now_ms() - LastAt of
+        Silence when Silence >= ?SILENCE_THRESHOLD_MS ->
+            macula_diagnostics:event(<<"_macula.peering.silence_reconnect">>, #{
+                url           => S#state.url,
+                silence_ms    => Silence,
+                peer_node_id  => S#state.peer_node_id
+            }),
+            catch macula_peering:close(ConnPid, app_silence_timeout),
+            S1 = fail_all_pending({disconnected, app_silence_timeout}, S),
+            schedule_reconnect(reset_conn(S1));
+        _ ->
+            S
+    end.
+
+now_ms() -> erlang:monotonic_time(millisecond).
 
 schedule_reconnect(#state{backoff_ms = Backoff,
                           reconnect_timer = OldTimer} = S) ->
