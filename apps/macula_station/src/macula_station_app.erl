@@ -351,7 +351,29 @@ boot_relay_ping(SupPid, Cfg) ->
 on_relay_ping(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {relay_ping_start_failed, R});
 on_relay_ping(SupPid, Cfg, {ok, _Pid}) ->
-    boot_cache(SupPid, Cfg).
+    boot_health_publisher(SupPid, Cfg).
+
+%% Periodic mailbox/heap beacon on `_mesh.health.v1'. Optional — if
+%% the start fails (e.g. peer_links not yet alive), we still proceed
+%% to the cache layer rather than aborting the whole boot. The
+%% publisher itself tolerates having no peer connections at tick time.
+boot_health_publisher(SupPid, Cfg) ->
+    Spec = health_publisher_child(Cfg),
+    case supervisor:start_child(SupPid, Spec) of
+        {ok, _Pid} -> boot_cache(SupPid, Cfg);
+        {error, _} -> boot_cache(SupPid, Cfg)
+    end.
+
+health_publisher_child(#station_cfg{identity = Kp}) ->
+    Opts = #{identity => Kp},
+    #{
+        id       => macula_station_health_publisher,
+        start    => {macula_station_health_publisher, start_link, [Opts]},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_health_publisher]
+    }.
 
 %%==================================================================
 %% Optional periodic children — cache + rebootstrap + admin.
