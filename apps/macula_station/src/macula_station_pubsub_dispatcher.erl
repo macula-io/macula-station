@@ -159,12 +159,14 @@ handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
 %% PUBLISH from a remote daemon. Seed (publisher, seq) at the origin
 %% so a looped-back EVENT for the same publish is recognised as a
 %% duplicate; then build the EVENT frame in the realm's pubsub_server
-%% and fan out to each matched local subscriber's peering connection.
-deliver_typed(publish, Realm, _NodeId, Verified, Reg, CT) ->
+%% and fan out to each matched local subscriber's peering connection,
+%% plus to direct outbound peers whose Bloom filter matches the topic
+%% (publisher-side bloom-fan, see `bloom_fan_extras/3').
+deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
     record_origin_seq(Verified),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
-      CT);
+      NodeId, CT);
 
 %% Inbound EVENT — cross-station relay. Find local subscribers and
 %% fan out. The (publisher, seq) dedup cache is the loop-kill for
@@ -172,12 +174,18 @@ deliver_typed(publish, Realm, _NodeId, Verified, Reg, CT) ->
 %% the older verify-fail accident no longer bounds them). A repeat
 %% without a publisher_sig is logged but still delivered — those are
 %% still bounded by the verify-fail mismatch one hop out.
-deliver_typed(event, Realm, _NodeId, Verified, Reg, CT) ->
+%%
+%% After local delivery, also bloom-fan to direct outbound peers
+%% whose filter matches the topic — minus the source peer
+%% (`NodeId') to avoid immediate echo. `event_dedup' at every
+%% receiver kills further loops.
+deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     case event_dedup_disposition(Verified) of
         drop ->
             ok;
         deliver ->
-            deliver_inbound_event(safe_lookup(Reg, Realm), Verified, CT)
+            deliver_inbound_event(safe_lookup(Reg, Realm), Verified,
+                                  NodeId, CT)
     end;
 
 deliver_typed(subscribe, Realm, NodeId, Verified, Reg, _CT) ->
@@ -224,18 +232,77 @@ safe_lookup(Reg, Realm) ->
     catch _:_ -> {error, registry_unavailable}
     end.
 
-deliver_inbound_event({ok, Server}, EventFrame, CT) ->
+deliver_inbound_event({ok, Server}, EventFrame, SourceNodeId, CT) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
-    fan_out_event(EventFrame, Matched, CT);
-deliver_inbound_event(_Other, _EventFrame, _CT) ->
+    fan_out_event(EventFrame,
+                  Matched ++ bloom_fan_extras(EventFrame, Matched,
+                                              [SourceNodeId], CT),
+                  CT);
+deliver_inbound_event(_Other, EventFrame, SourceNodeId, CT) ->
+    %% No pubsub_server materialised here — still useful to bloom-fan,
+    %% since we may sit on the gossip path between a publisher we have
+    %% no chain from and downstream subscribers.
+    fan_out_event(EventFrame,
+                  bloom_fan_extras(EventFrame, [],
+                                   [SourceNodeId], CT), CT).
+
+on_relay_publish({ok, EventFrame, Matched}, _SourceNodeId, CT) ->
+    %% Origin station — no source peer to exclude (the PUBLISH came
+    %% from a locally-connected daemon, never in `peer_blooms').
+    fan_out_event(EventFrame,
+                  Matched ++ bloom_fan_extras(EventFrame, Matched, [], CT),
+                  CT);
+on_relay_publish({error, _Reason}, _SourceNodeId, _CT) ->
     ok.
 
-on_relay_publish({ok, EventFrame, Matched}, CT) ->
-    fan_out_event(EventFrame, Matched, CT);
-on_relay_publish({error, _Reason}, _CT) ->
-    ok.
+%% Compute the bloom-fan extras for an EVENT frame: peer NodeIds
+%% whose Bloom matches the topic, minus those already in `Matched'
+%% (subscribe-on-peer chain), minus any in `Excluded' (the source
+%% peer on a relay hop), minus peers we have no live conn to. The
+%% conn intersection is critical: `peer_blooms' is transitively
+%% merged, so it can name stations we don't directly peer with.
+%%
+%% Mesh-internal topics (`_mesh.*') are skipped — `bloom_exchange'
+%% already broadcasts them directly; a second fan would mess with
+%% the gossip cadence (same reason `peering_router' filters them).
+bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
+    case maps:get(topic, EventFrame, undefined) of
+        undefined -> [];
+        <<"_mesh.", _/binary>> -> [];
+        Topic when is_binary(Topic) ->
+            bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT)
+    end.
+
+bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
+    case whereis(macula_station_bloom_exchange) of
+        undefined ->
+            [];
+        Pid ->
+            Candidates = macula_station_bloom_exchange:peer_matches(
+                           Pid, Topic),
+            filter_fan_candidates(Candidates, Matched, Excluded, CT)
+    end.
+
+filter_fan_candidates(Candidates, Matched, Excluded, CT) ->
+    Skip = sets:from_list(Matched ++ Excluded),
+    [NodeId
+     || NodeId <- Candidates,
+        not sets:is_element(NodeId, Skip),
+        has_live_conn(CT, NodeId)].
+
+%% A peer NodeId is fan-eligible only if we hold a peering conn to
+%% it. The conns table is owned by `peer_observer'; checking it via
+%% ETS is microseconds and keeps the dispatcher off the observer's
+%% mailbox.
+has_live_conn(CT, NodeId) ->
+    try ets:lookup(CT, NodeId) of
+        [{_, _PeerConns}] -> true;
+        []                -> false
+    catch
+        _:_ -> false
+    end.
 
 %% Fan-out walks the matched subscriber list and looks each one up in
 %% the conns ETS table directly. Previously this function received a

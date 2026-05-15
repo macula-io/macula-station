@@ -112,11 +112,20 @@ peer_blooms(Pid) ->
     catch _:_ -> #{}
     end.
 
-%% @doc List of peer hostnames whose Bloom filter matches `Topic'.
-%% Drives the forwarder's "skip uninterested peers" decision. Peers
-%% with no known filter (haven't gossipped yet) are NOT included —
-%% callers should treat absence as "unknown, don't forward yet".
--spec peer_matches(pid(), binary()) -> [binary()].
+%% @doc List of peer NodeIds (32-byte pubkeys, = the `_mesh.bloom'
+%% publisher key) whose Bloom filter matches `Topic'. Drives the
+%% pubsub forwarder's bloom-fan to peers without an explicit
+%% subscribe-on-peer chain. Peers with no known filter (haven't
+%% gossipped yet) are NOT included — callers should treat absence
+%% as "unknown, don't forward yet".
+%%
+%% Note: due to `merge_with_peers/2' (transitive bloom), a returned
+%% NodeId may belong to a station that is not directly connected to
+%% us — its bloom reached us through an intermediary's outbound
+%% merge. Callers MUST intersect the result with their direct-peer
+%% conn set before sending; an EVENT to a non-direct NodeId has no
+%% conn to land on.
+-spec peer_matches(pid(), binary()) -> [<<_:256>>].
 peer_matches(Pid, Topic) when is_binary(Topic) ->
     try gen_server:call(Pid, {peer_matches, Topic}, 500)
     catch _:_ -> []
@@ -143,8 +152,12 @@ handle_call(get_local_bloom, _From, #state{local_bloom = LB} = S) ->
 handle_call(peer_blooms, _From, #state{peer_blooms = PB} = S) ->
     {reply, PB, S};
 handle_call({peer_matches, Topic}, _From, #state{peer_blooms = PB} = S) ->
-    Matches = [Host
-               || {Host, BloomBin} <- maps:to_list(PB),
+    %% `peer_blooms' is keyed by the EVENT publisher (= station
+    %% NodeId), set in `record_peer_bloom/4'. The returned list is
+    %% NodeIds, not hostnames — the name predates the publisher-keying
+    %% switch and is preserved for API stability.
+    Matches = [NodeId
+               || {NodeId, BloomBin} <- maps:to_list(PB),
                   byte_size(BloomBin) =:= 1024,
                   macula_station_bloom:check(
                     Topic, macula_station_bloom:from_binary(BloomBin))],

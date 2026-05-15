@@ -1022,11 +1022,12 @@ deliver_pubsub({ok, Verified}, _Frame, NodeId, S) ->
       [Type, Realm, Topic]),
     deliver_pubsub_typed(Type, Realm, NodeId, Verified, S).
 
-deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
+deliver_pubsub_typed(publish, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg, conns = Conns}) ->
     %% Inbound PUBLISH from a remote daemon. Build the EVENT frame
     %% in the realm's pubsub_server, fan out to each matched local
-    %% subscriber's peering connection.
+    %% subscriber's peering connection, plus bloom-fan to direct
+    %% outbound peers whose filter matches the topic.
     %%
     %% Seed the (publisher,seq) dedup at the origin so a looped-back
     %% EVENT for this publish is recognised as a duplicate here too —
@@ -1035,8 +1036,8 @@ deliver_pubsub_typed(publish, Realm, _NodeId, Verified,
     record_origin_seq(Verified),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
-      Conns);
-deliver_pubsub_typed(event, Realm, _NodeId, Verified,
+      NodeId, Conns);
+deliver_pubsub_typed(event, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg, conns = Conns}) ->
     %% Inbound EVENT — typically a cross-station relay from a peer
     %% station whose pubsub_server fanned out to us as a registered
@@ -1060,7 +1061,8 @@ deliver_pubsub_typed(event, Realm, _NodeId, Verified,
         drop ->
             ok;
         deliver ->
-            deliver_inbound_event(safe_lookup(Reg, Realm), Verified, Conns)
+            deliver_inbound_event(safe_lookup(Reg, Realm), Verified,
+                                  NodeId, Conns)
     end;
 deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
                      #state{pubsub_registry = Reg}) ->
@@ -1098,13 +1100,20 @@ safe_lookup(Reg, Realm) ->
     catch _:_ -> {error, registry_unavailable}
     end.
 
-deliver_inbound_event({ok, Server}, EventFrame, Conns) ->
+deliver_inbound_event({ok, Server}, EventFrame, SourceNodeId, Conns) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
-    fan_out_event(EventFrame, Matched, Conns);
-deliver_inbound_event(_Other, _EventFrame, _Conns) ->
-    ok.
+    fan_out_event(EventFrame,
+                  Matched ++ bloom_fan_extras(EventFrame, Matched,
+                                              [SourceNodeId], Conns),
+                  Conns);
+deliver_inbound_event(_Other, EventFrame, SourceNodeId, Conns) ->
+    %% No pubsub_server materialised — still relay-eligible via
+    %% bloom-fan if downstream peers are interested.
+    fan_out_event(EventFrame,
+                  bloom_fan_extras(EventFrame, [],
+                                   [SourceNodeId], Conns), Conns).
 
 %% Pubsub Phase 2 step 2 — observe-only. Record (publisher, seq) in
 %% the dedup cache; on a repeat, log it (this is the loop-back the
@@ -1169,9 +1178,13 @@ short_hex(B) when is_binary(B), byte_size(B) > 0 ->
 short_hex(_) ->
     <<"?">>.
 
-on_relay_publish({ok, EventFrame, Matched}, Conns) ->
-    fan_out_event(EventFrame, Matched, Conns);
-on_relay_publish({error, _Reason}, _Conns) ->
+on_relay_publish({ok, EventFrame, Matched}, _SourceNodeId, Conns) ->
+    %% Origin station — no source peer to exclude (PUBLISH came from
+    %% a locally-connected daemon, never in `peer_blooms').
+    fan_out_event(EventFrame,
+                  Matched ++ bloom_fan_extras(EventFrame, Matched, [], Conns),
+                  Conns);
+on_relay_publish({error, _Reason}, _SourceNodeId, _Conns) ->
     ok.
 
 fan_out_event(_EventFrame, [], _Conns) ->
@@ -1179,6 +1192,31 @@ fan_out_event(_EventFrame, [], _Conns) ->
 fan_out_event(EventFrame, [Sub | Rest], Conns) ->
     send_event_to_sub(maps:find(Sub, Conns), EventFrame),
     fan_out_event(EventFrame, Rest, Conns).
+
+%% Bloom-fan extras — see `macula_station_pubsub_dispatcher' for the
+%% canonical comment. This legacy peer_observer path mirrors the same
+%% logic for stations where the dedicated dispatcher is not running.
+bloom_fan_extras(EventFrame, Matched, Excluded, Conns) ->
+    case maps:get(topic, EventFrame, undefined) of
+        undefined -> [];
+        <<"_mesh.", _/binary>> -> [];
+        Topic when is_binary(Topic) ->
+            bloom_fan_extras_for_topic(Topic, Matched, Excluded, Conns)
+    end.
+
+bloom_fan_extras_for_topic(Topic, Matched, Excluded, Conns) ->
+    case whereis(macula_station_bloom_exchange) of
+        undefined ->
+            [];
+        Pid ->
+            Candidates = macula_station_bloom_exchange:peer_matches(
+                           Pid, Topic),
+            Skip = sets:from_list(Matched ++ Excluded),
+            [NodeId
+             || NodeId <- Candidates,
+                not sets:is_element(NodeId, Skip),
+                maps:is_key(NodeId, Conns)]
+    end.
 
 %% EVENT delivery deliberately PREFERS the inbound conn — the one
 %% through which the peer originally sent its SUBSCRIBE. The bytes

@@ -120,9 +120,17 @@ dispatch_frame(RegistryPid, <<_:256>> = Realm, From, Frame) ->
 %%
 %% Returns `{ok, EventFrame, [Subs]}' on success,
 %% `{error, not_found}' when no server is registered for the realm
-%% (publish to a realm with no local subscribers is a no-op — Phase 1
-%% does not auto-register on publish since there is nothing to deliver
-%% to anyway).
+%% AND no `default_identity' was configured at start-up.
+%%
+%% **Auto-registration**: parallel to `dispatch_frame/4'. With
+%% `default_identity' set (the production path under
+%% `macula_station_identity_sup'), an unknown realm is materialised
+%% on demand and the EVENT frame is built against a freshly-spawned
+%% server with empty subscribers. This makes the EVENT available for
+%% publisher-side bloom-fan forwarding to peer stations that have
+%% the topic in their Bloom filter but no subscribe-on-peer chain
+%% terminating at us. Tests that omit `default_identity' retain the
+%% strict `{error, not_found}' semantics.
 -spec relay_publish(pid(), realm(), macula_frame:frame()) ->
         {ok, macula_frame:frame(), [<<_:256>>]}
       | {error, not_found | realm_mismatch}.
@@ -249,14 +257,25 @@ forward_frame(Realm, Pid, From, Frame, S) ->
 %% Internals — relay_publish
 %%====================================================================
 
-do_relay_publish(_Realm, _Frame, error, S) ->
-    %% Publish to a realm with no local subscribers is a no-op —
-    %% there is nothing to deliver. Don't auto-register; that would
-    %% materialise stateful resources for a write that has no
-    %% readers.
+do_relay_publish(_Realm, _Frame, error,
+                 #state{default_identity = undefined} = S) ->
     {reply, {error, not_found}, S};
+do_relay_publish(Realm, Frame, error,
+                 #state{default_identity = Id} = S) ->
+    %% Auto-register so we can build the EVENT frame even when no
+    %% local subscribers exist. The caller (pubsub_dispatcher) needs
+    %% the frame to fan out to peer stations whose Bloom filter
+    %% matches the topic — without auto-register, a station with no
+    %% local interest for a realm would drop the publish on the floor
+    %% even when downstream peers in the mesh are subscribed.
+    on_auto_registered_publish(ensure_server(Realm, Id, S), Realm, Frame);
 do_relay_publish(Realm, Frame, {ok, Pid}, S) ->
     forward_relay_publish(Realm, Pid, Frame, S).
+
+on_auto_registered_publish({ok, Pid, S}, Realm, Frame) ->
+    forward_relay_publish(Realm, Pid, Frame, S);
+on_auto_registered_publish({error, Reason, S}, _Realm, _Frame) ->
+    {reply, {error, Reason}, S}.
 
 forward_relay_publish(Realm, Pid, Frame, S) ->
     try hecate_pubsub_server:relay_publish(Pid, Frame) of

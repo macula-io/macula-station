@@ -297,10 +297,41 @@ relay_publish_unknown_realm_is_not_found(Reg) ->
         payload         => <<"hi">>,
         published_at_ms => erlang:system_time(millisecond)
     }), Kp),
-    %% No server registered for R; relay_publish does NOT auto-create
-    %% (no readers means nothing to fan out to).
+    %% No server registered for R and no default_identity in fixture
+    %% opts (`#{}`) — strict not_found semantics.
     ?assertEqual({error, not_found},
                  hecate_pubsub_registry:relay_publish(Reg, R, Frame)).
+
+%% Production path: a registry started with `default_identity' auto-
+%% registers a pubsub_server on relay_publish for an unknown realm so
+%% the EVENT frame is built even with zero local subscribers.
+%% Downstream bloom-fan in the dispatcher needs the EVENT regardless
+%% of local interest.
+relay_publish_auto_registers_when_default_identity_set_test() ->
+    process_flag(trap_exit, true),
+    Station = keypair(),
+    {ok, Reg} = hecate_pubsub_registry:start_link(#{identity => Station}),
+    unlink(Reg),
+    R        = realm(),
+    DaemonKp = keypair(),
+    DaemonId = macula_identity:public(DaemonKp),
+    PublishFrame = macula_frame:sign(macula_frame:publish(#{
+        topic           => <<"weather.measured_v1">>,
+        realm           => R,
+        publisher       => DaemonId,
+        seq             => 1,
+        payload         => <<"hi">>,
+        published_at_ms => erlang:system_time(millisecond)
+    }), DaemonKp),
+    {ok, EventFrame, Matched} =
+        hecate_pubsub_registry:relay_publish(Reg, R, PublishFrame),
+    ?assertEqual(event, macula_frame:frame_type(EventFrame)),
+    ?assertEqual(<<"weather.measured_v1">>, maps:get(topic, EventFrame)),
+    ?assertEqual(DaemonId, maps:get(publisher, EventFrame)),
+    ?assertEqual([], Matched),  % zero local subs — bloom-fan extras live in dispatcher
+    %% Realm now materialised.
+    ?assertMatch({ok, _Pid}, hecate_pubsub_registry:lookup(Reg, R)),
+    catch hecate_pubsub_registry:stop(Reg).
 
 relay_publish_returns_event_and_subscribers(Reg) ->
     R       = realm(),
