@@ -22,7 +22,7 @@
 -module(macula_station_event_dedup).
 -behaviour(gen_server).
 
--export([start_link/0, seen_or_record/2, window_size/0, dup_count/0]).
+-export([start_link/0, seen_or_record/2, peek/2, window_size/0, dup_count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -62,6 +62,26 @@ record(_Tab, Publisher, Seq) ->
     case ets:insert_new(?TAB, {{Publisher, Seq}, now_ms()}) of
         true  -> new;
         false -> bump_dup()
+    end.
+
+%% @doc Read-only peek. Returns `seen' if `{Publisher, Seq}' is in
+%% the cache, `absent' otherwise. Does NOT insert and does NOT bump
+%% the duplicate counter — used by the dispatcher's pre-verify
+%% fast-path to skip Ed25519 work for known-duplicate EVENTs. The
+%% post-verify `seen_or_record/2' on first arrival still does the
+%% atomic insert + bump.
+-spec peek(macula_identity:pubkey(), non_neg_integer()) -> seen | absent.
+peek(Publisher, Seq)
+  when is_binary(Publisher), is_integer(Seq), Seq >= 0 ->
+    peek_lookup(ets:whereis(?TAB), Publisher, Seq);
+peek(_Publisher, _Seq) ->
+    absent.
+
+peek_lookup(undefined, _Publisher, _Seq) -> absent;
+peek_lookup(_Tab, Publisher, Seq) ->
+    case ets:lookup(?TAB, {Publisher, Seq}) of
+        []    -> absent;
+        [_|_] -> seen
     end.
 
 %% @doc Number of `{publisher, seq}' pairs currently in the window.

@@ -124,8 +124,7 @@ worker_loop(Reg, CT) ->
         {pubsub_frame, NodeId, Frame} ->
             Type = macula_frame:frame_type(Frame),
             T0 = erlang:monotonic_time(microsecond),
-            handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
-                                worker_state(Reg, CT)),
+            process_frame(Type, Frame, NodeId, Reg, CT),
             T1 = erlang:monotonic_time(microsecond),
             macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
             worker_loop(Reg, CT);
@@ -134,14 +133,61 @@ worker_loop(Reg, CT) ->
             T0 = erlang:monotonic_time(microsecond),
             macula_station_frame_telemetry:record(Type, recv_to_dispatch,
                                                   T0 - RecvAtUs),
-            handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
-                                worker_state(Reg, CT)),
+            process_frame(Type, Frame, NodeId, Reg, CT),
             T1 = erlang:monotonic_time(microsecond),
             macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
             worker_loop(Reg, CT);
         stop ->
             ok
     end.
+
+%% Pre-verify dedup for inbound EVENTs. Receiver-side bloom-fan
+%% causes O(mesh-size) EVENT amplification per publish (every node
+%% fans to direct peers, dedup catches the duplicates downstream).
+%% Verifying every duplicate before dropping costs ~200µs Ed25519 per
+%% frame, which dominated the worker CPU budget under sustained load
+%% (100k publishes * ~30 fan paths = ~3M verify calls across the
+%% mesh, ~600 scheduler-seconds total).
+%%
+%% The (publisher, seq) fields are present in the unverified frame
+%% body. A duplicate-claim from an attacker can force a *legitimate*
+%% EVENT to be dropped at this hop, but cannot inject content (the
+%% deliver path still verifies for `new' arrivals). Worst-case
+%% security impact = a denial-of-delivery for one realm-topic, which
+%% requires the attacker to predict the publisher's next seq. Net
+%% trade is a clear win.
+%%
+%% Other frame types (PUBLISH, SUBSCRIBE, UNSUBSCRIBE) verify as
+%% before — they're not amplified, and PUBLISH carries the publisher
+%% signature we want to enforce at the origin.
+process_frame(event, Frame, NodeId, Reg, CT) ->
+    case fast_dedup_check(Frame) of
+        drop ->
+            ok;
+        proceed ->
+            handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
+                                worker_state(Reg, CT))
+    end;
+process_frame(_Type, Frame, NodeId, Reg, CT) ->
+    handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
+                        worker_state(Reg, CT)).
+
+%% Look up (publisher, seq) in the dedup cache without bumping the
+%% counter. If already-seen, drop pre-verify. If new, return
+%% `proceed' and let the post-verify path do the actual record (so
+%% the cache only counts events we successfully verified + delivered
+%% — this matches existing telemetry semantics).
+%%
+%% Defensive: missing/malformed publisher or seq → proceed (cannot
+%% dedup, never drop blindly).
+fast_dedup_check(#{publisher := Pub, seq := Seq})
+  when is_binary(Pub), is_integer(Seq) ->
+    case macula_station_event_dedup:peek(Pub, Seq) of
+        seen -> drop;
+        absent -> proceed
+    end;
+fast_dedup_check(_) ->
+    proceed.
 
 worker_state(Reg, CT) ->
     #state{pubsub_registry = Reg, conns_table = CT, workers = {}}.
