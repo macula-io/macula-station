@@ -102,8 +102,15 @@ init(Opts) ->
     }}.
 
 worker_pool_size(Opts) ->
+    %% Default: max(8, schedulers_online). Even on a 2-scheduler
+    %% container the extra slots improve hash distribution under
+    %% bursty single-publisher load (round-robin already used for
+    %% PUBLISH/EVENT, but more slots reduce phash2 collisions on
+    %% SUBSCRIBE/UNSUBSCRIBE bursts from many distinct daemons).
+    %% Process cost is negligible — workers idle in `receive' until
+    %% work arrives.
     Configured = maps:get(?WORKER_POOL_KEY, Opts,
-                          erlang:system_info(schedulers_online)),
+                          max(8, erlang:system_info(schedulers_online))),
     max(2, Configured).
 
 spawn_workers(N, Reg, CT) ->
@@ -145,22 +152,32 @@ handle_call(_Msg, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-%% Dispatcher fans inbound pubsub frames to a per-peer-stable verify
-%% worker. `phash2(NodeId, N)' is deterministic so PUBLISH-then-
-%% UNSUBSCRIBE from one peer always lands on the same worker's FIFO
-%% mailbox — frame ordering for that peer is preserved while
-%% different peers' work runs in parallel across workers.
+%% Dispatcher fans inbound pubsub frames to a verify worker. Slot
+%% selection depends on frame type:
+%%
+%%   * SUBSCRIBE / UNSUBSCRIBE — `phash2(NodeId, N)'. Per-peer FIFO
+%%     ordering preserved (a SUB followed by UNSUB from one daemon
+%%     must process in that order, or the server's subscriber set
+%%     is wrong).
+%%
+%%   * PUBLISH / EVENT — `phash2(make_ref(), N)'. No per-peer
+%%     ordering required: `event_dedup' is `(publisher, seq)'-keyed
+%%     and atomic via `ets:insert_new/2', so out-of-order processing
+%%     is dedup-safe. Round-robin spreads a single publisher's burst
+%%     across all workers — without this, a single hot publisher
+%%     pinned to one slot back-pressures only that worker (observed
+%%     364k mailbox depth on a 100k-event torture).
 handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame},
             #state{pubsub_registry = Reg, workers = Ws} = S)
         when is_binary(NodeId), byte_size(NodeId) =:= 32,
              is_map(Frame), Reg =/= undefined ->
-    dispatch_to_worker(Ws, NodeId, {pubsub_frame, NodeId, Frame}),
+    dispatch_frame(Ws, NodeId, Frame, {pubsub_frame, NodeId, Frame}),
     {noreply, S};
 handle_info({macula_peering, pubsub_frame, _ConnPid, NodeId, Frame, RecvAtUs},
             #state{pubsub_registry = Reg, workers = Ws} = S)
         when is_binary(NodeId), byte_size(NodeId) =:= 32,
              is_map(Frame), Reg =/= undefined ->
-    dispatch_to_worker(Ws, NodeId, {pubsub_frame, NodeId, Frame, RecvAtUs}),
+    dispatch_frame(Ws, NodeId, Frame, {pubsub_frame, NodeId, Frame, RecvAtUs}),
     {noreply, S};
 handle_info({macula_peering, pubsub_frame, _ConnPid, _NodeId, _Frame}, S) ->
     %% No registry yet — drop. peer_observer used to log a warning
@@ -178,12 +195,21 @@ handle_info({'EXIT', Pid, Reason},
 handle_info(_Msg, S) ->
     {noreply, S}.
 
-dispatch_to_worker(Ws, NodeId, Msg) ->
+dispatch_frame(Ws, NodeId, Frame, Msg) ->
     Size = tuple_size(Ws),
-    Idx  = erlang:phash2(NodeId, Size) + 1,
-    Worker = element(Idx, Ws),
-    Worker ! Msg,
+    Idx  = slot_for(macula_frame:frame_type(Frame), NodeId, Size),
+    element(Idx, Ws) ! Msg,
     ok.
+
+%% Per-peer FIFO for SUBSCRIBE/UNSUBSCRIBE; round-robin for
+%% PUBLISH/EVENT (see `handle_info' comment for the rationale).
+%% Unknown frame types fall back to per-peer FIFO — safer default
+%% for anything that might carry an ordering constraint.
+slot_for(subscribe, NodeId, Size)   -> erlang:phash2(NodeId, Size) + 1;
+slot_for(unsubscribe, NodeId, Size) -> erlang:phash2(NodeId, Size) + 1;
+slot_for(publish, _NodeId, Size)    -> erlang:phash2(make_ref(), Size) + 1;
+slot_for(event, _NodeId, Size)      -> erlang:phash2(make_ref(), Size) + 1;
+slot_for(_Other, NodeId, Size)      -> erlang:phash2(NodeId, Size) + 1.
 
 %% A dead worker is replaced with a fresh spawn-link at the same
 %% slot. The new worker has an empty mailbox — any frames in the
