@@ -27,7 +27,15 @@
          terminate/2, code_change/3]).
 
 -define(TAB,      ?MODULE).
--define(TTL_MS,   120_000).   %% a `{publisher, seq}' is "recently seen" for 2 min
+%% TTL covers the full propagation tail of a sustained publish flood
+%% across the mesh. Pre-2026-05-16 default was 120s, which expired
+%% mid-flood under sustained 1.5k+/s torture (a 100k-event burst
+%% takes ~67s, and slower bloom-fan paths add another ~60s tail);
+%% expired entries let the same `(publisher, seq)' re-deliver, with
+%% receivers seeing the EVENT twice. 5 min covers any realistic
+%% sustained burst with bounded memory growth (set entries are
+%% ~100 bytes each — 100k events ≈ 10MB per station, swept regularly).
+-define(TTL_MS,   300_000).
 -define(SWEEP_MS, 30_000).
 -define(PT_COUNTER, {?MODULE, dup_counter}).
 
