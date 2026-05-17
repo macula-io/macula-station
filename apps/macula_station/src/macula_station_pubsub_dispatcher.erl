@@ -323,6 +323,16 @@ handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
 %% plus to direct outbound peers whose Bloom filter matches the topic
 %% (publisher-side bloom-fan, see `bloom_fan_extras/3').
 deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
+    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
+    %% Fires BEFORE the realm-guard in do_relay_publish, so we see
+    %% PUBLISH frames even if their realm doesn't match the station's
+    %% registered realm.
+    case maps:get(topic, Verified, <<>>) of
+        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
+            logger:info("[mpong-trace] dispatcher PUBLISH topic=mpong/~s peer=~s frame_realm=~s",
+                        [Suffix, short_hex(NodeId), short_hex(Realm)]);
+        _ -> ok
+    end,
     record_origin_seq(Verified),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
