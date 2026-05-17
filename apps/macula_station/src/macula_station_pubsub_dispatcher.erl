@@ -349,6 +349,13 @@ deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     end;
 
 deliver_typed(subscribe, Realm, NodeId, Verified, Reg, _CT) ->
+    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
+    case maps:get(topic, Verified, <<>>) of
+        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
+            logger:info("[mpong-trace] dispatcher subscribe topic=mpong/~s peer_node=~s",
+                        [Suffix, short_hex(NodeId)]);
+        _ -> ok
+    end,
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
     %% Snap the router to a sync NOW so this fresh subscriber gets
     %% propagated to peer stations within milliseconds rather than

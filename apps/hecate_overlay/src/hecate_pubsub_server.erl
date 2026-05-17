@@ -199,6 +199,14 @@ do_relay_publish(#{frame_type := publish, realm := R} = Frame,
                  #state{realm = R} = S) ->
     EventFrame = build_relay_event(Frame, S),
     Matched    = hecate_pubsub:deliver_event(S#state.pubsub, EventFrame),
+    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing
+    %% (see project_mpong_state_broadcast_bug memory). Remove after fix.
+    case maps:get(topic, Frame, <<>>) of
+        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
+            logger:info("[mpong-trace] do_relay_publish topic=mpong/~s matched=~p",
+                        [Suffix, length(Matched)]);
+        _ -> ok
+    end,
     {EventFrame, Matched};
 do_relay_publish(_Frame, _S) ->
     {error, realm_mismatch}.
