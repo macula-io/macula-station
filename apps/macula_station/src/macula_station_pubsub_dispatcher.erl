@@ -340,7 +340,17 @@ deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
 %% (`NodeId') to avoid immediate echo. `event_dedup' at every
 %% receiver kills further loops.
 deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
-    case event_dedup_disposition(Verified) of
+    Disp = event_dedup_disposition(Verified),
+    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
+    case maps:get(topic, Verified, <<>>) of
+        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
+            logger:info("[mpong-trace] inbound EVENT topic=mpong/~s peer=~s dedup=~p has_sig=~p seq=~p",
+                        [Suffix, short_hex(NodeId), Disp,
+                         maps:is_key(publisher_sig, Verified),
+                         maps:get(seq, Verified, undefined)]);
+        _ -> ok
+    end,
+    case Disp of
         drop ->
             ok;
         deliver ->
@@ -403,6 +413,13 @@ deliver_inbound_event({ok, Server}, EventFrame, SourceNodeId, CT) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
+    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
+    case maps:get(topic, EventFrame, <<>>) of
+        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
+            logger:info("[mpong-trace] deliver_inbound_event topic=mpong/~s source=~s local_matched=~p",
+                        [Suffix, short_hex(SourceNodeId), length(Matched)]);
+        _ -> ok
+    end,
     fan_out_event(EventFrame,
                   Matched ++ bloom_fan_extras(EventFrame, Matched,
                                               [SourceNodeId], CT),
