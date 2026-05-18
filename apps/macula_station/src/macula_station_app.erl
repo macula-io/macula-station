@@ -43,6 +43,14 @@
 
 start(_StartType, _StartArgs) ->
     ok = macula_station_log_filters:install(),
+    %% Create the frame-telemetry ETS table here so it's owned by the
+    %% application controller and survives every supervisor restart.
+    %% Previously this was created lazily by peer_observer's `init/1',
+    %% which is FAR down the boot chain — pubsub_dispatcher workers
+    %% spawn first and their `record/3' calls would hit a non-existent
+    %% named table and crash with `badarg', silently dropping the
+    %% frame in transit. See macula_station_frame_telemetry.
+    ok = macula_station_frame_telemetry:init(),
     boot(macula_station_sup:start_link()).
 
 prep_stop(State) ->

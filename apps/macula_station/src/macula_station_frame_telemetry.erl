@@ -93,8 +93,35 @@ record(FrameType, Phase, DurationUs)
     Key     = {FrameType, Phase, Bucket},
     %% update_counter/4 with default tuple does auto-init on first hit.
     %% Position 2 is the counter slot in the {Key, Counter} row.
-    _ = ets:update_counter(?TABLE, Key, {2, 1}, {Key, 0}),
-    ok.
+    %%
+    %% The table is created lazily by peer_observer's `init/1`, but
+    %% pubsub_dispatcher workers spawn EARLIER in the boot chain
+    %% (see macula_station_app:boot — pubsub_dispatcher at step ~145,
+    %% peer_observer at step ~254). A worker that receives its first
+    %% frame before peer_observer's init runs hits `ets:update_counter'
+    %% on a non-existent named table, which raises `badarg' with
+    %% `cause => id'. Without this guard the badarg propagates out of
+    %% `worker_loop' and kills the dispatcher worker, which the
+    %% supervisor respawns — but the frame in transit is LOST. This
+    %% silently dropped every cross-pool PUBLISH whose 6-tuple recv
+    %% path hit step 3's `record(_, recv_to_dispatch, _)' call before
+    %% peer_observer was up.
+    %%
+    %% Lazy-init on the hot path so the first consumer ALSO wins the
+    %% race against peer_observer. The catch is the belt-and-braces
+    %% for any other window (peer_observer dying after init, owning
+    %% the named table → table reaped → race to recreate).
+    try ets:update_counter(?TABLE, Key, {2, 1}, {Key, 0}) of
+        _ -> ok
+    catch
+        error:badarg ->
+            init(),
+            try ets:update_counter(?TABLE, Key, {2, 1}, {Key, 0}) of
+                _ -> ok
+            catch
+                _:_ -> ok
+            end
+    end.
 
 %% @doc Dump the current histogram state as a nested map. Phase 1
 %% readout for the /telemetry/frames HTTP endpoint. ets:tab2list is
