@@ -129,11 +129,11 @@ haversine(Lat1, Lng1, Lat2, Lng2) ->
 deg_to_rad(Deg) -> Deg * math:pi() / 180.0.
 
 env_int(Key, Default) ->
-    case os:getenv(Key) of
-        false -> Default;
-        ""    -> Default;
-        Val   ->
-            try list_to_integer(Val)
-            catch _:_ -> Default
-            end
+    env_int_value(os:getenv(Key), Default).
+
+env_int_value(false, Default) -> Default;
+env_int_value("", Default) -> Default;
+env_int_value(Val, Default) ->
+    try list_to_integer(Val)
+    catch _:_ -> Default
     end.

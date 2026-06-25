@@ -178,25 +178,26 @@ reconcile_subs(Desired, Subs) ->
     subscribe_for(Desired, S1).
 
 drop_subs_not_in(Desired, Subs) ->
-    maps:filter(
-      fun(Key, SubRef) ->
-              case sets:is_element(Key, Desired) of
-                  true  -> true;
-                  false ->
-                      {_Realm, _Topic, LinkPid} = Key,
-                      catch macula_station_link:unsubscribe(LinkPid, SubRef),
-                      false
-              end
-      end, Subs).
+    maps:filter(fun(Key, SubRef) -> keep_sub(sets:is_element(Key, Desired), Key, SubRef) end,
+                Subs).
+
+keep_sub(true, _Key, _SubRef) ->
+    true;
+keep_sub(false, Key, SubRef) ->
+    {_Realm, _Topic, LinkPid} = Key,
+    catch macula_station_link:unsubscribe(LinkPid, SubRef),
+    false.
 
 subscribe_for(Desired, Subs) ->
-    lists:foldl(
-      fun({Realm, Topic, LinkPid} = Key, Acc) ->
-              case maps:is_key(Key, Acc) of
-                  true  -> Acc;
-                  false -> subscribe_one(Acc, Key, Realm, Topic, LinkPid)
-              end
-      end, Subs, Desired).
+    lists:foldl(fun maybe_subscribe/2, Subs, Desired).
+
+maybe_subscribe({Realm, Topic, LinkPid} = Key, Acc) ->
+    subscribe_present(maps:is_key(Key, Acc), Acc, Key, Realm, Topic, LinkPid).
+
+subscribe_present(true, Acc, _Key, _Realm, _Topic, _LinkPid) ->
+    Acc;
+subscribe_present(false, Acc, Key, Realm, Topic, LinkPid) ->
+    subscribe_one(Acc, Key, Realm, Topic, LinkPid).
 
 subscribe_one(Acc, Key, Realm, Topic, LinkPid) ->
     %% Subscriber is `self()' so this router process registers as the
@@ -233,14 +234,17 @@ safe_list_realms(Reg) ->
     end.
 
 safe_topics_for_realm(Reg, Realm) ->
-    try hecate_pubsub_registry:lookup(Reg, Realm) of
-        {ok, Server} ->
-            try hecate_pubsub_server:topics(Server)
-            catch _:_ -> []
-            end;
-        _ -> []
+    Lookup = try hecate_pubsub_registry:lookup(Reg, Realm)
+             catch _:_ -> error
+             end,
+    safe_topics_of(Lookup).
+
+safe_topics_of({ok, Server}) ->
+    try hecate_pubsub_server:topics(Server)
     catch _:_ -> []
-    end.
+    end;
+safe_topics_of(_) ->
+    [].
 
 %%====================================================================
 %% Cross-station ADVERTISE propagation (single-hop, diff-driven)
@@ -301,10 +305,7 @@ prune_dropped_peers(Advertised, PeerConns) ->
 %%   - ets:tab2list(?CONNS_TABLE):              50-100 µs per call
 peer_observer_conns() ->
     try ets:tab2list(macula_station_peer_observer_conns) of
-        Entries ->
-            lists:foldl(fun({NodeId, PeerConns}, Acc) ->
-                pick_one_conn(NodeId, PeerConns, Acc)
-            end, #{}, Entries)
+        Entries -> fold_conn_entries(Entries)
     catch
         error:badarg ->
             %% Table missing — peer_observer not yet booted, or a
@@ -313,6 +314,12 @@ peer_observer_conns() ->
             %% still works.
             fallback_peer_observer_conns()
     end.
+
+fold_conn_entries(Entries) ->
+    lists:foldl(fun pick_conn_entry/2, #{}, Entries).
+
+pick_conn_entry({NodeId, PeerConns}, Acc) ->
+    pick_one_conn(NodeId, PeerConns, Acc).
 
 fallback_peer_observer_conns() ->
     case whereis(macula_station_peer_observer) of
@@ -365,28 +372,30 @@ local_advertised_set(SelfId) ->
     sets:union(HandlerSet, DirectAdvSet).
 
 handler_registry_set() ->
-    case whereis(macula_handler_registry) of
-        undefined -> sets:new();
-        Pid ->
-            try
-                Procs = macula_handler_registry:list(Pid),
-                sets:from_list([{<<0:256>>, P} || P <- Procs])
-            catch _:_ -> sets:new()
-            end
+    handler_registry_set(whereis(macula_handler_registry)).
+
+handler_registry_set(undefined) ->
+    sets:new();
+handler_registry_set(Pid) ->
+    try
+        Procs = macula_handler_registry:list(Pid),
+        sets:from_list([{<<0:256>>, P} || P <- Procs])
+    catch _:_ -> sets:new()
     end.
 
 direct_remote_advertise_set(SelfId) ->
-    case whereis(macula_remote_advertise_registry) of
-        undefined -> sets:new();
-        Pid ->
-            try
-                Entries = macula_remote_advertise_registry:list(Pid),
-                sets:from_list(
-                  [{Realm, Proc}
-                   || {Realm, Proc, #{advertiser := Adv}} <- Entries,
-                      Adv =/= SelfId])
-            catch _:_ -> sets:new()
-            end
+    direct_remote_advertise_set(whereis(macula_remote_advertise_registry), SelfId).
+
+direct_remote_advertise_set(undefined, _SelfId) ->
+    sets:new();
+direct_remote_advertise_set(Pid, SelfId) ->
+    try
+        Entries = macula_remote_advertise_registry:list(Pid),
+        sets:from_list(
+          [{Realm, Proc}
+           || {Realm, Proc, #{advertiser := Adv}} <- Entries,
+              Adv =/= SelfId])
+    catch _:_ -> sets:new()
     end.
 
 send_advertise_diff(_ConnPid, undefined, _ToAdd, _ToDrop) ->

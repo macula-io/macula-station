@@ -92,15 +92,15 @@ digits_to_int(Digits) ->
     end.
 
 take_until_e(Bin, Cont) ->
-    case binary:split(Bin, <<"e">>) of
-        [Digits, Rest] ->
-            case Cont(Digits) of
-                {ok, N}         -> {ok, N, Rest};
-                {error, _} = E  -> E
-            end;
-        [_] ->
-            {error, unterminated_int}
-    end.
+    take_until_e_split(binary:split(Bin, <<"e">>), Cont).
+
+take_until_e_split([Digits, Rest], Cont) ->
+    take_until_e_cont(Cont(Digits), Rest);
+take_until_e_split([_], _Cont) ->
+    {error, unterminated_int}.
+
+take_until_e_cont({ok, N}, Rest) -> {ok, N, Rest};
+take_until_e_cont({error, _} = E, _Rest) -> E.
 
 decode_string(Bin) ->
     case binary:split(Bin, <<":">>) of

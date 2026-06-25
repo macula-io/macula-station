@@ -98,21 +98,23 @@ build_payload(Kp) ->
     erlang:term_to_binary(Term).
 
 probe({RegName, Label}) ->
-    case whereis(RegName) of
-        undefined ->
-            false;
-        Pid when is_pid(Pid) ->
-            case process_info(Pid, [message_queue_len, heap_size, total_heap_size, reductions]) of
-                undefined -> false;
-                Info ->
-                    {true, #{
-                        <<"name">>      => Label,
-                        <<"mbox">>      => proplists:get_value(message_queue_len, Info, 0),
-                        <<"heap_w">>    => proplists:get_value(total_heap_size, Info, 0),
-                        <<"reductions">>=> proplists:get_value(reductions, Info, 0)
-                    }}
-            end
-    end.
+    probe_pid(whereis(RegName), Label).
+
+probe_pid(undefined, _Label) ->
+    false;
+probe_pid(Pid, Label) when is_pid(Pid) ->
+    probe_info(process_info(Pid, [message_queue_len, heap_size,
+                                  total_heap_size, reductions]), Label).
+
+probe_info(undefined, _Label) ->
+    false;
+probe_info(Info, Label) ->
+    {true, #{
+        <<"name">>      => Label,
+        <<"mbox">>      => proplists:get_value(message_queue_len, Info, 0),
+        <<"heap_w">>    => proplists:get_value(total_heap_size, Info, 0),
+        <<"reductions">>=> proplists:get_value(reductions, Info, 0)
+    }}.
 
 broadcast(Payload) ->
     Conns = macula_station_peer_links:connections(),

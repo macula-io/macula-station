@@ -238,14 +238,15 @@ system_ram_mb() ->
     end.
 
 linux_ram_mb() ->
-    case file:read_file("/proc/meminfo") of
-        {ok, Data} ->
-            case re:run(Data, "MemTotal:\\s+(\\d+)", [{capture, [1], list}]) of
-                {match, [KBStr]} -> list_to_integer(KBStr) div 1024;
-                nomatch          -> 0
-            end;
-        {error, _} -> 0
-    end.
+    linux_ram_mb_read(file:read_file("/proc/meminfo")).
+
+linux_ram_mb_read({ok, Data}) ->
+    linux_ram_mb_match(re:run(Data, "MemTotal:\\s+(\\d+)", [{capture, [1], list}]));
+linux_ram_mb_read({error, _}) ->
+    0.
+
+linux_ram_mb_match({match, [KBStr]}) -> list_to_integer(KBStr) div 1024;
+linux_ram_mb_match(nomatch) -> 0.
 
 add_env(Map, Key, EnvVar) ->
     case os:getenv(EnvVar) of
@@ -361,14 +362,15 @@ read_geo_field(P, TextKey, AtomKey) ->
     parse_geo(geo_lookup(P, TextKey, AtomKey)).
 
 geo_lookup(P, TextKey, AtomKey) ->
-    case maps:find({text, TextKey}, P) of
-        {ok, V} -> V;
-        error   ->
-            case maps:find(TextKey, P) of
-                {ok, V} -> V;
-                error   -> maps:get(AtomKey, P, undefined)
-            end
-    end.
+    geo_lookup_text(maps:find({text, TextKey}, P), P, TextKey, AtomKey).
+
+geo_lookup_text({ok, V}, _P, _TextKey, _AtomKey) ->
+    V;
+geo_lookup_text(error, P, TextKey, AtomKey) ->
+    geo_lookup_plain(maps:find(TextKey, P), P, AtomKey).
+
+geo_lookup_plain({ok, V}, _P, _AtomKey) -> V;
+geo_lookup_plain(error, P, AtomKey) -> maps:get(AtomKey, P, undefined).
 
 parse_geo({text, Bin}) when is_binary(Bin) -> parse_geo(Bin);
 parse_geo(Bin) when is_binary(Bin) ->

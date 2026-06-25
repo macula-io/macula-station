@@ -130,14 +130,16 @@ dispatch_placement(Dht, Record, Placement, Quorum, Opts) ->
                     reference()) -> ok.
 spawn_workers(Dht, Record, Chosen, PerStore, Tag) ->
     Parent = self(),
-    lists:foreach(
-      fun(Ref) ->
-          PeerId = id_of(Ref),
-          spawn(fun() ->
-              Result = macula_dht:send_store(Dht, PeerId, Record, PerStore),
-              Parent ! {store_result, Tag, PeerId, Result}
-          end)
-      end, Chosen).
+    lists:foreach(fun(Ref) -> spawn_store_worker(Ref, Dht, Record, PerStore, Tag, Parent) end,
+                  Chosen).
+
+spawn_store_worker(Ref, Dht, Record, PerStore, Tag, Parent) ->
+    PeerId = id_of(Ref),
+    spawn(fun() -> run_store_worker(Dht, PeerId, Record, PerStore, Tag, Parent) end).
+
+run_store_worker(Dht, PeerId, Record, PerStore, Tag, Parent) ->
+    Result = macula_dht:send_store(Dht, PeerId, Record, PerStore),
+    Parent ! {store_result, Tag, PeerId, Result}.
 
 %% @doc Collect until every worker has reported OR the overall
 %% deadline expires. No early termination on quorum — that would

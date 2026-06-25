@@ -341,14 +341,17 @@ safe_topics(Reg) ->
     lists:flatmap(fun(Realm) -> topics_for_realm(Reg, Realm) end, Realms).
 
 topics_for_realm(Reg, Realm) ->
-    try hecate_pubsub_registry:lookup(Reg, Realm) of
-        {ok, Server} ->
-            try hecate_pubsub_server:topics(Server)
-            catch _:_ -> []
-            end;
-        _ -> []
+    Lookup = try hecate_pubsub_registry:lookup(Reg, Realm)
+             catch _:_ -> error
+             end,
+    topics_for_lookup(Lookup).
+
+topics_for_lookup({ok, Server}) ->
+    try hecate_pubsub_server:topics(Server)
     catch _:_ -> []
-    end.
+    end;
+topics_for_lookup(_) ->
+    [].
 
 %% Broadcast `_mesh.bloom' to every active outbound station_link.
 %% No-op when no live connections — peer caches are updated on the
@@ -424,24 +427,23 @@ sync_inbound_subs(#state{subs = Subs} = S) ->
 
 drop_stale_subs(Subs, Active) ->
     ActiveHosts = sets:from_list([H || {H, _} <- Active]),
-    maps:filter(
-      fun(Host, {LinkPid, SubRef}) ->
-              case sets:is_element(Host, ActiveHosts) of
-                  true -> true;
-                  false ->
-                      catch macula_station_link:unsubscribe(LinkPid, SubRef),
-                      false
-              end
-      end, Subs).
+    maps:filter(fun(Host, Sub) -> keep_sub(sets:is_element(Host, ActiveHosts), Sub) end,
+                Subs).
+
+keep_sub(true, _Sub) ->
+    true;
+keep_sub(false, {LinkPid, SubRef}) ->
+    catch macula_station_link:unsubscribe(LinkPid, SubRef),
+    false.
 
 subscribe_new_peers(Subs, Active) ->
-    lists:foldl(
-      fun({Host, LinkPid}, Acc) ->
-              case maps:is_key(Host, Acc) of
-                  true  -> Acc;
-                  false -> subscribe_one(Acc, Host, LinkPid)
-              end
-      end, Subs, Active).
+    lists:foldl(fun maybe_subscribe_peer/2, Subs, Active).
+
+maybe_subscribe_peer({Host, LinkPid}, Acc) ->
+    subscribe_peer(maps:is_key(Host, Acc), Acc, Host, LinkPid).
+
+subscribe_peer(true, Acc, _Host, _LinkPid) -> Acc;
+subscribe_peer(false, Acc, Host, LinkPid) -> subscribe_one(Acc, Host, LinkPid).
 
 %% LinkPid may be a `macula_station_link' SDK client (handles
 %% subscribe) OR a `macula_station_outbound_link' worker (does

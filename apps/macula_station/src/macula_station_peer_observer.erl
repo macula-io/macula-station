@@ -487,16 +487,18 @@ spawn_resolve_is_station(ConnPid, NodeId) ->
 %% 4.5.0 added the getter; older SDKs report `not_connected', which
 %% we treat as "daemon" — same as if the bit were unset).
 peer_is_station(ConnPid) ->
-    case erlang:function_exported(macula_peering, peer_capabilities, 1) of
-        false -> false;
-        true  ->
-            case macula_peering:peer_capabilities(ConnPid) of
-                {ok, Caps} when is_integer(Caps) ->
-                    (Caps band ?CAP_STATION) =/= 0;
-                _ ->
-                    false
-            end
-    end.
+    Exported = erlang:function_exported(macula_peering, peer_capabilities, 1),
+    peer_is_station(Exported, ConnPid).
+
+peer_is_station(false, _ConnPid) ->
+    false;
+peer_is_station(true, ConnPid) ->
+    peer_caps_station(macula_peering:peer_capabilities(ConnPid)).
+
+peer_caps_station({ok, Caps}) when is_integer(Caps) ->
+    (Caps band ?CAP_STATION) =/= 0;
+peer_caps_station(_) ->
+    false.
 
 %% Evict any stale ConnPid sitting in the (NodeId, Direction) slot so
 %% the incoming ConnPid starts from a clean lane. Idempotent for the

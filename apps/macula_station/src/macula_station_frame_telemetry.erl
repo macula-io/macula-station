@@ -116,11 +116,14 @@ record(FrameType, Phase, DurationUs)
     catch
         error:badarg ->
             init(),
-            try ets:update_counter(?TABLE, Key, {2, 1}, {Key, 0}) of
-                _ -> ok
-            catch
-                _:_ -> ok
-            end
+            record_retry(Key)
+    end.
+
+record_retry(Key) ->
+    try ets:update_counter(?TABLE, Key, {2, 1}, {Key, 0}) of
+        _ -> ok
+    catch
+        _:_ -> ok
     end.
 
 %% @doc Dump the current histogram state as a nested map. Phase 1
