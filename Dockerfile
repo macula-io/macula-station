@@ -49,6 +49,13 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# Build the macula_quic NIF FROM SOURCE instead of downloading the precompiled
+# libmacula_quic.so from the GitHub release. The fetched release artifact has
+# bitten us before (the v4.8.0 one hung on every connect and took the realm
+# dark); its provenance is decoupled from this build. Rust is installed above,
+# so compile it here. Matches macula-realm/Dockerfile.prod. See fetch-nif.sh.
+ENV MACULA_FORCE_SOURCE_BUILD=1
+
 WORKDIR /build
 
 # Copy build config first so the deps layer caches cleanly when only
