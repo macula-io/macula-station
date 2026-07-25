@@ -166,9 +166,52 @@ crash_exit_does_not_tombstone_test_() ->
         end)
     end}.
 
+%% A wedged DHT must degrade the announcer, not crash it. Before the 2026-07-25
+%% hardening, `publish_node_record' made an uncaught 5s `gen_server:call' to
+%% `put_record' straight from init/1 (the exact call that timed out in the
+%% 2026-07-24 incident), so a starved DHT crashed the announcer, the supervisor
+%% restarted it, and init re-ran into the same wedge — a crash loop that also
+%% blocked the supervisor inside each synchronous start.
+%%
+%% With no hostname or peer_observer in these opts, the enrichment lookups
+%% short-circuit without touching the DHT, so this exercises the `put_record'
+%% leg specifically — which is both the incident's crash and the one init
+%% blocks on. A dead pid raises `noproc' immediately, the same exit class the
+%% enrich/put catches handle, without the 5s wait.
+survives_wedged_dht_test_() ->
+    {timeout, 10, ?_test(begin
+        process_flag(trap_exit, true),
+        Kp = macula_identity:generate(),
+        DeadDht = spawn(fun() -> ok end),
+        wait_dead(DeadDht),
+
+        {ok, Pid} = macula_station_announcer:start_link(#{
+            dht          => DeadDht,
+            identity     => Kp,
+            realms       => [],
+            capabilities => 16#FF,
+            display_name => <<"wedged-dht-station">>,
+            ttl_ms       => 600_000
+        }),
+        unlink(Pid),
+
+        %% init returned a pid (it did not crash on the broken DHT), and the
+        %% announcer stays up rather than crash-looping to death. The failed
+        %% publish re-arms a 30s retry, well outside this window.
+        timer:sleep(100),
+        ?assert(is_process_alive(Pid)),
+
+        exit(Pid, kill)
+    end)}.
+
 %%%===================================================================
 %%% Helpers
 %%%===================================================================
+
+wait_dead(P) ->
+    Ref = erlang:monitor(process, P),
+    receive {'DOWN', Ref, process, P, _} -> ok
+    after 1_000 -> ok end.
 
 wait_until(_F, Budget) when Budget =< 0 ->
     erlang:error(wait_until_timeout);

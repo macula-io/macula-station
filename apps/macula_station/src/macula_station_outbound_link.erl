@@ -39,6 +39,9 @@
     capabilities    => non_neg_integer()
 }.
 
+%% Must stay >= 2: schedule_reconnect jitters the delay with `Backoff div 2`, and
+%% rand:uniform(0) is a badarg. The floor is 1_000, so this is only a compile-time
+%% coupling for a future editor, not a runtime guard.
 -define(INITIAL_BACKOFF_MS,  1_000).
 -define(MAX_BACKOFF_MS,     60_000).
 -define(HANDSHAKE_TIMEOUT_MS, 30_000).
@@ -637,7 +640,16 @@ now_ms() -> erlang:monotonic_time(millisecond).
 schedule_reconnect(#state{backoff_ms = Backoff,
                           reconnect_timer = OldTimer} = S) ->
     cancel_timer(OldTimer),
-    Timer = erlang:send_after(Backoff, self(), dial),
+    %% Equal jitter: fire in [Backoff/2, Backoff] rather than exactly Backoff, so
+    %% many links dropped by one event (a peer restart, a shared-box stall) do not
+    %% reconnect in lockstep. The 25+48 same-second handshake failures of the
+    %% 2026-07-24 incident are the signature of an un-jittered shared backoff
+    %% ladder. The Backoff/2 floor preserves exponential relief; only the exact
+    %% fire time is spread. `rand' auto-seeds per process, so co-spawned links
+    %% draw distinct delays. Backoff is only ever INITIAL (>=1000) or a doubling
+    %% of it, so `Backoff div 2' >= 500 and rand:uniform is always well-formed.
+    Delay = (Backoff div 2) + rand:uniform(Backoff div 2),
+    Timer = erlang:send_after(Delay, self(), dial),
     Next  = min(Backoff * 2, ?MAX_BACKOFF_MS),
     S#state{reconnect_timer = Timer, backoff_ms = Next}.
 

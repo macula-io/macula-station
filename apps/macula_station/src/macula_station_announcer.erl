@@ -15,7 +15,7 @@
 %%
 %% Started under the station's supervision tree as a procedural child
 %% AFTER `macula_handler_registry' and `macula_station_dht_handlers'
-%% are up. On any one_for_all restart the announcer is recreated and
+%% are up. On any one_for_one restart the announcer is recreated and
 %% re-publishes the node_record on init — peers see a fresh record
 %% with a new UUIDv7 version.
 %%
@@ -65,6 +65,13 @@
 -define(DEFAULT_TTL_MS, 600_000).             %% 10 min
 -define(DEFAULT_REFRESH_FRACTION, 0.75).      %% refresh at 75% of TTL
 
+%% Short retry after a failed publish. The normal refresh is at 75% of TTL
+%% (~7.5 min at defaults); waiting a full cycle after a failure would leave the
+%% record to lapse at its 10-min TTL, a multi-minute disappearance from the
+%% realm. Retry soon instead so a transient DHT stall costs one cycle's freshness,
+%% not the record.
+-define(PUBLISH_RETRY_MS, 30_000).            %% 30 s
+
 -record(state, {
     dht          :: pid(),
     identity     :: macula_identity:key_pair(),
@@ -98,9 +105,11 @@ stop(Pid) ->
 init(Opts) ->
     process_flag(trap_exit, true),
     State = build_state(Opts),
-    %% Publish on init — re-runs on every one_for_all restart cycle.
-    publish_node_record(State),
-    {ok, schedule_refresh(State)}.
+    %% Publish on init — re-runs on every restart cycle. Best-effort: a wedged
+    %% DHT must not crash init (which would restart and re-wedge). On failure the
+    %% short retry re-arms.
+    Result = publish_node_record(State),
+    {ok, schedule_refresh(Result, State)}.
 
 build_state(#{dht := Dht, identity := Kp} = Opts) ->
     Ttl       = maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS),
@@ -145,8 +154,8 @@ handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
 handle_cast(_Msg, S)        -> {noreply, S}.
 
 handle_info({refresh, Ref}, #state{timer_ref = Ref} = S) ->
-    publish_node_record(S),
-    {noreply, schedule_refresh(S)};
+    Result = publish_node_record(S),
+    {noreply, schedule_refresh(Result, S)};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -166,7 +175,7 @@ publish_node_record(#state{dht = Dht, identity = Kp,
                            capabilities = Caps,
                            peer_observer = ObsPid} = _S) ->
     Pub      = macula_identity:public(Kp),
-    OptsWithPeers = with_current_peers(ObsPid, Dht, RecOpts),
+    OptsWithPeers = enrich_or_fallback(ObsPid, Dht, RecOpts),
     Unsigned0 = macula_record:node_record(Pub, Realms, Caps, OptsWithPeers),
     %% Inject the V1-style rich identity metadata into the payload —
     %% macula 3.12's node_record/4 only emits the fields it knows
@@ -175,8 +184,46 @@ publish_node_record(#state{dht = Dht, identity = Kp,
     %% panel (version / OTP / RAM / CPU cores / bind addr / etc).
     Unsigned  = inject_identity_metadata(Unsigned0, OptsWithPeers),
     Signed    = macula_record:sign(Unsigned, Kp),
-    ok = macula_dht:put_record(Dht, Signed),
-    ok.
+    put_node_record(Dht, Signed).
+
+%% Peer enrichment is best-effort. `with_current_peers' makes up to 2P
+%% synchronous DHT lookups (find_local_record per peer, twice); against a wedged
+%% DHT each blocks its full 5s timeout, so an uncaught failure both crashes the
+%% announcer AND, in init, blocks the supervisor's synchronous start for that
+%% whole time. Wrap it as ONE unit: the first timeout aborts and we fall back to
+%% the boot-time record_opts. Hostname/geo/kind/endpoint live in record_opts and
+%% are untouched; only the peer edges (peers + caps_hint) are lost for this cycle
+%% and self-heal at the next successful refresh. A bare record keeps this node in
+%% every peer's overlay input; NOT publishing would remove it entirely, so the
+%% degraded record is strictly better than none.
+enrich_or_fallback(ObsPid, Dht, RecOpts) ->
+    try with_current_peers(ObsPid, Dht, RecOpts)
+    catch Class:Reason ->
+        macula_diagnostics:event(<<"_macula.announce.enrichment_degraded">>,
+                                 #{class => Class, reason => Reason}),
+        logger:warning("[announcer] peer enrichment degraded (~p:~p); "
+                       "publishing node_record without peer edges",
+                       [Class, Reason]),
+        RecOpts
+    end.
+
+%% The publish itself is best-effort: a put timeout means "could not publish this
+%% cycle", not "crash the announcer". Returns `ok | error' so the caller can
+%% re-arm a short retry (?PUBLISH_RETRY_MS) rather than let the record lapse at
+%% its TTL after a full refresh interval.
+-spec put_node_record(pid(), macula_record:record()) -> ok | error.
+put_node_record(Dht, Signed) ->
+    try
+        ok = macula_dht:put_record(Dht, Signed),
+        ok
+    catch Class:Reason ->
+        macula_diagnostics:event(<<"_macula.announce.publish_failed">>,
+                                 #{class => Class, reason => Reason}),
+        logger:warning("[announcer] could not publish node_record this cycle "
+                       "(~p:~p); retrying in ~bms",
+                       [Class, Reason, ?PUBLISH_RETRY_MS]),
+        error
+    end.
 
 %% Stamp runtime + station identity metadata onto the announce
 %% payload as canonical CBOR text fields. Mirrors V1
@@ -470,7 +517,14 @@ publish_tombstone(#state{dht = Dht, identity = Kp}, Reason) ->
 %% Refresh timer
 %%====================================================================
 
-schedule_refresh(#state{refresh_ms = Ms} = S) ->
+%% Full refresh interval after a successful publish; a short retry after a
+%% failure, so a transient DHT stall does not let the record lapse at its TTL.
+schedule_refresh(ok, #state{refresh_ms = Ms} = S) ->
+    schedule_refresh_after(Ms, S);
+schedule_refresh(error, S) ->
+    schedule_refresh_after(?PUBLISH_RETRY_MS, S).
+
+schedule_refresh_after(Ms, S) ->
     Ref = make_ref(),
     erlang:send_after(Ms, self(), {refresh, Ref}),
     S#state{timer_ref = Ref}.
