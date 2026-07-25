@@ -23,7 +23,7 @@ disabled_env_yields_static_children_only_test_() ->
     {setup, fun reset_env/0, fun restore_env/1, fun(_) ->
         fun() ->
             process_flag(trap_exit, true),
-            {ok, Sup} = macula_station_app:start(normal, []),
+            {ok, Sup} = start_station(),
             ?assert(is_pid(Sup)),
             %% Three always-on infrastructure children:
             %% event_dedup ((publisher,seq) pubsub-event dedup cache),
@@ -60,7 +60,7 @@ happy_path_boots_full_runtime_test_() ->
             try
                 set_station_env(Dir),
                 set_discoverers(Peers),
-                {ok, Sup} = macula_station_app:start(normal, []),
+                {ok, Sup} = start_station(),
                 {ok, DhtPid}      = macula_station:dht(),
                 {ok, SwimPid}     = macula_station:swim(),
                 {ok, ObserverPid} = macula_station:observer(),
@@ -96,7 +96,7 @@ cache_and_rebootstrap_children_start_when_configured_test_() ->
                     check_period_ms => 60_000,
                     partition_window_ms => 60_000
                 }),
-                {ok, Sup} = macula_station_app:start(normal, []),
+                {ok, Sup} = start_station(),
                 {ok, CachePid} = macula_station:cache(),
                 {ok, RbPid}    = macula_station:rebootstrap(),
                 ?assert(is_process_alive(CachePid)),
@@ -129,7 +129,7 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
              try
                  set_station_env(Dir),
                  set_discoverers(Peers),
-                 {ok, Sup} = macula_station_app:start(normal, []),
+                 {ok, Sup} = start_station(),
                  {ok, Dht}  = macula_station:dht(),
                  {ok, Swim} = macula_station:swim(),
                  {_Bind, Port} = macula_station:listen_addr(),
@@ -202,12 +202,12 @@ warm_boot_preserves_identity_test_() ->
             try
                 set_station_env(Dir),
                 set_discoverers(Peers),
-                {ok, Sup1}       = macula_station_app:start(normal, []),
+                {ok, Sup1}       = start_station(),
                 {ok, DhtPid1}    = macula_station:dht(),
                 Self1            = macula_dht:self_id(DhtPid1),
                 ok = cleanup_sup(Sup1),
                 ?assertEqual(undefined, whereis(macula_dht)),
-                {ok, Sup2}       = macula_station_app:start(normal, []),
+                {ok, Sup2}       = start_station(),
                 {ok, DhtPid2}    = macula_station:dht(),
                 Self2            = macula_dht:self_id(DhtPid2),
                 ?assertEqual(Self1, Self2),
@@ -278,6 +278,30 @@ free_port() ->
     {ok, Port} = inet:port(S),
     ok = gen_udp:close(S),
     Port.
+
+%% Start the station, retrying a listener BIND race.
+%%
+%% free_port/0 probes a free UDP port then CLOSES it, so between the probe and
+%% the QUIC listener actually binding, the port is unclaimed and any other process
+%% on a busy CI box can grab it -> `exit:{open_failed, eaddrinuse}'. That is the
+%% only reason this fails 1-of-1005 in CI and blocks image builds. A genuine
+%% error ({error, no_tiers}, etc.) is returned as-is and never retried; only a
+%% bind-time exit re-picks the port and tries again. The data_dir is untouched,
+%% so identity-persistence tests that start twice keep their keypair.
+start_station() -> start_station(6).
+
+start_station(1) ->
+    %% Final attempt: no catch, let a real failure surface with its true reason.
+    macula_station_app:start(normal, []);
+start_station(N) ->
+    case catch macula_station_app:start(normal, []) of
+        {ok, _} = Ok     -> Ok;
+        {error, _} = Err -> Err;
+        {'EXIT', _}      ->
+            application:set_env(macula_station, port, free_port()),
+            timer:sleep(25),
+            start_station(N - 1)
+    end.
 
 set_discoverers(Peers) ->
     Tiers = [{macula_station_stub_tier, #{peers => Peers}}],
