@@ -1092,8 +1092,8 @@ notify_router_change() ->
         Pid       ->
             %% Async cast so peer_observer doesn't block on router
             %% sync (sync can take seconds when fanning out to many
-            %% peers). The router handles a `tick' message identically
-            %% to its periodic timer.
+            %% peers). The router treats `tick' as a kick: it syncs
+            %% promptly but leaves the periodic `timer_tick' to re-arm.
             Pid ! tick, ok
     end.
 

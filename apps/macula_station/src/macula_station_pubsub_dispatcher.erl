@@ -568,8 +568,8 @@ notify_router_change() ->
         Pid       ->
             %% Async send so the dispatcher doesn't block on router
             %% sync (which can take seconds when fanning to many
-            %% peers). The router handles a `tick' message identically
-            %% to its periodic timer.
+            %% peers). The router treats `tick' as a kick: it syncs
+            %% promptly but leaves the periodic `timer_tick' to re-arm.
             Pid ! tick, ok
     end.
 

@@ -108,7 +108,8 @@ init(Opts) ->
         identity        = maps:get(identity, Opts),
         subs            = #{}
     },
-    self() ! tick,
+    %% Deferred first sync, which also arms the single periodic timer.
+    self() ! timer_tick,
     {ok, State}.
 
 handle_call(sync_now, _From, S) ->
@@ -119,16 +120,26 @@ handle_call(_Msg, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info(tick, S) ->
-    %% Coalesce: every direct ADVERTISE / SUBSCRIBE on this station
-    %% sends `Pid ! tick' to nudge the router. Under load (lots of
-    %% daemons advertising at once), this can flood the mailbox with
-    %% thousands of idempotent ticks the router cannot drain — each
-    %% sync/1 call takes hundreds of ms because it touches every peer
-    %% conn. Drain queued ticks here so each pass of the mailbox
-    %% triggers exactly one sync.
+%% The periodic safety-net sync. Re-arm the timer HERE and ONLY here.
+%%
+%% The old code armed a fresh `send_after(?TICK_MS, tick)` on every handled
+%% message — periodic tick AND every external kick — and threw away the timer ref
+%% (it stored an unrelated `make_ref()` in `timer_ref`, which was then never read
+%% or cancelled). So every kick that landed in its own mailbox pass PERMANENTLY
+%% added another 2s timer. The outstanding-timer count ratcheted up until the
+%% station ran back-to-back syncs forever: a live station's router was the top
+%% reducer at 1.7M reds/s, always mid-`sync`, mailbox ~42. Distinguishing the
+%% periodic `timer_tick` from kicks, and re-arming only on `timer_tick`, keeps
+%% exactly one periodic timer outstanding. Measured 2026-07-25.
+handle_info(timer_tick, S) ->
     ok = drain_ticks(),
     {noreply, schedule_tick(sync(S))};
+%% A kick: every direct ADVERTISE / SUBSCRIBE / peer change on this station sends
+%% `Pid ! tick'. Sync promptly (latency-sensitive), coalescing a burst via
+%% drain_ticks, but do NOT arm a timer — the periodic `timer_tick` already does.
+handle_info(tick, S) ->
+    ok = drain_ticks(),
+    {noreply, sync(S)};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -421,7 +432,10 @@ send_advertise_diff(ConnPid, SelfId, ToAdd, ToDrop) ->
 %% Schedule
 %%====================================================================
 
+%% Arms exactly one periodic timer and keeps its real ref (the old code stored a
+%% bogus make_ref/0 and leaked the send_after ref, so timers could never be
+%% cancelled and accumulated). Fires `timer_tick', distinct from kick `tick's, so
+%% only the periodic path re-arms.
 schedule_tick(S) ->
-    Ref = make_ref(),
-    erlang:send_after(?TICK_MS, self(), tick),
-    S#state{timer_ref = Ref}.
+    TRef = erlang:send_after(?TICK_MS, self(), timer_tick),
+    S#state{timer_ref = TRef}.
