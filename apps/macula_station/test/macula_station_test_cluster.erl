@@ -179,7 +179,16 @@ dial(From, To) ->
     Target = #{
         host       => host_to_str(ToHost),
         port       => ToPort,
-        timeout_ms => 5_000
+        timeout_ms => 5_000,
+        %% Test stations share one openssl self-signed cert (see
+        %% shared_test_cert/0) and dial by loopback IP, so the
+        %% post-bf68ab8 webpki default rejects the handshake. That
+        %% cert's SPKI is not any station's Ed25519 pubkey, so
+        %% `expected_node_id' pinning can't apply either; `verify =>
+        %% none' is the SDK's documented escape for self-signed
+        %% dev/lab dials. Production dials by DNS against a real
+        %% Let's Encrypt cert, where the webpki default is correct.
+        verify     => none
     },
     dial_result(peer:call(peer_pid(From), macula_station, connect_to, [Target])).
 
