@@ -136,6 +136,16 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                  %% External peer with its own identity dials our listener.
                  ExtKp = macula_identity:generate(),
                  ExtId = macula_identity:public(ExtKp),
+                 %% `verify => none' is the SDK's documented escape for a
+                 %% self-signed dev/lab dial (macula bf68ab8: dials default
+                 %% to webpki and reject self-signed peers unless the target
+                 %% pins `expected_node_id' or opts out with `verify => none').
+                 %% The station here presents an openssl RSA self-signed cert
+                 %% (see generate_test_cert/1), so pubkey-pinning (Ed25519
+                 %% SPKI) can't apply. This test asserts DHT/SWIM ADMISSION,
+                 %% driven by the app-layer Ed25519-signed CONNECT/HELLO
+                 %% handshake — not TLS trust — so opting out of TLS verify
+                 %% is correct and leaves what the test checks unchanged.
                  {ok, _ClientPid} = macula_peering:connect(#{
                      role            => client,
                      identity        => ExtKp,
@@ -144,7 +154,8 @@ external_peer_dial_lands_in_dht_and_swim_test_() ->
                      controlling_pid => self(),
                      target          => #{host => "127.0.0.1",
                                           port => Port,
-                                          timeout_ms => 3_000}
+                                          timeout_ms => 3_000,
+                                          verify => none}
                  }),
                  ok = wait_until(fun() ->
                      macula_dht:contains(Dht, ExtId) andalso
