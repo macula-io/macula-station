@@ -437,7 +437,7 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
     %% earlier SDKs ignore it and pubsub frames flow via
     %% controlling_pid (backward-compatible).
     maybe_set_pubsub_recipient(Base1,
-                               whereis(macula_station_pubsub_dispatcher)).
+                               whereis(macula_station_route_pubsub_frames)).
 
 maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
     Opts#{dht_recipient => DhtPid};

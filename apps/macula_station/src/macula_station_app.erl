@@ -472,12 +472,12 @@ pubsub_registry_child(Kp) ->
 pubsub_dispatcher_child() ->
     Opts = #{pubsub_registry => whereis(hecate_pubsub_registry)},
     #{
-        id       => macula_station_pubsub_dispatcher,
-        start    => {macula_station_sup, start_pubsub_dispatcher, [Opts]},
+        id       => macula_station_route_pubsub_frames,
+        start    => {macula_station_sup, start_route_pubsub_frames, [Opts]},
         restart  => permanent,
         shutdown => 5_000,
         type     => worker,
-        modules  => [macula_station_pubsub_dispatcher]
+        modules  => [macula_station_route_pubsub_frames]
     }.
 
 outbound_links_sup_child(Kp, Caps, Peers) ->

@@ -372,7 +372,7 @@ forward_dispatch(Type, Frame, ConnPid, NodeId, _Msg)
         when (Type =:= subscribe orelse Type =:= unsubscribe orelse
               Type =:= publish   orelse Type =:= event),
              is_pid(ConnPid), is_binary(NodeId) ->
-    forward_pubsub(whereis(macula_station_pubsub_dispatcher),
+    forward_pubsub(whereis(macula_station_route_pubsub_frames),
                    ConnPid, NodeId, Frame);
 forward_dispatch(_OtherType, _Frame, _ConnPid, _NodeId, Msg) ->
     forward_to_observer(Msg).

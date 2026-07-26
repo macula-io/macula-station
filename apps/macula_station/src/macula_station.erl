@@ -371,7 +371,7 @@ compose_dial({ok, Observer}, #{identity := _} = Template) ->
     %% direct-to-pubsub-dispatcher fast paths as the accept side.
     Opts1 = maybe_set_dht_recipient(Opts0, whereis(macula_dht)),
     Opts2 = maybe_set_pubsub_recipient(Opts1,
-                                       whereis(macula_station_pubsub_dispatcher)),
+                                       whereis(macula_station_route_pubsub_frames)),
     {ok, Opts2};
 compose_dial(_ObserverResult, _Template) ->
     {error, not_started}.

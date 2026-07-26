@@ -59,7 +59,7 @@
 -export([start_dht/1, start_swim/1, start_observer/1, start_listener/1,
          start_cache/1, start_rebootstrap/1,
          start_handler_registry/1, start_remote_advertise_registry/1,
-         start_pubsub_registry/1, start_pubsub_dispatcher/1,
+         start_pubsub_registry/1, start_route_pubsub_frames/1,
          start_dht_handlers/1,
          start_content_handlers/1,
          start_dht_replicate/1, start_dht_republish/1, start_dht_expire/1,
@@ -85,7 +85,7 @@
 -define(CONTENT_ANNOUNCER_NAME,          macula_content_announcer).
 -define(BLOOM_EXCHANGE_NAME,             macula_station_bloom_exchange).
 -define(PEERING_ROUTER_NAME,             macula_station_peering_router).
--define(PUBSUB_DISPATCHER_NAME,          macula_station_pubsub_dispatcher).
+-define(ROUTE_PUBSUB_FRAMES_NAME,          macula_station_route_pubsub_frames).
 -define(RELAY_PING_NAME,                 macula_station_relay_ping).
 
 start_link() ->
@@ -245,11 +245,11 @@ start_relay_ping(Opts) ->
     register_result(macula_station_relay_ping:start_link(Opts),
                     ?RELAY_PING_NAME).
 
--spec start_pubsub_dispatcher(macula_station_pubsub_dispatcher:opts()) ->
+-spec start_route_pubsub_frames(macula_station_route_pubsub_frames:opts()) ->
     {ok, pid()} | {error, term()}.
-start_pubsub_dispatcher(Opts) ->
-    register_result(macula_station_pubsub_dispatcher:start_link(Opts),
-                    ?PUBSUB_DISPATCHER_NAME).
+start_route_pubsub_frames(Opts) ->
+    register_result(macula_station_route_pubsub_frames:start_link(Opts),
+                    ?ROUTE_PUBSUB_FRAMES_NAME).
 
 register_result({ok, Pid} = Ok, Name) ->
     ensure_registered(Name, Pid),

@@ -77,7 +77,7 @@
 -define(TRACKED, [
     {macula_station_peer_observer,     <<"peer_observer">>,     data},
     {macula_station_peering_router,    <<"peering_router">>,    control},
-    {macula_station_pubsub_dispatcher, <<"pubsub_dispatcher">>, data},
+    {macula_station_route_pubsub_frames, <<"pubsub_dispatcher">>, data},
     {macula_station_bloom_exchange,    <<"bloom_exchange">>,    control},
     {macula_station_record_fanout,     <<"record_fanout">>,     control},
     {macula_dht,                       <<"dht">>,               data},

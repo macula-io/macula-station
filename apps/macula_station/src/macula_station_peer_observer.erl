@@ -1195,7 +1195,7 @@ fan_out_event(EventFrame, [Sub | Rest], Conns) ->
     send_event_to_sub(maps:find(Sub, Conns), EventFrame),
     fan_out_event(EventFrame, Rest, Conns).
 
-%% Bloom-fan extras — see `macula_station_pubsub_dispatcher' for the
+%% Bloom-fan extras — see `macula_station_route_pubsub_frames' for the
 %% canonical comment. This legacy peer_observer path mirrors the same
 %% logic for stations where the dedicated dispatcher is not running.
 bloom_fan_extras(EventFrame, Matched, Excluded, Conns) ->

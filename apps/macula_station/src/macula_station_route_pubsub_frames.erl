@@ -41,7 +41,7 @@
 %% path the router uses after the ETS bypass in commit d0f0c8a; cost
 %% is microseconds vs the seconds the older `sys:get_state(observer)'
 %% path took under load.
--module(macula_station_pubsub_dispatcher).
+-module(macula_station_route_pubsub_frames).
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1]).

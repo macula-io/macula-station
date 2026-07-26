@@ -28,7 +28,7 @@
 -define(REBUILD_INTERVAL_MS, 30_000).
 
 %% Public ETS table mirroring `peer_blooms'. Read-only consumers
-%% (notably `macula_station_pubsub_dispatcher's bloom-fan path) use
+%% (notably `macula_station_route_pubsub_frames's bloom-fan path) use
 %% this directly to avoid serialising every inbound EVENT through
 %% bloom_exchange's mailbox — a `gen_server:call' per event creates
 %% a per-station bottleneck under sustained pubsub load. Same
