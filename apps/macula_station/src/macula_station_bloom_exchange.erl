@@ -44,6 +44,23 @@
 %% peer_bloom updates into one rebuild.
 -define(DEBOUNCE_MS, 2_000).
 
+%% How long a peer's Bloom survives without being re-gossiped.
+%%
+%% The table was INSERT-ONLY: `record_peer_bloom/4' was the single writer and
+%% there was no delete anywhere in the module, so a station decommissioned
+%% months ago kept contributing bits until this process restarted. That matters
+%% because `merge_with_peers/2' ORs every peer filter into the one we
+%% broadcast, so `n' is the union of every topic ever seen ANYWHERE, and the
+%% filter is 8192 bits / 7 hashes: false positives reach ~5% at about 1300
+%% topics, which is where a Bloom hit stops being better than flooding. A
+%% monotone union walks toward that ceiling and never walks back.
+%%
+%% Eviction is by staleness, not by peer liveness, because the merge is
+%% TRANSITIVE: we legitimately hold filters for stations we do not peer with
+%% directly, so "not in our conns table" would drop live interest. A station
+%% that has stopped gossiping for 20 consecutive rebuild ticks is gone.
+-define(PEER_BLOOM_TTL_MS, 600_000).
+
 %% Mesh-level events (including bloom gossip) live in the all-zeros
 %% realm — protocol infrastructure, not bound to any business realm.
 -define(MESH_REALM, <<0:256>>).
@@ -64,6 +81,8 @@
     identity        :: macula_identity:key_pair(),
     local_bloom     :: binary(),
     peer_blooms     :: #{binary() => binary()},
+    %% Key => last time we saw this peer's bloom (monotonic ms).
+    peer_seen       :: #{binary() => integer()},
     %% Active subscriptions on each peer's station_link for inbound
     %% `_mesh.bloom' events. Keyed by peer hostname so we don't
     %% double-subscribe when peer_links reports the same connection
@@ -177,6 +196,7 @@ init(#{pubsub_registry := Reg, identity := Kp}) ->
         identity        = Kp,
         local_bloom     = empty_bloom_bin(),
         peer_blooms     = #{},
+        peer_seen       = #{},
         subs            = #{},
         debounce_ref    = undefined
     },
@@ -230,7 +250,7 @@ handle_cast(_Msg, S) ->
     {noreply, S}.
 
 handle_info({rebuild, Ref}, #state{timer_ref = Ref} = S) ->
-    S1 = sync_inbound_subs(do_rebuild(S)),
+    S1 = sync_inbound_subs(do_rebuild(evict_stale_peer_blooms(S))),
     %% Periodic rebuild satisfies any pending debounce — queued
     %% `{debounced_rebuild, OldRef}' message arrives later but won't
     %% match the cleared `debounce_ref' field and is dropped.
@@ -282,6 +302,32 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %%====================================================================
 %% Rebuild + broadcast
 %%====================================================================
+
+%% Drop peer filters that have not been re-gossiped within
+%% `?PEER_BLOOM_TTL_MS'. Runs on the periodic tick only, so a burst of
+%% inbound blooms never pays for it.
+%% Timestamps live in their OWN map, deliberately. Folding them into
+%% `peer_blooms' as `{Bin, SeenAt}' compiles cleanly and then fails SILENTLY:
+%% `merge_with_peers/2' guards its fold clause on `when is_binary(Bin)', so
+%% every tuple would fall to the `_BadBin -> Acc' branch and the merged filter
+%% would collapse to local-only, killing transitive interest with no crash and
+%% no log. Same for the `peer_blooms/1' accessor's `#{binary() => binary()}'
+%% contract. Keeping the stored shape untouched keeps both correct.
+evict_stale_peer_blooms(#state{peer_blooms = PB, peer_seen = Seen} = S) ->
+    Cutoff = now_ms() - ?PEER_BLOOM_TTL_MS,
+    Stale  = [K || K <- maps:keys(PB), maps:get(K, Seen, 0) < Cutoff],
+    evicted(Stale, S).
+
+evicted([], S) ->
+    S;
+evicted(Stale, #state{peer_blooms = PB, peer_seen = Seen} = S) ->
+    [catch ets:delete(?PEER_BLOOMS_TABLE, K) || K <- Stale],
+    Live = maps:without(Stale, PB),
+    logger:info("[bloom_exchange] evicted ~b stale peer bloom(s); ~b live",
+                [length(Stale), maps:size(Live)]),
+    S#state{peer_blooms = Live, peer_seen = maps:without(Stale, Seen)}.
+
+now_ms() -> erlang:monotonic_time(millisecond).
 
 do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB} = S) ->
     %% Local bloom = topics this station's pubsub_registry holds
@@ -394,10 +440,11 @@ empty_bloom_bin() ->
 %% ?REBUILD_INTERVAL_MS. Always mirror to the public ETS table so
 %% the dispatcher hot path sees the latest bytes within the same
 %% wall-clock tick.
-record_peer_bloom(Key, BloomBin, PB, S) ->
+record_peer_bloom(Key, BloomBin, PB, #state{peer_seen = Seen} = S) ->
     Changed = maps:get(Key, PB, undefined) =/= BloomBin,
     catch ets:insert(?PEER_BLOOMS_TABLE, {Key, BloomBin}),
-    S1 = S#state{peer_blooms = PB#{Key => BloomBin}},
+    S1 = S#state{peer_blooms = PB#{Key => BloomBin},
+                 peer_seen   = Seen#{Key => now_ms()}},
     case Changed of
         true  -> schedule_debounced_rebuild(S1);
         false -> S1
