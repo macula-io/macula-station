@@ -1,4 +1,4 @@
-%% @doc Pubsub frame dispatcher — receives `subscribe', `unsubscribe',
+%% @doc Routes inbound pubsub frames — receives `subscribe', `unsubscribe',
 %% `publish' and `event' frames directly from `macula_peering_conn'
 %% (SDK >= 4.4.4 `pubsub_recipient' opt), bypassing
 %% `macula_station_peer_observer's mailbox.
@@ -63,6 +63,9 @@
 %% plus the fan-out entry and counter install so delivery outcomes can be
 %% driven without standing up a station.
 -export([has_live_conn/2, conn_pid/1, fan_out_event/3, install_counters/0]).
+%% Dedup disposition + origin seeding, so the publisher-attestation rule
+%% can be driven directly against the cache.
+-export([event_dedup_disposition/1, record_origin_seq/2]).
 -endif.
 
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
@@ -102,7 +105,8 @@
 -define(CTR_NO_LIVE_CONN,      5).  %% target chosen, no live worker
 -define(CTR_NO_BLOOM_MATCH,    6).  %% no peer bloom matched the topic
 -define(CTR_RELAY_PUBLISH_ERR, 7).  %% registry refused the PUBLISH
--define(CTR_SLOTS,             7).
+-define(CTR_UNAUTH_PUBLISHER,  8).  %% publisher not attested; cache untouched
+-define(CTR_SLOTS,             8).
 
 -record(state, {
     pubsub_registry :: pid() | undefined,
@@ -160,7 +164,8 @@ stats_of(Ref) ->
       no_targets         => counters:get(Ref, ?CTR_NO_TARGETS),
       no_live_conn       => counters:get(Ref, ?CTR_NO_LIVE_CONN),
       no_bloom_match     => counters:get(Ref, ?CTR_NO_BLOOM_MATCH),
-      relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR)}.
+      relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR),
+      unauth_publisher   => counters:get(Ref, ?CTR_UNAUTH_PUBLISHER)}.
 
 install_counters() ->
     install_counters(persistent_term:get(?PT_COUNTERS, undefined)).
@@ -428,7 +433,7 @@ deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
                         [Suffix, short_hex(NodeId), short_hex(Realm)]);
         _ -> ok
     end,
-    record_origin_seq(Verified),
+    record_origin_seq(Verified, NodeId),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
       NodeId, CT);
@@ -700,15 +705,47 @@ send_to_conn(Pid, EventFrame) ->
 %% (Phase 2 step 2/3). Decides per-EVENT whether to deliver or drop
 %% as a loop-back. Tolerates the cache being momentarily down (boot
 %% transient) and frames missing publisher/seq.
-event_dedup_disposition(#{publisher := Pub, seq := Seq} = V)
+%% Only an AUTHENTICATED publisher may touch the cache.
+%%
+%% This used to key the cache off the raw `publisher' / `seq' fields of
+%% any verified frame. For an EVENT with no `publisher_sig',
+%% `verify_pubsub/2' checks the frame signature against the SENDING
+%% peer's node id and never compares `publisher' to it — so a peer could
+%% name a victim's pubkey with a chosen `seq', sign the frame with its
+%% own key, pass verification, and insert that pair. The victim's genuine
+%% publisher-signed EVENT then arrived, found the pair present, and was
+%% dropped as a duplicate. Sequence numbers are trivially predictable
+%% (`macula_client' seeds `publish_seq' from `system_time(microsecond)'
+%% and increments by one), so one observed event yields every future key
+%% for that publisher: a per-publisher, per-topic mute button lasting the
+%% full 300s dedup window, costing one frame.
+%%
+%% A verified `publisher_sig' covers `(topic, realm, publisher, seq,
+%% payload)', so its presence on an already-verified frame means the
+%% publisher field is attested by the publisher itself. Unsigned events
+%% never reach the cache now — they were already always delivered, so
+%% they gained nothing from it and only supplied the attack surface.
+event_dedup_disposition(V) ->
+    event_disposition(authentic_event_key(V), V).
+
+authentic_event_key(#{publisher_sig := _, publisher := Pub, seq := Seq})
   when is_binary(Pub), is_integer(Seq) ->
-    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V);
-event_dedup_disposition(_V) ->
-    deliver.
+    {Pub, Seq};
+authentic_event_key(_V) ->
+    unauthenticated.
+
+event_disposition(unauthenticated, _V) ->
+    bump(?CTR_UNAUTH_PUBLISHER),
+    deliver;
+event_disposition({Pub, Seq}, V) ->
+    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V).
 
 classify_event_dup(new, _V) ->
     deliver;
-classify_event_dup(duplicate, #{publisher_sig := _} = V) ->
+%% Reached only for events whose publisher is attested (see
+%% `authentic_event_key/1'), so the clause that used to handle an
+%% unsigned duplicate is gone rather than left as unreachable code.
+classify_event_dup(duplicate, V) ->
     %% Counted, not raised to `info': receiver-side bloom-fan makes
     %% duplicates EXPECTED and numerous (O(mesh) per publish), so a
     %% per-drop log at production level would flood. The counter gives
@@ -722,21 +759,34 @@ classify_event_dup(duplicate, #{publisher_sig := _} = V) ->
     logger:debug("[event_dedup] dropped loop-back EVENT publisher=~s seq=~p topic=~s",
                  [short_hex(maps:get(publisher, V)), maps:get(seq, V),
                   maps:get(topic, V, <<>>)]),
-    drop;
-classify_event_dup(duplicate, V) ->
-    logger:debug("[event_dedup] repeat EVENT publisher=~s seq=~p topic=~s"
-                 " (no publisher_sig — still delivered)",
-                 [short_hex(maps:get(publisher, V)), maps:get(seq, V),
-                  maps:get(topic, V, <<>>)]),
-    deliver.
+    drop.
 
 %% Seed the dedup cache at the origin station so a looped-back EVENT
 %% for the same publish is recognised as a duplicate here too.
-record_origin_seq(#{publisher := Pub, seq := Seq})
-  when is_binary(Pub), is_integer(Seq) ->
-    _ = macula_station_event_dedup:seen_or_record(Pub, Seq),
+%%
+%% A PUBLISH is verified against the CONNECTION's node id, and unlike an
+%% EVENT its `publisher_sig' is NOT checked on this path, so the only
+%% publisher this station can attest to is the connected daemon itself.
+%% A `publisher' naming anyone else is an unverified claim about a third
+%% party, and seeding on it is the same poisoning primitive as the EVENT
+%% path had. Refusals are counted rather than logged: if the fleet turns
+%% out to publish under a pubkey that differs from its connection
+%% identity, `unauth_publisher' will show it as a rate instead of a
+%% silent loss of origin seeding.
+record_origin_seq(Verified, NodeId) ->
+    record_origin(origin_dedup_key(Verified, NodeId)).
+
+origin_dedup_key(#{publisher := Pub, seq := Seq}, NodeId)
+  when is_binary(Pub), is_integer(Seq), Pub =:= NodeId ->
+    {Pub, Seq};
+origin_dedup_key(_Verified, _NodeId) ->
+    unauthenticated.
+
+record_origin(unauthenticated) ->
+    bump(?CTR_UNAUTH_PUBLISHER),
     ok;
-record_origin_seq(_Verified) ->
+record_origin({Pub, Seq}) ->
+    _ = macula_station_event_dedup:seen_or_record(Pub, Seq),
     ok.
 
 notify_router_change() ->
