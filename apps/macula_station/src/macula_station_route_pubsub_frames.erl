@@ -113,7 +113,22 @@
 %% change worth acting on.
 -define(CTR_UNAUTH_EVENT,      8).  %% EVENT with no verified publisher_sig
 -define(CTR_UNAUTH_ORIGIN,     9).  %% PUBLISH publisher =/= connection id
--define(CTR_SLOTS,             9).
+%% Attribution for `no_targets'. Most of it never reaches the bloom path at
+%% all: an empty target list needs empty extras, and for a non-mesh binary
+%% topic that always bumps `no_bloom_match' first -- so anything by which
+%% `no_targets' EXCEEDS `no_bloom_match' is mesh-internal or topic-less, and
+%% was previously unattributable. `_mesh.bloom.local' is the bulk of it: it is
+%% a diagnostic feed the realm dashboard subscribes to, so at the four
+%% stations where the realm is not subscribed it lands with no subscriber by
+%% design. That is terminus, not loss, and it must be labelled as such or it
+%% masquerades as a delivery failure.
+-define(CTR_MESH_TOPIC,       10).  %% `_mesh.*', never bloom-fanned
+-define(CTR_NO_TOPIC,         11).  %% frame carried no topic
+-define(CTR_SEND_REFUSED,     12).  %% send_frame/2 refused the frame
+%% The two reasons a bloom candidate is unreachable mean OPPOSITE things.
+-define(CTR_BLOOM_NOT_NEIGHBOUR, 13).  %% transitive bloom named a non-peer
+-define(CTR_BLOOM_CONN_DEAD,     14).  %% we held a conn to it and it died
+-define(CTR_SLOTS,            14).
 
 -record(state, {
     pubsub_registry :: atom() | pid() | undefined,
@@ -173,7 +188,12 @@ stats_of(Ref) ->
       no_bloom_match     => counters:get(Ref, ?CTR_NO_BLOOM_MATCH),
       relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR),
       unauth_event       => counters:get(Ref, ?CTR_UNAUTH_EVENT),
-      unauth_origin      => counters:get(Ref, ?CTR_UNAUTH_ORIGIN)}.
+      unauth_origin      => counters:get(Ref, ?CTR_UNAUTH_ORIGIN),
+      mesh_topic         => counters:get(Ref, ?CTR_MESH_TOPIC),
+      no_topic           => counters:get(Ref, ?CTR_NO_TOPIC),
+      send_refused       => counters:get(Ref, ?CTR_SEND_REFUSED),
+      bloom_not_neighbour => counters:get(Ref, ?CTR_BLOOM_NOT_NEIGHBOUR),
+      bloom_conn_dead    => counters:get(Ref, ?CTR_BLOOM_CONN_DEAD)}.
 
 install_counters() ->
     install_counters(persistent_term:get(?PT_COUNTERS, undefined)).
@@ -578,8 +598,12 @@ on_relay_publish({error, Reason}, NodeId, _CT) ->
 %% the gossip cadence (same reason `peering_router' filters them).
 bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
     case maps:get(topic, EventFrame, undefined) of
-        undefined -> [];
-        <<"_mesh.", _/binary>> -> [];
+        undefined ->
+            bump(?CTR_NO_TOPIC),
+            [];
+        <<"_mesh.", _/binary>> ->
+            bump(?CTR_MESH_TOPIC),
+            [];
         Topic when is_binary(Topic) ->
             bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT)
     end.
@@ -612,7 +636,35 @@ filter_fan_candidates(Candidates, Matched, Excluded, CT) ->
     [NodeId
      || NodeId <- Candidates,
         not sets:is_element(NodeId, Skip),
-        has_live_conn(CT, NodeId)].
+        fan_eligible(CT, NodeId)].
+
+%% Separates the two reasons a bloom candidate is unreachable, because they
+%% mean opposite things and lumping them together is why "no_live_conn = 0"
+%% read as "nothing is being lost".
+fan_eligible(CT, NodeId) ->
+    classify_fan_conn(ets_lookup_conn(CT, NodeId)).
+
+%% No conns row at all. `peer_observer' deletes the row once both directions
+%% clear, so this is the steady state for a peer we simply do not neighbour —
+%% and the transitive bloom NAMES non-neighbours by design (see
+%% `macula_station_bloom_exchange:peer_matches/2', whose docstring requires
+%% callers to intersect with their own direct peers). Benign, and expected to
+%% be the common case on a merged-bloom mesh.
+classify_fan_conn(error) ->
+    bump(?CTR_BLOOM_NOT_NEIGHBOUR),
+    false;
+classify_fan_conn({ok, _} = Lookup) ->
+    fan_conn_live(conn_pid(Lookup)).
+
+%% A row exists but no direction resolves to a live pid: we held a conn to
+%% this peer and it died without the DOWN having been processed yet. This is
+%% the flap window, and it is the only one of the two that can drop an event
+%% that was otherwise deliverable.
+fan_conn_live(undefined) ->
+    bump(?CTR_BLOOM_CONN_DEAD),
+    false;
+fan_conn_live(_Pid) ->
+    true.
 
 %% A peer NodeId is fan-eligible only if we hold a peering conn whose
 %% inbound or outbound worker is ALIVE. The conns table is owned by
@@ -706,8 +758,20 @@ send_to_conn(undefined, _EventFrame) ->
     bump(?CTR_NO_LIVE_CONN),
     ok;
 send_to_conn(Pid, EventFrame) ->
+    count_send(macula_peering:send_frame(Pid, EventFrame)).
+
+%% `send_frame/2' validates before casting and returns `{error, _}' for an
+%% unsendable frame WITHOUT sending it (`macula_peering:cast_checked/3').
+%% Bumping `forwarded' before the call counted those refusals as deliveries
+%% and inflated the denominator of every ratio derived from these counters.
+%% On this fleet a refusal is not hypothetical: colliding wire keys and float
+%% payloads have both produced one.
+count_send(ok) ->
     bump(?CTR_FORWARDED),
-    macula_peering:send_frame(Pid, EventFrame).
+    ok;
+count_send({error, _Reason}) ->
+    bump(?CTR_SEND_REFUSED),
+    ok.
 
 %% (publisher, seq) dedup — see macula_station_peer_observer's notes
 %% (Phase 2 step 2/3). Decides per-EVENT whether to deliver or drop
