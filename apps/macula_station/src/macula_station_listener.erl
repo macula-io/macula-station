@@ -71,6 +71,11 @@
 
 -export_type([opts/0, listen_addr/0, stats/0, cert_source/0]).
 
+-ifdef(TEST).
+%% Exports for unit tests — pure opts composition.
+-export([peering_opts/1]).
+-endif.
+
 -type cert_source() ::
         {pem, CertFile :: file:name_all(), KeyFile :: file:name_all()}
       | {self_signed_pubkey, macula_identity:key_pair()}.
@@ -428,7 +433,17 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
     %% gen_server delays everything else. SDK >= 4.4.3 honours this
     %% opt; earlier SDKs ignore it and DHT frames flow via
     %% controlling_pid (backward-compatible).
-    Base1 = maybe_set_dht_recipient(Base, whereis(macula_dht)),
+    %%
+    %% Both recipients are passed as REGISTERED NAMES, not pids. macula
+    %% >= 7.1.0 re-resolves a name on every frame, so a recipient
+    %% crash-restart is transparent. Passing `whereis/1' here captured
+    %% the pid once for the life of the connection: after a restart the
+    %% SDK kept posting to the dead pid (its guard was `is_pid/1', true
+    %% for a dead pid) and every frame was silently discarded by the VM
+    %% until the connection was torn down. It also made the bypass
+    %% depend on a boot race — a connection accepted before the
+    %% recipient registered never got the bypass at all.
+    Base1 = Base#{dht_recipient => macula_dht},
     %% Route pubsub-class frames (subscribe, unsubscribe, publish,
     %% event) to the dedicated pubsub dispatcher. After the DHT
     %% bypass shipped (4.4.3), `event' frames became the dominant
@@ -436,18 +451,7 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
     %% Ed25519-verify-per-event work. SDK >= 4.4.4 honours this opt;
     %% earlier SDKs ignore it and pubsub frames flow via
     %% controlling_pid (backward-compatible).
-    maybe_set_pubsub_recipient(Base1,
-                               whereis(macula_station_route_pubsub_frames)).
-
-maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
-    Opts#{dht_recipient => DhtPid};
-maybe_set_dht_recipient(Opts, _) ->
-    Opts.
-
-maybe_set_pubsub_recipient(Opts, Pid) when is_pid(Pid) ->
-    Opts#{pubsub_recipient => Pid};
-maybe_set_pubsub_recipient(Opts, _) ->
-    Opts.
+    Base1#{pubsub_recipient => macula_station_route_pubsub_frames}.
 
 %% DOWN routing — a monitored worker died. Could be in either lifecycle
 %% map. Probe both; the matching entry is removed. Always also drop

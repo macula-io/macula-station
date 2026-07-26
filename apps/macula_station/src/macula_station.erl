@@ -42,6 +42,11 @@
     forget_dial_opts/0
 ]).
 
+-ifdef(TEST).
+%% Exports for unit tests — pure opts composition.
+-export([compose_dial/2]).
+-endif.
+
 -spec start_link(macula_station_config:opts()) -> {ok, pid()} | {error, term()}.
 start_link(Spec) ->
     macula_station_server:start_link(Spec).
@@ -368,23 +373,14 @@ compose_dial({ok, Observer}, #{identity := _} = Template) ->
     },
     %% See macula_station_listener:peering_opts/1 for the rationale —
     %% station→station outbound dials use the same direct-to-DHT /
-    %% direct-to-pubsub-dispatcher fast paths as the accept side.
-    Opts1 = maybe_set_dht_recipient(Opts0, whereis(macula_dht)),
-    Opts2 = maybe_set_pubsub_recipient(Opts1,
-                                       whereis(macula_station_route_pubsub_frames)),
-    {ok, Opts2};
+    %% direct-to-pubsub fast paths as the accept side, and pass the
+    %% recipients as REGISTERED NAMES so a recipient restart does not
+    %% strand the connection on a dead pid.
+    Opts1 = Opts0#{dht_recipient    => macula_dht,
+                   pubsub_recipient => macula_station_route_pubsub_frames},
+    {ok, Opts1};
 compose_dial(_ObserverResult, _Template) ->
     {error, not_started}.
-
-maybe_set_dht_recipient(Opts, DhtPid) when is_pid(DhtPid) ->
-    Opts#{dht_recipient => DhtPid};
-maybe_set_dht_recipient(Opts, _) ->
-    Opts.
-
-maybe_set_pubsub_recipient(Opts, Pid) when is_pid(Pid) ->
-    Opts#{pubsub_recipient => Pid};
-maybe_set_pubsub_recipient(Opts, _) ->
-    Opts.
 
 resolve(Name) ->
     deliver(whereis(Name)).
