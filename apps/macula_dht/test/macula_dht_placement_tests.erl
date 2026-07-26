@@ -142,3 +142,23 @@ small_constraints(K) ->
 small_constraints(K, OpMax) ->
     #{k => K, asn_min => 1, country_min => 1, tier_min => 1,
       operator_max => OpMax}.
+
+%% Regression: ASN 0 means UNKNOWN and must not act as a shared operator.
+%% Every entry on the live mesh carries asn=0, so capping on it silently
+%% limited replication to operator_max (3) regardless of k.
+unknown_asn_does_not_cap_replication_test() ->
+    Refs = [ref(I, 0, <<"??">>, 0) || I <- lists:seq(1, 20)],
+    R = macula_dht_placement:place(<<0:256>>, Refs,
+                                   #{k => 20, asn_min => 0,
+                                     country_min => 0, tier_min => 0,
+                                     operator_max => 3}),
+    ?assertEqual(20, length(maps:get(chosen, R))).
+
+%% A KNOWN shared ASN must still cap, or the fix would disable the guard.
+known_shared_asn_still_caps_test() ->
+    Refs = [ref(I, 100, <<"BE">>, 0) || I <- lists:seq(1, 20)],
+    R = macula_dht_placement:place(<<0:256>>, Refs,
+                                   #{k => 20, asn_min => 0,
+                                     country_min => 0, tier_min => 0,
+                                     operator_max => 3}),
+    ?assertEqual(3, length(maps:get(chosen, R))).

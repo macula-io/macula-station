@@ -178,8 +178,23 @@ already_chosen(Cand, Chosen) ->
 -spec within_operator_cap(macula_frame:station_ref(),
                           [macula_frame:station_ref()],
                           constraints()) -> boolean().
+%% ASN 0 means UNKNOWN, not "operator zero", and it is the value every entry
+%% carries today: `macula_station_bootstrap' and
+%% `macula_station_peer_observer:direct_peer_spec/1' both fabricate `asn => 0',
+%% and although `macula_dht_protocol:entry_to_station_ref/2' writes an ASN onto
+%% NODES replies there is no inverse, so a peer's real ASN is never read back.
+%%
+%% Capping on an unknown value silently capped REPLICATION at `operator_max'
+%% (3) for every store, no matter what `k' said, because after three chosen
+%% candidates every remaining one had `count_asn(0, Chosen) =:= 3'. An unknown
+%% operator cannot be shown to be the same operator, so it is exempt.
 within_operator_cap(Cand, Chosen, #{operator_max := Max}) ->
-    count_asn(asn_of(Cand), Chosen) < Max.
+    operator_cap_ok(asn_of(Cand), Chosen, Max).
+
+operator_cap_ok(0, _Chosen, _Max) ->
+    true;
+operator_cap_ok(Asn, Chosen, Max) ->
+    count_asn(Asn, Chosen) < Max.
 
 %% @doc After tentatively adding Cand, would we still have enough
 %% slots left to reach every diversity minimum? A slot can contribute
