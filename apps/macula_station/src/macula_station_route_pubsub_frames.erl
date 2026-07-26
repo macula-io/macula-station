@@ -105,8 +105,15 @@
 -define(CTR_NO_LIVE_CONN,      5).  %% target chosen, no live worker
 -define(CTR_NO_BLOOM_MATCH,    6).  %% no peer bloom matched the topic
 -define(CTR_RELAY_PUBLISH_ERR, 7).  %% registry refused the PUBLISH
--define(CTR_UNAUTH_PUBLISHER,  8).  %% publisher not attested; cache untouched
--define(CTR_SLOTS,             8).
+%% Two DISTINCT refusals, deliberately separate counters. Bumping one
+%% counter from both made the live signal uninterpretable: an unsigned
+%% EVENT is harmless (it was always delivered and never needed the
+%% cache), while a PUBLISH naming a third party means origin seeding
+%% has STOPPED for that publisher. Only the second is a behaviour
+%% change worth acting on.
+-define(CTR_UNAUTH_EVENT,      8).  %% EVENT with no verified publisher_sig
+-define(CTR_UNAUTH_ORIGIN,     9).  %% PUBLISH publisher =/= connection id
+-define(CTR_SLOTS,             9).
 
 -record(state, {
     pubsub_registry :: pid() | undefined,
@@ -165,7 +172,8 @@ stats_of(Ref) ->
       no_live_conn       => counters:get(Ref, ?CTR_NO_LIVE_CONN),
       no_bloom_match     => counters:get(Ref, ?CTR_NO_BLOOM_MATCH),
       relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR),
-      unauth_publisher   => counters:get(Ref, ?CTR_UNAUTH_PUBLISHER)}.
+      unauth_event       => counters:get(Ref, ?CTR_UNAUTH_EVENT),
+      unauth_origin      => counters:get(Ref, ?CTR_UNAUTH_ORIGIN)}.
 
 install_counters() ->
     install_counters(persistent_term:get(?PT_COUNTERS, undefined)).
@@ -735,7 +743,7 @@ authentic_event_key(_V) ->
     unauthenticated.
 
 event_disposition(unauthenticated, _V) ->
-    bump(?CTR_UNAUTH_PUBLISHER),
+    bump(?CTR_UNAUTH_EVENT),
     deliver;
 event_disposition({Pub, Seq}, V) ->
     classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V).
@@ -783,7 +791,7 @@ origin_dedup_key(_Verified, _NodeId) ->
     unauthenticated.
 
 record_origin(unauthenticated) ->
-    bump(?CTR_UNAUTH_PUBLISHER),
+    bump(?CTR_UNAUTH_ORIGIN),
     ok;
 record_origin({Pub, Seq}) ->
     _ = macula_station_event_dedup:seen_or_record(Pub, Seq),

@@ -87,7 +87,7 @@ unsigned_event_is_always_delivered(_) ->
         Before = stats(),
         ?assertEqual(deliver, disposition(unsigned_event(?VICTIM, 4))),
         ?assertEqual(deliver, disposition(unsigned_event(?VICTIM, 4))),
-        ?assertEqual(2, delta(unauth_publisher, Before, stats()))
+        ?assertEqual(2, delta(unauth_event, Before, stats()))
     end.
 
 %%====================================================================
@@ -110,7 +110,7 @@ origin_refuses_a_third_party_publisher(_) ->
         ok = macula_station_route_pubsub_frames:record_origin_seq(
                publish(?VICTIM, Seq), ?ATTACKER),
         ?assertEqual(absent, peek(?VICTIM, Seq)),
-        ?assertEqual(1, delta(unauth_publisher, Before, stats()))
+        ?assertEqual(1, delta(unauth_origin, Before, stats()))
     end.
 
 %%====================================================================
