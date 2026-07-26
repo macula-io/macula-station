@@ -18,6 +18,7 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1]).
+-export([bloom_stats/0]).
 -export([rebuild_and_broadcast/1, receive_peer_bloom/3,
          notify_local_change/1,
          get_local_bloom/1, peer_blooms/1, peer_matches/2,
@@ -49,11 +50,20 @@
 %% The table was INSERT-ONLY: `record_peer_bloom/4' was the single writer and
 %% there was no delete anywhere in the module, so a station decommissioned
 %% months ago kept contributing bits until this process restarted. That matters
-%% because `merge_with_peers/2' ORs every peer filter into the one we
-%% broadcast, so `n' is the union of every topic ever seen ANYWHERE, and the
-%% filter is 8192 bits / 7 hashes: false positives reach ~5% at about 1300
-%% topics, which is where a Bloom hit stops being better than flooding. A
-%% monotone union walks toward that ceiling and never walks back.
+%% CORRECTION (2026-07-26): eviction does NOT bound `n', and an earlier version
+%% of this comment claimed it did. `do_rebuild/1' merges each peer's OUTGOING
+%% (already-merged) filter, which is what peers publish on `_mesh.bloom'. So for
+%% stations A and B, A.outgoing includes B.outgoing includes A.outgoing: a bit
+%% set once at A survives at A forever via B, and unsubscribing a topic clears
+%% it from A.local only for it to return on the next tick. Eviction fires only
+%% when a station stops gossiping ENTIRELY, and by then its bits have been
+%% absorbed into every survivor and are rebroadcast every 30s. The bit set is
+%% monotone non-decreasing under all conditions.
+%%
+%% What this DOES buy, and why it stays: it bounds the map/table ENTRY count,
+%% and it stops a decommissioned station being returned as a fan candidate by
+%% `peer_matches_ets/1'. Bounding `n' requires routing on per-origin LOCAL
+%% filters (already on the wire as `_mesh.bloom.local') instead of merged ones.
 %%
 %% Eviction is by staleness, not by peer liveness, because the merge is
 %% TRANSITIVE: we legitimately hold filters for stations we do not peer with
@@ -183,6 +193,42 @@ peer_matches_ets(Topic) when is_binary(Topic) ->
     catch
         error:badarg -> []
     end.
+
+%% @doc Live filter saturation. `count_bits_set/1' and
+%% `estimated_elements/1' have been exported from `macula_station_bloom'
+%% all along and called NOWHERE in this application, so the only fill
+%% number in the programme came from a hand-run docker exec probe.
+%%
+%% Read `merged_fp' first. At m=8192/k=7 the design point is ~1% and a
+%% Bloom hit stops being better than flooding around 5%, which is roughly
+%% 1300 topics. `merged_*' is what this station BROADCASTS (local OR every
+%% peer, and monotone: see the correction above). `local_*' is this
+%% station's own interest, which is the only figure that can actually fall.
+%% The gap between them is the transitive union's cost.
+-spec bloom_stats() -> #{atom() => term()}.
+bloom_stats() ->
+    stats_of(whereis(?MODULE)).
+
+stats_of(undefined) ->
+    #{error => not_running};
+stats_of(Pid) ->
+    Local  = get_local_bloom(Pid),
+    Merged = merge_with_peers(Local, peer_blooms(Pid)),
+    #{peers        => map_size(peer_blooms(Pid)),
+      local_bits   => bits(Local),
+      local_n      => elements(Local),
+      merged_bits  => bits(Merged),
+      merged_n     => elements(Merged),
+      merged_fill  => fill(Merged),
+      merged_fp    => fp(Merged)}.
+
+bits(Bin)     -> macula_station_bloom:count_bits_set(from_bin(Bin)).
+elements(Bin) -> macula_station_bloom:estimated_elements(from_bin(Bin)).
+fill(Bin)     -> bits(Bin) / 8192.
+%% (set/m)^k is the probability a guessed topic's k positions are all set.
+fp(Bin)       -> math:pow(fill(Bin), 7).
+
+from_bin(Bin) -> macula_station_bloom:from_binary(Bin).
 
 %%====================================================================
 %% gen_server
