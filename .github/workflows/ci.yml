@@ -3,9 +3,12 @@ name: CI
 # Push to main → :main + :<sha> (amd64 only, fast)
 # Push to tag  → :vX.Y.Z + :vX.Y + :latest (multi-arch amd64+arm64)
 #
-# Container target: codeberg.org/macula-internal/macula-station
-# (Codeberg-native registry; replaced the self-hosted zot at
-# registry.macula.io). Auth: CODEBERG_PUBLISHER_USER + CODEBERG_PACKAGE_TOKEN.
+# Container target: ghcr.io/macula-io/macula-station
+# Moved off codeberg.org 2026-07-26: GitHub is canonical, and the Codeberg
+# registry is scheduled for deletion. Keeping rollback artifacts (every
+# :<sha> tag) in a registry we intend to destroy meant the fleet's entire
+# recovery surface was accumulating somewhere it would vanish.
+# Auth: the built-in GITHUB_TOKEN, so there is no publisher secret to rotate.
 
 on:
   push:
@@ -14,9 +17,15 @@ on:
   pull_request:
     branches: [main]
 
+# GITHUB_TOKEN needs packages:write to push to ghcr, and it is not granted
+# by default under restricted default permissions.
+permissions:
+  contents: read
+  packages: write
+
 env:
-  REGISTRY: codeberg.org
-  IMAGE_NAME: codeberg.org/macula-internal/macula-station
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/macula-io/macula-station
 
 jobs:
   build:
@@ -83,12 +92,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Codeberg Container Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
-          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -124,12 +133,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Codeberg Container Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
-          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -161,12 +170,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Codeberg Container Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.CODEBERG_PUBLISHER_USER }}
-          password: ${{ secrets.CODEBERG_PACKAGE_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract version
         id: version
