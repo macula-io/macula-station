@@ -451,16 +451,6 @@ handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
 %% plus to direct outbound peers whose Bloom filter matches the topic
 %% (publisher-side bloom-fan, see `bloom_fan_extras/3').
 deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
-    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
-    %% Fires BEFORE the realm-guard in do_relay_publish, so we see
-    %% PUBLISH frames even if their realm doesn't match the station's
-    %% registered realm.
-    case maps:get(topic, Verified, <<>>) of
-        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
-            logger:info("[mpong-trace] dispatcher PUBLISH topic=mpong/~s peer=~s frame_realm=~s",
-                        [Suffix, short_hex(NodeId), short_hex(Realm)]);
-        _ -> ok
-    end,
     record_origin_seq(Verified, NodeId),
     on_relay_publish(
       hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
@@ -479,15 +469,6 @@ deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
 %% receiver kills further loops.
 deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     Disp = event_dedup_disposition(Verified),
-    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
-    case maps:get(topic, Verified, <<>>) of
-        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
-            logger:info("[mpong-trace] inbound EVENT topic=mpong/~s peer=~s dedup=~p has_sig=~p seq=~p",
-                        [Suffix, short_hex(NodeId), Disp,
-                         maps:is_key(publisher_sig, Verified),
-                         maps:get(seq, Verified, undefined)]);
-        _ -> ok
-    end,
     case Disp of
         drop ->
             ok;
@@ -497,13 +478,6 @@ deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     end;
 
 deliver_typed(subscribe, Realm, NodeId, Verified, Reg, _CT) ->
-    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
-    case maps:get(topic, Verified, <<>>) of
-        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
-            logger:info("[mpong-trace] dispatcher subscribe topic=mpong/~s peer_node=~s",
-                        [Suffix, short_hex(NodeId)]);
-        _ -> ok
-    end,
     _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
     %% Snap the router to a sync NOW so this fresh subscriber gets
     %% propagated to peer stations within milliseconds rather than
@@ -551,13 +525,6 @@ deliver_inbound_event({ok, Server}, EventFrame, SourceNodeId, CT) ->
     Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
               catch _:_ -> []
               end,
-    %% [mpong-trace] temporary — diagnose state_broadcast_v1 routing.
-    case maps:get(topic, EventFrame, <<>>) of
-        <<"io.macula/beam-campus/hecate/mpong/", Suffix/binary>> ->
-            logger:info("[mpong-trace] deliver_inbound_event topic=mpong/~s source=~s local_matched=~p",
-                        [Suffix, short_hex(SourceNodeId), length(Matched)]);
-        _ -> ok
-    end,
     fan_out_event(EventFrame,
                   Matched ++ bloom_fan_extras(EventFrame, Matched,
                                               [SourceNodeId], CT),
