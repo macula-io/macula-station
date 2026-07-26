@@ -45,6 +45,7 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1]).
+-export([deliver_verified/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -90,6 +91,28 @@ start_link(Opts) ->
 
 -spec stop(pid()) -> ok.
 stop(Pid) -> gen_server:stop(Pid).
+
+%% @doc Deliver an already-verified pubsub frame. Entry point for the
+%% LEGACY `controlling_pid' path in `macula_station_peer_observer'.
+%%
+%% The SDK routes pubsub frames straight here when `pubsub_recipient'
+%% resolves, and falls back to `controlling_pid' when it does not — a
+%% recipient restart gap, or an SDK older than 4.4.4. Those fallback
+%% frames must be delivered by the SAME code as the bypass path.
+%% peer_observer used to carry its own copy of the whole delivery path,
+%% and the two drifted: fixes landed on one and not the other, and a
+%% station could serve two different pubsub disciplines depending on
+%% which path a given connection happened to take.
+%%
+%% The conns mirror is read instead of peer_observer's in-state map.
+%% They are written in lockstep (see `write_conn_table/2' there: "Both
+%% write the same value the `conns' map sees"), so this is the same
+%% state, reached without a gen_server round trip.
+-spec deliver_verified(macula_frame:frame_type(), <<_:256>>,
+                       macula_identity:pubkey(), macula_frame:frame(),
+                       pid()) -> ok.
+deliver_verified(Type, Realm, NodeId, Verified, Reg) ->
+    deliver_typed(Type, Realm, NodeId, Verified, Reg, ?CONNS_TABLE).
 
 %%==================================================================
 %% gen_server

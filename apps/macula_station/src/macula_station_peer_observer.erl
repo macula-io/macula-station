@@ -1015,76 +1015,23 @@ deliver_pubsub(_Verified, _Frame, _NodeId,
 deliver_pubsub({error, Reason}, _Frame, _NodeId, _S) ->
     logger:warning("[peer_observer] pubsub frame verify failed: ~p", [Reason]),
     ok;
-deliver_pubsub({ok, Verified}, _Frame, NodeId, S) ->
+deliver_pubsub({ok, Verified}, _Frame, NodeId,
+               #state{pubsub_registry = Reg}) ->
     Realm = maps:get(realm, Verified),
     Topic = maps:get(topic, Verified, undefined),
     Type  = macula_frame:frame_type(Verified),
     logger:debug(
       "[peer_observer] pubsub ~s realm=~p topic=~s",
       [Type, Realm, Topic]),
-    deliver_pubsub_typed(Type, Realm, NodeId, Verified, S).
-
-deliver_pubsub_typed(publish, Realm, NodeId, Verified,
-                     #state{pubsub_registry = Reg, conns = Conns}) ->
-    %% Inbound PUBLISH from a remote daemon. Build the EVENT frame
-    %% in the realm's pubsub_server, fan out to each matched local
-    %% subscriber's peering connection, plus bloom-fan to direct
-    %% outbound peers whose filter matches the topic.
-    %%
-    %% Seed the (publisher,seq) dedup at the origin so a looped-back
-    %% EVENT for this publish is recognised as a duplicate here too —
-    %% the cache is otherwise only `record'ed on the inbound EVENT
-    %% path, which would let the origin re-fan one extra round-trip.
-    record_origin_seq(Verified),
-    on_relay_publish(
-      hecate_pubsub_registry:relay_publish(Reg, Realm, Verified),
-      NodeId, Conns);
-deliver_pubsub_typed(event, Realm, NodeId, Verified,
-                     #state{pubsub_registry = Reg, conns = Conns}) ->
-    %% Inbound EVENT — typically a cross-station relay from a peer
-    %% station whose pubsub_server fanned out to us as a registered
-    %% subscriber. Look up our local pubsub_server, find LOCAL
-    %% subscribers (daemons connected to us via SUBSCRIBE inbound),
-    %% fan out the EVENT frame to each. This is the second hop of
-    %% the cross-station propagation chain — without it, EVENTs
-    %% arrived at our listener but never reached the daemons that
-    %% subscribed for the topic.
-    %%
-    %% Pubsub Phase 2 step 3: feed (publisher, seq) to the dedup
-    %% cache. A repeat of an EVENT that carries a publisher signature
-    %% is a loop-back we DROP — for publisher-signed EVENTs the dedup
-    %% cache is the cross-station loop kill (they verify end-to-end at
-    %% every hop, so the old verify-fail accident no longer bounds
-    %% them). A repeat of an EVENT WITHOUT a publisher_sig (a daemon
-    %% not yet emitting it) is logged but still delivered — those are
-    %% still bounded by the verify-fail mismatch one hop out, so the
-    %% dedup is observe-only for them.
-    case event_dedup_disposition(Verified) of
-        drop ->
-            ok;
-        deliver ->
-            deliver_inbound_event(safe_lookup(Reg, Realm), Verified,
-                                  NodeId, Conns)
-    end;
-deliver_pubsub_typed(subscribe, Realm, NodeId, Verified,
-                     #state{pubsub_registry = Reg}) ->
-    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
-    %% Snap the router to a sync NOW so this fresh subscriber gets
-    %% propagated to peer stations within milliseconds rather than
-    %% waiting up to ?TICK_MS for the next periodic poll. The router
-    %% drives subscribe-on-peer for cross-station fan-out; without
-    %% this trigger, e2e probes time out before the router notices.
-    notify_router_change(),
-    ok;
-deliver_pubsub_typed(unsubscribe, Realm, NodeId, Verified,
-                     #state{pubsub_registry = Reg}) ->
-    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
-    notify_router_change(),
-    ok;
-deliver_pubsub_typed(_Type, Realm, NodeId, Verified,
-                     #state{pubsub_registry = Reg}) ->
-    _ = hecate_pubsub_registry:dispatch_frame(Reg, Realm, NodeId, Verified),
-    ok.
+    %% Delegate to the ONE implementation of the delivery path. This
+    %% module used to carry its own copy of all of it — dedup
+    %% disposition, origin seeding, local fan-out, bloom-fan, conn
+    %% lookup — and the two copies drifted: fixes landed on one and not
+    %% the other, so a station could serve two different pubsub
+    %% disciplines depending on which path a connection happened to
+    %% take. See `macula_station_route_pubsub_frames:deliver_verified/5'.
+    macula_station_route_pubsub_frames:deliver_verified(
+      Type, Realm, NodeId, Verified, Reg).
 
 notify_router_change() ->
     case whereis(macula_station_peering_router) of
@@ -1096,73 +1043,6 @@ notify_router_change() ->
             %% promptly but leaves the periodic `timer_tick' to re-arm.
             Pid ! tick, ok
     end.
-
-safe_lookup(Reg, Realm) ->
-    try hecate_pubsub_registry:lookup(Reg, Realm)
-    catch _:_ -> {error, registry_unavailable}
-    end.
-
-deliver_inbound_event({ok, Server}, EventFrame, SourceNodeId, Conns) ->
-    Matched = try hecate_pubsub_server:deliver_event(Server, EventFrame)
-              catch _:_ -> []
-              end,
-    fan_out_event(EventFrame,
-                  Matched ++ bloom_fan_extras(EventFrame, Matched,
-                                              [SourceNodeId], Conns),
-                  Conns);
-deliver_inbound_event(_Other, EventFrame, SourceNodeId, Conns) ->
-    %% No pubsub_server materialised — still relay-eligible via
-    %% bloom-fan if downstream peers are interested.
-    fan_out_event(EventFrame,
-                  bloom_fan_extras(EventFrame, [],
-                                   [SourceNodeId], Conns), Conns).
-
-%% Pubsub Phase 2 step 2 — observe-only. Record (publisher, seq) in
-%% the dedup cache; on a repeat, log it (this is the loop-back the
-%% verify-fail accident currently kills, and that the dedup will kill
-%% in step 3). Never affects delivery here. Tolerates the cache being
-%% momentarily down (boot/restart) and frames missing the fields.
-%% Pubsub Phase 2 step 3 — record (publisher, seq) for an inbound
-%% EVENT and decide whether to deliver it or drop it as a loop-back.
-%%
-%%   * first sight              → `deliver'
-%%   * repeat + has publisher_sig → `drop' (the dedup IS the loop kill
-%%     for publisher-signed EVENTs; they verify end-to-end at every
-%%     hop, so the verify-fail accident no longer bounds them)
-%%   * repeat + no publisher_sig  → `deliver' (still bounded by the
-%%     verify-fail mismatch one hop out; the dedup just observes)
-%%   * missing publisher/seq     → `deliver' (cannot dedup; never drop
-%%     something we cannot key)
-event_dedup_disposition(#{publisher := Pub, seq := Seq} = V)
-  when is_binary(Pub), is_integer(Seq) ->
-    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V);
-event_dedup_disposition(_V) ->
-    deliver.
-
-classify_event_dup(new, _V) ->
-    deliver;
-classify_event_dup(duplicate, #{publisher_sig := _} = V) ->
-    logger:debug("[event_dedup] dropped loop-back EVENT publisher=~s seq=~p topic=~s",
-                 [short_hex(maps:get(publisher, V)), maps:get(seq, V),
-                  maps:get(topic, V, <<>>)]),
-    drop;
-classify_event_dup(duplicate, V) ->
-    logger:debug("[event_dedup] repeat EVENT publisher=~s seq=~p topic=~s"
-                 " (no publisher_sig — still delivered)",
-                 [short_hex(maps:get(publisher, V)), maps:get(seq, V),
-                  maps:get(topic, V, <<>>)]),
-    deliver.
-
-%% Seed the dedup cache from an inbound PUBLISH at its origin station,
-%% so a later looped-back EVENT for that publish is a recognised
-%% duplicate here too. Best-effort; ignores the result.
-record_origin_seq(#{publisher := Pub, seq := Seq})
-  when is_binary(Pub), is_integer(Seq) ->
-    _ = macula_station_event_dedup:seen_or_record(Pub, Seq),
-    ok;
-record_origin_seq(_Verified) ->
-    ok.
-
 %% Pubsub Phase 2 step 3 — verify an inbound pubsub frame. An EVENT
 %% carrying a publisher-end-to-end signature is verified against the
 %% publisher (so it passes at any relay hop, not just one); loops are
@@ -1174,65 +1054,6 @@ verify_pubsub(#{frame_type := event, publisher_sig := _} = Frame, _NodeId) ->
     macula_frame:verify_publisher(Frame);
 verify_pubsub(Frame, NodeId) ->
     macula_frame:verify(Frame, NodeId).
-
-short_hex(B) when is_binary(B), byte_size(B) > 0 ->
-    binary:encode_hex(binary:part(B, 0, min(8, byte_size(B))));
-short_hex(_) ->
-    <<"?">>.
-
-on_relay_publish({ok, EventFrame, Matched}, _SourceNodeId, Conns) ->
-    %% Origin station — no source peer to exclude (PUBLISH came from
-    %% a locally-connected daemon, never in `peer_blooms').
-    fan_out_event(EventFrame,
-                  Matched ++ bloom_fan_extras(EventFrame, Matched, [], Conns),
-                  Conns);
-on_relay_publish({error, _Reason}, _SourceNodeId, _Conns) ->
-    ok.
-
-fan_out_event(_EventFrame, [], _Conns) ->
-    ok;
-fan_out_event(EventFrame, [Sub | Rest], Conns) ->
-    send_event_to_sub(maps:find(Sub, Conns), EventFrame),
-    fan_out_event(EventFrame, Rest, Conns).
-
-%% Bloom-fan extras — see `macula_station_route_pubsub_frames' for the
-%% canonical comment. This legacy peer_observer path mirrors the same
-%% logic for stations where the dedicated dispatcher is not running.
-bloom_fan_extras(EventFrame, Matched, Excluded, Conns) ->
-    case maps:get(topic, EventFrame, undefined) of
-        undefined -> [];
-        <<"_mesh.", _/binary>> -> [];
-        Topic when is_binary(Topic) ->
-            bloom_fan_extras_for_topic(Topic, Matched, Excluded, Conns)
-    end.
-
-bloom_fan_extras_for_topic(Topic, Matched, Excluded, Conns) ->
-    %% ETS-bypass — see dispatcher's note for rationale.
-    Candidates = macula_station_bloom_exchange:peer_matches_ets(Topic),
-    Skip = sets:from_list(Matched ++ Excluded),
-    [NodeId
-     || NodeId <- Candidates,
-        not sets:is_element(NodeId, Skip),
-        maps:is_key(NodeId, Conns)].
-
-%% EVENT delivery deliberately PREFERS the inbound conn — the one
-%% through which the peer originally sent its SUBSCRIBE. The bytes
-%% travel back to the peer's `outbound_link', whose subscriber
-%% fan-out delivers `{macula_event, ...}' to local Erlang processes
-%% (e.g. cross-station bloom gossip). Sending via outbound would
-%% land on the peer's listener-side conn, dispatch into the peer's
-%% pubsub_server, and dead-end (the peer has no local subscribers
-%% there). Falls back to outbound when inbound is missing — better
-%% than dropping the EVENT, even though delivery from there is
-%% best-effort and may be silently lost on the peer side.
-send_event_to_sub({ok, #{inbound := Pid}}, EventFrame) when is_pid(Pid) ->
-    macula_peering:send_frame(Pid, EventFrame);
-send_event_to_sub({ok, #{outbound := Pid}}, EventFrame) when is_pid(Pid) ->
-    macula_peering:send_frame(Pid, EventFrame);
-send_event_to_sub(_, _EventFrame) ->
-    %% Subscriber's connection already gone — drop the EVENT.
-    %% The conns map cleanup happens in `on_disconnected'.
-    ok.
 
 %%==================================================================
 %% disconnected
