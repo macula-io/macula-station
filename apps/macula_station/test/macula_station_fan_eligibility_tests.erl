@@ -56,14 +56,14 @@ teardown(_Tab) ->
 
 absent_entry_is_not_eligible(_) ->
     fun() ->
-        ?assertNot(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE))
+        ?assertNot(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE))
     end.
 
 %% THE defect: an entry exists, both directions are undefined.
 both_undefined_is_not_eligible(_) ->
     fun() ->
         put_conns(undefined, undefined),
-        ?assertNot(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE)),
+        ?assertNot(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE)),
         ?assertEqual(undefined, resolve())
     end.
 
@@ -73,13 +73,13 @@ both_dead_is_not_eligible(_) ->
         Dead2 = dead_pid(),
         put_conns(Dead1, Dead2),
         ?assert(is_pid(Dead1)),
-        ?assertNot(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE)),
+        ?assertNot(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE)),
         ?assertEqual(undefined, resolve())
     end.
 
 missing_table_is_not_eligible(_) ->
     fun() ->
-        ?assertNot(macula_station_route_pubsub_frames:has_live_conn(
+        ?assertNot(macula_station_route_pubsub_frames:fan_eligible(
                      macula_station_fan_eligibility_tests_no_such_table, ?NODE))
     end.
 
@@ -91,7 +91,7 @@ live_inbound_is_eligible(_) ->
     fun() ->
         In = live_pid(),
         put_conns(In, undefined),
-        ?assert(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE)),
+        ?assert(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE)),
         ?assertEqual(In, resolve()),
         stop_pid(In)
     end.
@@ -111,7 +111,7 @@ dead_inbound_falls_back_to_live_outbound(_) ->
     fun() ->
         Out = live_pid(),
         put_conns(dead_pid(), Out),
-        ?assert(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE)),
+        ?assert(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE)),
         ?assertEqual(Out, resolve()),
         stop_pid(Out)
     end.
@@ -120,7 +120,7 @@ outbound_only_is_eligible(_) ->
     fun() ->
         Out = live_pid(),
         put_conns(undefined, Out),
-        ?assert(macula_station_route_pubsub_frames:has_live_conn(?CT, ?NODE)),
+        ?assert(macula_station_route_pubsub_frames:fan_eligible(?CT, ?NODE)),
         ?assertEqual(Out, resolve()),
         stop_pid(Out)
     end.

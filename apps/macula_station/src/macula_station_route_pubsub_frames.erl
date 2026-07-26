@@ -62,7 +62,7 @@
 %% Exports for unit tests — pure conn resolution over the conns mirror,
 %% plus the fan-out entry and counter install so delivery outcomes can be
 %% driven without standing up a station.
--export([has_live_conn/2, conn_pid/1, fan_out_event/3, install_counters/0]).
+-export([fan_eligible/2, conn_pid/1, fan_out_event/3, install_counters/0]).
 %% Dedup disposition + origin seeding, so the publisher-attestation rule
 %% can be driven directly against the cache.
 -export([event_dedup_disposition/1, record_origin_seq/2]).
@@ -666,23 +666,6 @@ fan_conn_live(undefined) ->
 fan_conn_live(_Pid) ->
     true.
 
-%% A peer NodeId is fan-eligible only if we hold a peering conn whose
-%% inbound or outbound worker is ALIVE. The conns table is owned by
-%% `peer_observer'; checking it via ETS is microseconds and keeps this
-%% module off the observer's mailbox.
-%%
-%% Presence of the ETS entry is NOT enough, which is all this used to
-%% test (`[{_, _PeerConns}] -> true'). `peer_observer:empty_peer_conns/0'
-%% installs `#{inbound => undefined, outbound => undefined}' while a
-%% peer is (re)connecting, and a recorded pid can already be dead. Both
-%% counted as a live conn, so an EVENT was "fanned" to a peer that could
-%% not receive it — silently, because `send_event_to_sub/2' no-ops when
-%% the lookup yields no pid. During a link flap that is the normal
-%% state, not an edge case, so the fan-out reported success while
-%% delivering nothing.
-has_live_conn(CT, NodeId) ->
-    conn_pid(ets_lookup_conn(CT, NodeId)) =/= undefined.
-
 %% Resolve the conn worker an EVENT would actually be handed to.
 %% Delivery PREFERS inbound and falls back to outbound (see
 %% `send_event_to_sub/2'), so eligibility resolves in the same order —
@@ -746,7 +729,7 @@ ets_lookup_conn(CT, NodeId) ->
 %% Liveness matters here as much as presence: `is_pid/1' alone accepted a
 %% dead inbound worker and never tried the live outbound one, so the
 %% frame was cast into a dead mailbox and dropped by the VM while a
-%% usable path sat unused. Shares `conn_pid/1' with `has_live_conn/2' so
+%% usable path sat unused. Shares `conn_pid/1' with `fan_eligible/2' so
 %% fan-eligibility and fan-out cannot disagree.
 send_event_to_sub(Lookup, EventFrame) ->
     send_to_conn(conn_pid(Lookup), EventFrame).
