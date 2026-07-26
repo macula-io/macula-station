@@ -56,6 +56,11 @@
 
 -export_type([opts/0]).
 
+-ifdef(TEST).
+%% Exports for unit tests — pure conn resolution over the conns mirror.
+-export([has_live_conn/2, conn_pid/1]).
+-endif.
+
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
 
 %% Verify-worker pool size. Ed25519 `verify_pubsub' is ~200µs CPU-
@@ -485,17 +490,46 @@ filter_fan_candidates(Candidates, Matched, Excluded, CT) ->
         not sets:is_element(NodeId, Skip),
         has_live_conn(CT, NodeId)].
 
-%% A peer NodeId is fan-eligible only if we hold a peering conn to
-%% it. The conns table is owned by `peer_observer'; checking it via
-%% ETS is microseconds and keeps the dispatcher off the observer's
-%% mailbox.
+%% A peer NodeId is fan-eligible only if we hold a peering conn whose
+%% inbound or outbound worker is ALIVE. The conns table is owned by
+%% `peer_observer'; checking it via ETS is microseconds and keeps this
+%% module off the observer's mailbox.
+%%
+%% Presence of the ETS entry is NOT enough, which is all this used to
+%% test (`[{_, _PeerConns}] -> true'). `peer_observer:empty_peer_conns/0'
+%% installs `#{inbound => undefined, outbound => undefined}' while a
+%% peer is (re)connecting, and a recorded pid can already be dead. Both
+%% counted as a live conn, so an EVENT was "fanned" to a peer that could
+%% not receive it — silently, because `send_event_to_sub/2' no-ops when
+%% the lookup yields no pid. During a link flap that is the normal
+%% state, not an edge case, so the fan-out reported success while
+%% delivering nothing.
 has_live_conn(CT, NodeId) ->
-    try ets:lookup(CT, NodeId) of
-        [{_, _PeerConns}] -> true;
-        []                -> false
-    catch
-        _:_ -> false
-    end.
+    conn_pid(ets_lookup_conn(CT, NodeId)) =/= undefined.
+
+%% Resolve the conn worker an EVENT would actually be handed to.
+%% Delivery PREFERS inbound and falls back to outbound (see
+%% `send_event_to_sub/2'), so eligibility resolves in the same order —
+%% otherwise eligibility and fan-out can disagree about the same peer.
+conn_pid({ok, #{inbound := In, outbound := Out}}) ->
+    prefer_live(live(In), Out);
+conn_pid(_Other) ->
+    undefined.
+
+prefer_live(undefined, Out) -> live(Out);
+prefer_live(Pid, _Out)      -> Pid.
+
+%% `is_process_alive/1' raises `badarg' for a remote pid; conn workers
+%% are same-BEAM by design, so locality is a guard, not a check.
+live(Pid) when is_pid(Pid), node(Pid) =:= node() ->
+    live_pid(Pid, erlang:is_process_alive(Pid));
+live(Pid) when is_pid(Pid) ->
+    Pid;
+live(_NotAPid) ->
+    undefined.
+
+live_pid(Pid, true)   -> Pid;
+live_pid(_Pid, false) -> undefined.
 
 %% Fan-out walks the matched subscriber list and looks each one up in
 %% the conns ETS table directly. Previously this function received a
@@ -521,13 +555,20 @@ ets_lookup_conn(CT, NodeId) ->
 %% EVENT delivery PREFERS the inbound conn — the one the peer originally
 %% sent its SUBSCRIBE through. Sending via outbound would land on the
 %% peer's listener-side conn and dead-end (the peer has no subscribers
-%% there). Falls back to outbound when inbound is missing.
-send_event_to_sub({ok, #{inbound := Pid}}, EventFrame) when is_pid(Pid) ->
-    macula_peering:send_frame(Pid, EventFrame);
-send_event_to_sub({ok, #{outbound := Pid}}, EventFrame) when is_pid(Pid) ->
-    macula_peering:send_frame(Pid, EventFrame);
-send_event_to_sub(_, _EventFrame) ->
-    ok.
+%% there). Falls back to outbound when inbound is missing OR DEAD.
+%%
+%% Liveness matters here as much as presence: `is_pid/1' alone accepted a
+%% dead inbound worker and never tried the live outbound one, so the
+%% frame was cast into a dead mailbox and dropped by the VM while a
+%% usable path sat unused. Shares `conn_pid/1' with `has_live_conn/2' so
+%% fan-eligibility and fan-out cannot disagree.
+send_event_to_sub(Lookup, EventFrame) ->
+    send_to_conn(conn_pid(Lookup), EventFrame).
+
+send_to_conn(undefined, _EventFrame) ->
+    ok;
+send_to_conn(Pid, EventFrame) ->
+    macula_peering:send_frame(Pid, EventFrame).
 
 %% (publisher, seq) dedup — see macula_station_peer_observer's notes
 %% (Phase 2 step 2/3). Decides per-EVENT whether to deliver or drop
