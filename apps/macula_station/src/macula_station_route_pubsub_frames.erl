@@ -46,6 +46,7 @@
 
 -export([start_link/1, stop/1]).
 -export([deliver_verified/5]).
+-export([delivery_stats/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -58,8 +59,10 @@
 -export_type([opts/0]).
 
 -ifdef(TEST).
-%% Exports for unit tests — pure conn resolution over the conns mirror.
--export([has_live_conn/2, conn_pid/1]).
+%% Exports for unit tests — pure conn resolution over the conns mirror,
+%% plus the fan-out entry and counter install so delivery outcomes can be
+%% driven without standing up a station.
+-export([has_live_conn/2, conn_pid/1, fan_out_event/3, install_counters/0]).
 -endif.
 
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
@@ -74,6 +77,32 @@
 %% so verify scales with cores. Min 2; using 1 collapses to the
 %% serial path with extra overhead.
 -define(WORKER_POOL_KEY, pubsub_verify_workers).
+
+%% Delivery-outcome counters.
+%%
+%% Every branch that ends an EVENT's journey without handing it to a
+%% live conn used to be unobservable. Three of them (`fan_out_event/3'
+%% on an empty target list, `send_to_conn/2' with no pid,
+%% `on_relay_publish/3' on `{error, _}') just returned `ok' with no log
+%% at all, and the two duplicate-drop branches log at `debug', which is
+%% off in production. That is the direct reason months of "multi-hop
+%% feels flaky" produced no evidence: the branches that lose a message
+%% could not be counted, so no measurement could distinguish them.
+%%
+%% Read with `delivery_stats/0'. `counters' + `persistent_term' is the
+%% idiom `macula_station_event_dedup' already uses for `dup_count/0'.
+%% Bumps no-op when the array is absent (this module not started, e.g.
+%% a test wiring only peer_observer), so instrumentation never changes
+%% behaviour.
+-define(PT_COUNTERS, {?MODULE, delivery_counters}).
+-define(CTR_FORWARDED,         1).  %% frame handed to a live conn
+-define(CTR_DUP_DROPPED,       2).  %% post-verify (publisher,seq) repeat
+-define(CTR_DUP_DROPPED_PRE,   3).  %% pre-verify peek said seen
+-define(CTR_NO_TARGETS,        4).  %% nobody to fan to at all
+-define(CTR_NO_LIVE_CONN,      5).  %% target chosen, no live worker
+-define(CTR_NO_BLOOM_MATCH,    6).  %% no peer bloom matched the topic
+-define(CTR_RELAY_PUBLISH_ERR, 7).  %% registry refused the PUBLISH
+-define(CTR_SLOTS,             7).
 
 -record(state, {
     pubsub_registry :: pid() | undefined,
@@ -114,12 +143,47 @@ stop(Pid) -> gen_server:stop(Pid).
 deliver_verified(Type, Realm, NodeId, Verified, Reg) ->
     deliver_typed(Type, Realm, NodeId, Verified, Reg, ?CONNS_TABLE).
 
+%% @doc Delivery outcomes since the counters were installed. Counts are
+%% cumulative and survive a restart of this module on purpose — a
+%% restart is precisely the event under investigation, so zeroing them
+%% here would erase the evidence.
+-spec delivery_stats() -> #{atom() => non_neg_integer()}.
+delivery_stats() ->
+    stats_of(persistent_term:get(?PT_COUNTERS, undefined)).
+
+stats_of(undefined) ->
+    #{};
+stats_of(Ref) ->
+    #{forwarded          => counters:get(Ref, ?CTR_FORWARDED),
+      dup_dropped        => counters:get(Ref, ?CTR_DUP_DROPPED),
+      dup_dropped_pre    => counters:get(Ref, ?CTR_DUP_DROPPED_PRE),
+      no_targets         => counters:get(Ref, ?CTR_NO_TARGETS),
+      no_live_conn       => counters:get(Ref, ?CTR_NO_LIVE_CONN),
+      no_bloom_match     => counters:get(Ref, ?CTR_NO_BLOOM_MATCH),
+      relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR)}.
+
+install_counters() ->
+    install_counters(persistent_term:get(?PT_COUNTERS, undefined)).
+
+install_counters(undefined) ->
+    persistent_term:put(?PT_COUNTERS,
+                        counters:new(?CTR_SLOTS, [write_concurrency]));
+install_counters(_Ref) ->
+    ok.
+
+bump(Slot) ->
+    bump_ref(persistent_term:get(?PT_COUNTERS, undefined), Slot).
+
+bump_ref(undefined, _Slot) -> ok;
+bump_ref(Ref, Slot)        -> counters:add(Ref, Slot, 1).
+
 %%==================================================================
 %% gen_server
 %%==================================================================
 
 init(Opts) ->
     process_flag(trap_exit, true),
+    install_counters(),
     Reg = maps:get(pubsub_registry, Opts, undefined),
     CT  = maps:get(conns_table, Opts, ?CONNS_TABLE),
     Workers = spawn_workers(worker_pool_size(Opts), Reg, CT),
@@ -210,11 +274,14 @@ process_frame(_Type, Frame, NodeId, Reg, CT) ->
 %% dedup, never drop blindly).
 fast_dedup_check(#{publisher := Pub, seq := Seq})
   when is_binary(Pub), is_integer(Seq) ->
-    case macula_station_event_dedup:peek(Pub, Seq) of
-        seen -> drop;
-        absent -> proceed
-    end;
+    pre_verify_disposition(macula_station_event_dedup:peek(Pub, Seq));
 fast_dedup_check(_) ->
+    proceed.
+
+pre_verify_disposition(seen) ->
+    bump(?CTR_DUP_DROPPED_PRE),
+    drop;
+pre_verify_disposition(absent) ->
     proceed.
 
 worker_state(Reg, CT) ->
@@ -476,7 +543,14 @@ on_relay_publish({ok, EventFrame, Matched}, _SourceNodeId, CT) ->
     fan_out_event(EventFrame,
                   Matched ++ bloom_fan_extras(EventFrame, Matched, [], CT),
                   CT);
-on_relay_publish({error, _Reason}, _SourceNodeId, _CT) ->
+on_relay_publish({error, Reason}, NodeId, _CT) ->
+    %% The registry refused the PUBLISH (realm mismatch, no server).
+    %% This dropped the message and said nothing at all — not even at
+    %% debug — so a station quietly discarding a realm's traffic was
+    %% invisible. Warn, because unlike a duplicate this is never normal.
+    bump(?CTR_RELAY_PUBLISH_ERR),
+    logger:warning("[route_pubsub_frames] relay_publish refused: ~p peer=~s",
+                   [Reason, short_hex(NodeId)]),
     ok.
 
 %% Compute the bloom-fan extras for an EVENT frame: peer NodeIds
@@ -498,6 +572,20 @@ bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
     end.
 
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
+    count_bloom_match(
+      bloom_fan_candidates(Topic, Matched, Excluded, CT)).
+
+%% An empty bloom result means no downstream peer is known to want this
+%% topic. Legitimate at a leaf, but also what a not-yet-gossiped bloom
+%% looks like (30s tick, 2s debounce), and the two are indistinguishable
+%% without this count.
+count_bloom_match([]) ->
+    bump(?CTR_NO_BLOOM_MATCH),
+    [];
+count_bloom_match(Candidates) ->
+    Candidates.
+
+bloom_fan_candidates(Topic, Matched, Excluded, CT) ->
     %% ETS-bypass: read the peer_blooms mirror directly. Avoids the
     %% per-event `gen_server:call' to bloom_exchange that would
     %% serialise the entire station's pubsub fan-out path under
@@ -561,11 +649,21 @@ live_pid(_Pid, false) -> undefined.
 %% table) added milliseconds-per-event of overhead — under the
 %% bypass the dispatcher mailbox climbed to 365k as a result.
 %% Per-NodeId `ets:lookup/2' is O(1) and ~µs.
-fan_out_event(_EventFrame, [], _CT) ->
+%% Emptiness is counted HERE, once, on the whole target list — not in
+%% the recursion's base clause, which also fires at the end of every
+%% successful fan and would count those as losses.
+fan_out_event(EventFrame, Targets, CT) ->
+    count_empty_targets(Targets),
+    send_each(EventFrame, Targets, CT).
+
+count_empty_targets([]) -> bump(?CTR_NO_TARGETS);
+count_empty_targets(_)  -> ok.
+
+send_each(_EventFrame, [], _CT) ->
     ok;
-fan_out_event(EventFrame, [Sub | Rest], CT) ->
+send_each(EventFrame, [Sub | Rest], CT) ->
     send_event_to_sub(ets_lookup_conn(CT, Sub), EventFrame),
-    fan_out_event(EventFrame, Rest, CT).
+    send_each(EventFrame, Rest, CT).
 
 ets_lookup_conn(CT, NodeId) ->
     try ets:lookup(CT, NodeId) of
@@ -589,8 +687,13 @@ send_event_to_sub(Lookup, EventFrame) ->
     send_to_conn(conn_pid(Lookup), EventFrame).
 
 send_to_conn(undefined, _EventFrame) ->
+    %% A target we believed was reachable turned out to have no live
+    %% worker. This is a LOST event, and it was the most silent branch
+    %% in the module.
+    bump(?CTR_NO_LIVE_CONN),
     ok;
 send_to_conn(Pid, EventFrame) ->
+    bump(?CTR_FORWARDED),
     macula_peering:send_frame(Pid, EventFrame).
 
 %% (publisher, seq) dedup — see macula_station_peer_observer's notes
@@ -606,6 +709,16 @@ event_dedup_disposition(_V) ->
 classify_event_dup(new, _V) ->
     deliver;
 classify_event_dup(duplicate, #{publisher_sig := _} = V) ->
+    %% Counted, not raised to `info': receiver-side bloom-fan makes
+    %% duplicates EXPECTED and numerous (O(mesh) per publish), so a
+    %% per-drop log at production level would flood. The counter gives
+    %% the rate; the debug line gives the detail when chasing one.
+    %%
+    %% NOTE this counter cannot by itself distinguish a healthy loop
+    %% kill from a lost message: both look like a repeat. Telling them
+    %% apart needs to know whether THIS station already forwarded the
+    %% key, which is the open record-on-forward question.
+    bump(?CTR_DUP_DROPPED),
     logger:debug("[event_dedup] dropped loop-back EVENT publisher=~s seq=~p topic=~s",
                  [short_hex(maps:get(publisher, V)), maps:get(seq, V),
                   maps:get(topic, V, <<>>)]),
