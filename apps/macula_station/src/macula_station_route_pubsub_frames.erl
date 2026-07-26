@@ -51,7 +51,7 @@
          terminate/2, code_change/3]).
 
 -type opts() :: #{
-    pubsub_registry          => pid() | undefined,
+    pubsub_registry          => atom() | pid() | undefined,
     conns_table              => atom(),
     pubsub_verify_workers    => pos_integer()
 }.
@@ -116,7 +116,7 @@
 -define(CTR_SLOTS,             9).
 
 -record(state, {
-    pubsub_registry :: pid() | undefined,
+    pubsub_registry :: atom() | pid() | undefined,
     conns_table     :: atom(),
     workers         :: tuple()       %% tuple of worker pids, 1..N
 }).

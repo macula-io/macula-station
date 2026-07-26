@@ -81,17 +81,17 @@
     %% mesh discovery). Optional: when undefined, CALL frames are
     %% dropped silently. Identity_sup wires it in when the handler
     %% app is part of the per-identity child set.
-    handler_registry     :: pid() | undefined,
+    handler_registry     :: atom() | pid() | undefined,
     %% Per-identity pubsub registry (Sprint A: SUBSCRIBE / UNSUBSCRIBE
     %% / EVENT frames route through here, keyed by realm tag).
     %% Optional: when undefined, those frames are dropped silently.
-    pubsub_registry      :: pid() | undefined,
+    pubsub_registry      :: atom() | pid() | undefined,
     %% Per-identity remote-advertise registry. Tracks procedures a
     %% connected peer has registered via ADVERTISE frames. CALL frames
     %% not matched by the local handler_registry fall through to here;
     %% if a match is found the CALL is forwarded over the advertiser's
     %% QUIC connection.
-    remote_advertise     :: pid() | undefined,
+    remote_advertise     :: atom() | pid() | undefined,
     %% This station's own identity — RESULT / call_error frames
     %% carry it as the `responded_by' / `reported_by' pubkey so the
     %% caller knows who answered.

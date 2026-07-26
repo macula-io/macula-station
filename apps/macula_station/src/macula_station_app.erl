@@ -211,7 +211,7 @@ boot_bootstrap(SupPid, Cfg, DhtPid, {ok, _Summary}) ->
     boot_dht_handlers(SupPid, Cfg, DhtPid).
 
 boot_dht_handlers(SupPid, Cfg, DhtPid) ->
-    HrPid = whereis(macula_handler_registry),
+    HrPid = macula_handler_registry,
     Spec  = dht_handlers_child(HrPid, DhtPid),
     on_dht_handlers(SupPid, Cfg, DhtPid,
                     supervisor:start_child(SupPid, Spec)).
@@ -222,7 +222,7 @@ on_dht_handlers(SupPid, Cfg, DhtPid, {ok, _Pid}) ->
     boot_content_handlers(SupPid, Cfg, DhtPid).
 
 boot_content_handlers(SupPid, Cfg, DhtPid) ->
-    HrPid = whereis(macula_handler_registry),
+    HrPid = macula_handler_registry,
     Spec  = content_handlers_child(HrPid),
     on_content_handlers(SupPid, Cfg, DhtPid,
                         supervisor:start_child(SupPid, Spec)).
@@ -286,7 +286,7 @@ on_listener(SupPid, Cfg, ObserverPid, {ok, _Pid}) ->
 
 boot_record_fanout_wiring(SupPid, #station_cfg{identity = Kp} = Cfg,
                           ObserverPid) ->
-    Reg = whereis(hecate_pubsub_registry),
+    Reg = hecate_pubsub_registry,
     ok  = macula_station_record_fanout:set_wiring(
             #{pubsub_registry => Reg,
               peer_observer   => ObserverPid,
@@ -470,7 +470,7 @@ pubsub_registry_child(Kp) ->
     }.
 
 pubsub_dispatcher_child() ->
-    Opts = #{pubsub_registry => whereis(hecate_pubsub_registry)},
+    Opts = #{pubsub_registry => hecate_pubsub_registry},
     #{
         id       => macula_station_route_pubsub_frames,
         start    => {macula_station_sup, start_route_pubsub_frames, [Opts]},
@@ -589,9 +589,9 @@ observer_child(#station_cfg{identity = Kp}, DhtPid, SwimPid) ->
     Opts = #{
         dht              => DhtPid,
         swim             => SwimPid,
-        handler_registry => whereis(macula_handler_registry),
-        pubsub_registry  => whereis(hecate_pubsub_registry),
-        remote_advertise => whereis(macula_remote_advertise_registry),
+        handler_registry => macula_handler_registry,
+        pubsub_registry  => hecate_pubsub_registry,
+        remote_advertise => macula_remote_advertise_registry,
         self_id          => macula_identity:public(Kp)
     },
     #{
@@ -684,7 +684,7 @@ content_announcer_child(#station_cfg{identity = Kp, bind = Bind, port = Port},
 
 bloom_exchange_child(#station_cfg{identity = Kp}) ->
     Opts = #{
-        pubsub_registry => whereis(hecate_pubsub_registry),
+        pubsub_registry => hecate_pubsub_registry,
         identity        => Kp
     },
     #{
@@ -703,7 +703,7 @@ peering_router_child(#station_cfg{identity = Kp}) ->
     %% triple. Pre-Gap-B versions hard-coded ?MESH_REALM here, which
     %% silently dropped every user-realm topic on the floor.
     Opts = #{
-        pubsub_registry => whereis(hecate_pubsub_registry),
+        pubsub_registry => hecate_pubsub_registry,
         identity        => Kp
     },
     #{
@@ -717,8 +717,8 @@ peering_router_child(#station_cfg{identity = Kp}) ->
 
 relay_ping_child(#station_cfg{identity = Kp}) ->
     Opts = #{
-        handler_registry => whereis(macula_handler_registry),
-        pubsub_registry  => whereis(hecate_pubsub_registry),
+        handler_registry => macula_handler_registry,
+        pubsub_registry  => hecate_pubsub_registry,
         identity         => Kp,
         hostname         => station_hostname()
     },

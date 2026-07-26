@@ -28,9 +28,13 @@
 %% Realm tag the mesh-internal procedures + events live under.
 -define(MESH_REALM, <<0:256>>).
 
+%% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
+%% every use. A pid captured at child-spec time is dead the moment the
+%% registry restarts, and supervisors reuse the original child spec, so
+%% the stale pid would never be replaced.
 -type opts() :: #{
-    handler_registry := pid(),
-    pubsub_registry  := pid(),
+    handler_registry := atom() | pid(),
+    pubsub_registry  := atom() | pid(),
     identity         := macula_identity:key_pair(),
     hostname         := binary(),
     lat              => float() | integer() | undefined,
@@ -40,8 +44,8 @@
 -export_type([opts/0]).
 
 -record(state, {
-    handler_registry :: pid(),
-    pubsub_registry  :: pid(),
+    handler_registry :: atom() | pid(),
+    pubsub_registry  :: atom() | pid(),
     identity         :: macula_identity:key_pair(),
     hostname         :: binary(),
     lat              :: number() | undefined,

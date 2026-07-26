@@ -48,9 +48,17 @@
 
 -define(MESH_REALM, <<0:256>>).
 
+%% `pubsub_registry' is a REGISTERED NAME, not a pid, and is resolved by
+%% `gen_server:call/2' on every use. A pid captured at wiring time is
+%% dead the moment the registry restarts, and a supervisor reuses the
+%% original child spec, so nothing short of restarting the whole station
+%% would ever pick up the new pid. `peer_observer' is still a pid here
+%% because the boot pipeline passes the one it just started.
+-type registry() :: atom() | pid().
+
 -type wiring() :: #{
-    pubsub_registry := pid(),
-    peer_observer   := pid(),
+    pubsub_registry := registry(),
+    peer_observer   := pid() | undefined,
     identity        := macula_identity:key_pair()
 }.
 

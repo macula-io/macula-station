@@ -52,8 +52,12 @@
 %% every inbound SUBSCRIBE / UNSUBSCRIBE for sub-tick latency.
 -define(TICK_MS, 2_000).
 
+%% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
+%% every use. A pid captured at child-spec time is dead the moment the
+%% registry restarts, and supervisors reuse the original child spec, so
+%% the stale pid would never be replaced.
 -type opts() :: #{
-    pubsub_registry := pid(),
+    pubsub_registry := atom() | pid(),
     identity        := macula_identity:key_pair()
 }.
 
@@ -63,7 +67,7 @@
 -type triple() :: {realm(), Topic :: binary(), LinkPid :: pid()}.
 
 -record(state, {
-    pubsub_registry :: pid(),
+    pubsub_registry :: atom() | pid(),
     identity        :: macula_identity:key_pair(),
     %% Active inbound subscriptions keyed by `{Realm, Topic, LinkPid}'.
     subs            :: #{triple() => reference()},

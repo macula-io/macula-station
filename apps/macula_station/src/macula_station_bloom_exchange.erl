@@ -48,15 +48,19 @@
 %% realm — protocol infrastructure, not bound to any business realm.
 -define(MESH_REALM, <<0:256>>).
 
+%% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
+%% every use. A pid captured at child-spec time is dead the moment the
+%% registry restarts, and supervisors reuse the original child spec, so
+%% the stale pid would never be replaced.
 -type opts() :: #{
-    pubsub_registry := pid(),
+    pubsub_registry := atom() | pid(),
     identity        := macula_identity:key_pair()
 }.
 
 -export_type([opts/0]).
 
 -record(state, {
-    pubsub_registry :: pid(),
+    pubsub_registry :: atom() | pid(),
     identity        :: macula_identity:key_pair(),
     local_bloom     :: binary(),
     peer_blooms     :: #{binary() => binary()},

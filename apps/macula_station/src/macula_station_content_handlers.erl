@@ -73,12 +73,16 @@
 %% manifests). The single-station path is unaffected.
 -define(DEFAULT_HOPS, 1).
 
+%% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
+%% every use. A pid captured at child-spec time is dead the moment the
+%% registry restarts, and supervisors reuse the original child spec, so
+%% the stale pid would never be replaced.
 -type opts() :: #{
-    handler_registry := pid()
+    handler_registry := atom() | pid()
 }.
 
 -record(state, {
-    handler_registry :: pid()
+    handler_registry :: atom() | pid()
 }).
 
 %%====================================================================
