@@ -399,8 +399,8 @@ on_ping(From, #{round := Round}, #state{identity = Id} = S) ->
 %% `deliver_swim' verification before it reaches here, so its arrival is
 %% evidence, not a rumour.
 %%
-%% This is the SWIM Lifeguard refutation rule: any verified message from a
-%% suspect refutes the suspicion. It matters because a suspect is otherwise
+%% This is the SWIM Lifeguard refutation rule: any verified message from a peer
+%% we doubt refutes that doubt. It matters because a suspect is otherwise
 %% unreachable by design — `pick_alive_target/1' selects only `alive' members,
 %% so we never re-probe it, and the sole remaining rescue path is the suspect
 %% happening to pick US out of its own membership. That gives a conversion
@@ -416,21 +416,36 @@ on_ack(From, #{round := Round}, #state{probes = P} = S) ->
                                             acks_matched =
                                                 S#state.acks_matched + 1});
         _ ->
-            refute_if_suspect(From, S)
+            refute_if_not_alive(From, S)
     end.
 
-%% Only a SUSPECT is refuted. An ACK from a member already `alive' says nothing
-%% new, and one from `confirmed_failed' must NOT silently resurrect it: that
-%% verdict has already been published to the consumer, which has acted on it.
-%% Recovery from a confirmed failure is a re-add through `add_peer/3', where it
-%% is visible, not a side effect of a stray frame.
-refute_if_suspect(From, #state{members = M} = S) ->
+%% Any member NOT already `alive' is refuted, `confirmed_failed' included.
+%%
+%% This first shipped refusing to resurrect a confirmed member, on the stated
+%% grounds that the verdict was already published and reviving it would happen
+%% behind the consumer's back. THAT REASONING WAS WRONG ON BOTH HALVES.
+%% `touch_alive/3' routes every non-alive transition through
+%% `notify_and_cancel_suspect/2', so the consumer is told about the recovery
+%% exactly as it was told about the failure -- nothing is silent. And `on_ping/3'
+%% has always resurrected a confirmed member by this same path, so refusing here
+%% left two entry points disagreeing about policy for no reason.
+%%
+%% It also built a one-way door. Nothing re-admits a still-connected peer that
+%% was wrongly confirmed: `macula_station_peer_observer' only calls `add_peer/3'
+%% on capability resolution or on a conn resync, neither of which fires while
+%% the conns simply stay up. So a single false confirmation was permanent until
+%% the next restart. A verified frame from the peer is the strongest evidence
+%% available that the verdict was wrong, and discarding it was how the fleet got
+%% 142 permanent false verdicts in the first place.
+refute_if_not_alive(From, #state{members = M} = S) ->
     resolve_refutation(maps:get(From, M, undefined), From, S).
 
-resolve_refutation(#{state := suspect} = Member, From, S) ->
-    touch_alive(From, Member, S#state{refuted = S#state.refuted + 1});
-resolve_refutation(_Other, _From, S) ->
-    S.
+resolve_refutation(undefined, _From, S) ->
+    S;
+resolve_refutation(#{state := alive}, _From, S) ->
+    S;
+resolve_refutation(Member, From, S) ->
+    touch_alive(From, Member, S#state{refuted = S#state.refuted + 1}).
 
 maybe_touch_alive(NodeId, #state{members = M} = S) ->
     case maps:get(NodeId, M, undefined) of

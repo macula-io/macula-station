@@ -64,17 +64,23 @@ late_ack_from_a_suspect_refutes_test() ->
     exit(Silent, kill),
     macula_swim:stop(Swim).
 
-%% An ACK must NOT resurrect a peer whose failure was already published: the
-%% consumer has acted on that verdict, so recovery has to be a visible re-add.
-late_ack_does_not_resurrect_a_confirmed_peer_test() ->
+%% An ACK from a CONFIRMED peer resurrects it, and must.
+%%
+%% This test asserted the opposite until 2026-07-27. The claim was that reviving
+%% a published verdict would be invisible to the consumer; it is not, since
+%% `touch_alive/3' notifies on every non-alive transition. Meanwhile `on_ping/3'
+%% resurrected confirmed members all along, so the two entry points disagreed.
+%% Refusing here also made a false confirmation PERMANENT: nothing re-admits a
+%% still-connected peer, so it stayed dead until the next restart.
+late_ack_resurrects_a_confirmed_peer_test() ->
     {ok, Swim} = start_swim(),
     Silent = spawn(fun Loop() -> receive _ -> Loop() end end),
     PeerId = macula_identity:public(macula_identity:generate()),
     ok = macula_swim:add_peer(Swim, PeerId, Silent),
     ok = wait_for_state(Swim, PeerId, confirmed_failed, 3000),
     macula_swim:handle_frame(Swim, PeerId, ack_frame(999999)),
-    timer:sleep(200),
-    ?assertEqual(confirmed_failed, state_of(Swim, PeerId)),
+    ok = wait_for_state(Swim, PeerId, alive, 1000),
+    ?assertEqual(alive, state_of(Swim, PeerId)),
     exit(Silent, kill),
     macula_swim:stop(Swim).
 

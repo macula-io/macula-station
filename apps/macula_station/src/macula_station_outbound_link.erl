@@ -26,7 +26,7 @@
 -module(macula_station_outbound_link).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, peer_node_id/1, conn_pid/1]).
+-export([start_link/1, stop/1, peer_node_id/1, conn_pid/1, parse_url/1]).
 -export([subscribe/4, unsubscribe/2, publish/4, call/5, is_connected/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -665,12 +665,46 @@ schedule_reconnect(#state{backoff_ms = Backoff,
 cancel_timer(undefined) -> ok;
 cancel_timer(Ref)       -> erlang:cancel_timer(Ref), ok.
 
+-spec parse_url(binary()) -> {binary(), pos_integer()}.
 parse_url(<<"quic://", Rest/binary>>)  -> parse_host_port(Rest);
 parse_url(<<"https://", Rest/binary>>) -> parse_host_port(Rest);
 parse_url(B) when is_binary(B)         -> parse_host_port(B).
 
+%% @doc Split a peering URL into host and port. Exported because its IPv6
+%% handling is subtle enough to deserve tests of its own.
+%%
+%% ⚠ AN IPv6 LITERAL MUST BE BRACKETED, and this used to crash on one.
+%%
+%% Splitting on the first colon works for `host:port' and breaks completely for
+%% `::1:5000', where the host itself is full of colons: the old code handed
+%% `<<":1:5000">>' to `binary_to_integer/1' and died with a badarg. RFC 3986
+%% section 3.2.2 requires the brackets precisely to make the port delimiter
+%% unambiguous, so honour them.
+%%
+%% Latent in production, which dials DNS names, and NOT latent for any test
+%% cluster: `macula_station_test_cluster' binds every station to `::1', so no
+%% in-repo test could build an outbound link at all until this was fixed.
+parse_host_port(<<"[", Rest/binary>>) ->
+    bracketed(binary:split(Rest, <<"]">>));
 parse_host_port(B) ->
-    case binary:split(B, <<":">>) of
-        [H, P] -> {H, binary_to_integer(P)};
-        [H]    -> {H, 4433}
-    end.
+    unbracketed(B).
+
+bracketed([Host, <<":", Port/binary>>]) -> {Host, binary_to_integer(Port)};
+bracketed([Host, _NoPort])              -> {Host, 4433};
+bracketed([Malformed])                  -> {Malformed, 4433}.
+
+%% More than one colon and no brackets is a bare IPv6 literal. It is
+%% unparseable by definition -- the port delimiter is ambiguous -- so take the
+%% whole thing as the host on the default port rather than crashing the link.
+%%
+%% Split GLOBALLY to decide that. A non-global split of `<<"::1">>' yields two
+%% parts, the same shape as `host:port', and feeds `<<":1">>' to
+%% binary_to_integer. That is the original bug in miniature, and it survived my
+%% first fix because the comment described the intent while the code kept the
+%% two-element clause.
+unbracketed(B) ->
+    on_colon_count(binary:split(B, <<":">>, [global]), B).
+
+on_colon_count([H],    _B) -> {H, 4433};
+on_colon_count([H, P], _B) -> {H, binary_to_integer(P)};
+on_colon_count(_Many,   B) -> {B, 4433}.
