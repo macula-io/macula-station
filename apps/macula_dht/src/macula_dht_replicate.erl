@@ -54,7 +54,12 @@
     stores_sent  := non_neg_integer(),
     acks         := non_neg_integer(),
     nacks        := non_neg_integer(),
-    timeouts     := non_neg_integer()
+    timeouts     := non_neg_integer(),
+    %% Custodians we could not even reach. Split out of `timeouts' because
+    %% folding them together made an UNROUTABLE custodian statistically
+    %% indistinguishable from a slow one, which is how a leaf station can
+    %% fail every store it attempts and still look merely sluggish.
+    no_route     := non_neg_integer()
 }.
 
 -type stats() :: #{
@@ -222,6 +227,14 @@ account({ok, #{stored := true}},  Acc) ->
     bump(bump(Acc, stores_sent), acks);
 account({ok, #{stored := false}}, Acc) ->
     bump(bump(Acc, stores_sent), nacks);
+%% `no_route' is the transport telling us it holds no connection to the
+%% custodian and cannot make one (`macula_station_dht_transport:send_frame/2'
+%% resolves through `peer_observer:conn_for/2' only). On the current fleet most
+%% routing-table entries carry `endpoints => []', so this is the expected
+%% failure for any custodian that is not already a direct peer. Counting it
+%% separately is what makes that visible.
+account({error, no_route},        Acc) ->
+    bump(bump(Acc, stores_sent), no_route);
 account({error, _},               Acc) ->
     bump(bump(Acc, stores_sent), timeouts).
 
@@ -244,7 +257,7 @@ build_stats(#state{ticks = N, last_tick = L, cumulative = C}) ->
 -spec zero_outcome() -> outcome().
 zero_outcome() ->
     #{records_seen => 0, stores_sent => 0,
-      acks => 0, nacks => 0, timeouts => 0}.
+      acks => 0, nacks => 0, timeouts => 0, no_route => 0}.
 
 -spec merge(outcome(), outcome()) -> outcome().
 merge(A, B) ->

@@ -51,6 +51,13 @@
     acks     := non_neg_integer(),
     nacks    := non_neg_integer(),
     timeouts := non_neg_integer(),
+    %% Chosen custodians the transport could not reach AT ALL, as distinct
+    %% from ones that were merely slow. A quorum that fails because most of
+    %% the k-closest set is unroutable reads exactly like a congested mesh
+    %% when these are folded together, and on this fleet unroutable is the
+    %% common case: `macula_dht_protocol:entry_to_station_ref/2' publishes
+    %% `addresses => []', so only already-connected peers can be reached.
+    no_route := non_neg_integer(),
     degraded := boolean(),
     counts   := macula_dht_placement:counts()
 }.
@@ -113,7 +120,7 @@ pick_candidates(error, Dht, Key, K, Opts) ->
                          pos_integer(), opts()) -> result().
 dispatch_placement(_Dht, _Record, #{chosen := []} = Placement, _Quorum,
                    _Opts) ->
-    {error, no_candidates, outcome_of(Placement, 0, 0, 0)};
+    {error, no_candidates, outcome_of(Placement, 0, 0, 0, 0)};
 dispatch_placement(Dht, Record, Placement, Quorum, Opts) ->
     Chosen    = maps:get(chosen, Placement),
     PerStore  = maps:get(store_timeout_ms, Opts, ?DEFAULT_STORE_TIMEOUT_MS),
@@ -121,8 +128,8 @@ dispatch_placement(Dht, Record, Placement, Quorum, Opts) ->
     Deadline  = erlang:monotonic_time(millisecond) + OverallMs,
     Tag = make_ref(),
     spawn_workers(Dht, Record, Chosen, PerStore, Tag),
-    {A, N, T} = collect(length(Chosen), Tag, Deadline, 0, 0, 0),
-    Outcome = outcome_of(Placement, A, N, T),
+    {A, N, T, NR} = collect(length(Chosen), Tag, Deadline, 0, 0, 0, 0),
+    Outcome = outcome_of(Placement, A, N, T, NR),
     classify(A, Quorum, Outcome).
 
 -spec spawn_workers(macula_dht:dht(), macula_record:record(),
@@ -150,37 +157,49 @@ run_store_worker(Dht, PeerId, Record, PerStore, Tag, Parent) ->
 %%
 %% Messages are tagged with a fresh reference so only this call's
 %% results are received; stray messages from elsewhere are ignored.
+%% `no_route' is tracked separately from `timeouts'. Folded together, a
+%% custodian the transport cannot reach at all is indistinguishable from one
+%% that is merely slow -- and on this fleet most routing-table entries carry
+%% `endpoints => []', so unreachable is the COMMON case, not the rare one.
+%% A quorum can therefore fail for a structural reason while the numbers read
+%% like congestion.
 -spec collect(non_neg_integer(), reference(), integer(),
-              non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
-          {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
-collect(0, _Tag, _Deadline, Acks, Nacks, Timeouts) ->
-    {Acks, Nacks, Timeouts};
-collect(Remaining, Tag, Deadline, Acks, Nacks, Timeouts) ->
+              non_neg_integer(), non_neg_integer(), non_neg_integer(),
+              non_neg_integer()) ->
+          {non_neg_integer(), non_neg_integer(), non_neg_integer(),
+           non_neg_integer()}.
+collect(0, _Tag, _Deadline, Acks, Nacks, Timeouts, NoRoute) ->
+    {Acks, Nacks, Timeouts, NoRoute};
+collect(Remaining, Tag, Deadline, Acks, Nacks, Timeouts, NoRoute) ->
     Wait = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
         {store_result, Tag, _PeerId, {ok, #{stored := true}}} ->
             collect(Remaining - 1, Tag, Deadline,
-                    Acks + 1, Nacks, Timeouts);
+                    Acks + 1, Nacks, Timeouts, NoRoute);
         {store_result, Tag, _PeerId, {ok, #{stored := false}}} ->
             collect(Remaining - 1, Tag, Deadline,
-                    Acks, Nacks + 1, Timeouts);
+                    Acks, Nacks + 1, Timeouts, NoRoute);
+        {store_result, Tag, _PeerId, {error, no_route}} ->
+            collect(Remaining - 1, Tag, Deadline,
+                    Acks, Nacks, Timeouts, NoRoute + 1);
         {store_result, Tag, _PeerId, {error, _}} ->
             collect(Remaining - 1, Tag, Deadline,
-                    Acks, Nacks, Timeouts + 1)
+                    Acks, Nacks, Timeouts + 1, NoRoute)
     after Wait ->
-        {Acks, Nacks, Timeouts}
+        {Acks, Nacks, Timeouts, NoRoute}
     end.
 
 -spec outcome_of(macula_dht_placement:placement_result(),
                  non_neg_integer(), non_neg_integer(),
-                 non_neg_integer()) -> outcome().
+                 non_neg_integer(), non_neg_integer()) -> outcome().
 outcome_of(#{chosen := Chosen, degraded := Degraded, counts := Counts},
-           Acks, Nacks, Timeouts) ->
+           Acks, Nacks, Timeouts, NoRoute) ->
     #{
         chosen   => Chosen,
         acks     => Acks,
         nacks    => Nacks,
         timeouts => Timeouts,
+        no_route => NoRoute,
         degraded => Degraded,
         counts   => Counts
     }.
