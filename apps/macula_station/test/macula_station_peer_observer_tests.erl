@@ -143,6 +143,89 @@ disconnected_removes_from_swim_test_() ->
     end}.
 
 %%==================================================================
+%% Mutual peers: ONE direction down is not a disconnect
+%%==================================================================
+%%
+%% A mutual station pair holds TWO conns, but SWIM stores exactly ONE
+%% `conn_pid'. These cover the wiring that `macula_swim_three_arm_tests'
+%% deliberately stubs out: that harness proves the MECHANISM by calling
+%% `macula_swim:add_peer/3' itself, so it says nothing about whether
+%% `on_disconnected/2' actually reaches `resync_swim_after_conn_loss/4' with
+%% the surviving conn.
+%%
+%% ⚠ A STATION RESTART CANNOT COVER THIS. Restarting a station kills BOTH
+%% directions, so the peer becomes isolated and is removed — that is the
+%% `disconnected_removes_from_swim' path above, not this one. The regime here
+%% needs one direction to die while the other keeps living, which no
+%% up/down test of a whole station can produce.
+
+%% The load-bearing case. Before the fix SWIM kept the dead pid forever,
+%% `is_pid/1' being true for a dead pid, and every probe timed out into a
+%% `confirmed_failed' about a station that was reachable the whole time.
+one_direction_down_repoints_swim_at_the_survivor_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, Swim, NodeId, InPid, OutPid} = mutual_station(Ctx),
+            %% `primary_conn_lookup/1' prefers inbound, so that is what SWIM
+            %% was handed.
+            ?assert(swim_alive(Swim, NodeId, InPid)),
+            Obs ! {macula_peering, disconnected, InPid, quic_timeout},
+            wait_for(fun() -> swim_alive(Swim, NodeId, OutPid) end, 500),
+            ?assert(swim_alive(Swim, NodeId, OutPid)),
+            ?assert(has_member(Swim, NodeId))
+        end
+    end}.
+
+%% ⚠ THE GATE MUST SURVIVE THE RESYNC. `macula_swim:add_peer/3' upserts, so
+%% re-pointing a DAEMON would add a member the capability gate exists to keep
+%% out, silently re-polluting the membership that took a whole investigation to
+%% drain. A daemon that was never in SWIM must stay out.
+one_direction_down_for_a_daemon_stays_out_of_swim_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, Swim, NodeId, InPid, _OutPid} = mutual_peer(Ctx),
+            Obs ! {is_station_resolved, NodeId, 0, {ok, false}},
+            timer:sleep(150),
+            ?assertNot(has_member(Swim, NodeId)),
+            Obs ! {macula_peering, disconnected, InPid, quic_timeout},
+            timer:sleep(200),
+            ?assertNot(has_member(Swim, NodeId))
+        end
+    end}.
+
+%% Isolation still removes. The resync must not have turned removal off.
+both_directions_down_removes_a_mutual_station_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, Swim, NodeId, InPid, OutPid} = mutual_station(Ctx),
+            Obs ! {macula_peering, disconnected, InPid, quic_timeout},
+            wait_for(fun() -> swim_alive(Swim, NodeId, OutPid) end, 500),
+            Obs ! {macula_peering, disconnected, OutPid, quic_timeout},
+            wait_for(fun() -> not has_member(Swim, NodeId) end, 500),
+            ?assertNot(has_member(Swim, NodeId))
+        end
+    end}.
+
+%% The counter that makes a quiet fleet readable: if `conn_resynced' never
+%% moves in production, the regime never occurred there and no amount of
+%% steady-state observation has validated the fix.
+resync_is_counted_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Swim, _NodeId, InPid, _OutPid} = mutual_station(Ctx),
+            V0 = macula_station_peer_observer:swim_verdicts(Obs),
+            ?assertEqual(0, maps:get(conn_resynced, V0, 0)),
+            Obs ! {macula_peering, disconnected, InPid, quic_timeout},
+            wait_for(fun() ->
+                maps:get(conn_resynced,
+                         macula_station_peer_observer:swim_verdicts(Obs), 0) > 0
+            end, 500),
+            V1 = macula_station_peer_observer:swim_verdicts(Obs),
+            ?assertEqual(1, maps:get(conn_resynced, V1, 0))
+        end
+    end}.
+
+%%==================================================================
 %% Frame routing — SWIM frames with matching signature reach SWIM;
 %% bad signatures get dropped; DHT-level frames bypass SWIM.
 %%==================================================================
@@ -957,6 +1040,23 @@ one_connected_station(Ctx) ->
     resolve_as_station(Obs, NodeId),
     wait_for(fun() -> macula_dht:size(Dht) =:= 1 end, 500),
     {Obs, Dht, Swim, NodeId, ConnPid}.
+
+%% A mutual pair: the peer dialled us AND we dialled it, so both slots are
+%% populated for one NodeId. Not resolved as a station — callers decide.
+mutual_peer(#{obs := Obs, swim := Swim, peer_kp := PeerKp}) ->
+    NodeId = macula_identity:public(PeerKp),
+    InPid  = spawn_dummy(),
+    OutPid = spawn_dummy(),
+    Obs ! {macula_peering, connected, InPid, NodeId},
+    Obs ! {macula_peering, connected_outbound, OutPid, NodeId, []},
+    wait_for(fun() -> macula_station_peer_observer:peers(Obs) =/= [] end, 500),
+    {Obs, Swim, NodeId, InPid, OutPid}.
+
+mutual_station(Ctx) ->
+    {Obs, Swim, NodeId, InPid, OutPid} = mutual_peer(Ctx),
+    resolve_as_station(Obs, NodeId),
+    wait_for(fun() -> swim_alive(Swim, NodeId, InPid) end, 500),
+    {Obs, Swim, NodeId, InPid, OutPid}.
 
 has_member(Swim, NodeId) ->
     lists:any(fun(#{node_id := N}) -> N =:= NodeId end,
