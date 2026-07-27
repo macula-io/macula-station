@@ -235,7 +235,8 @@ on_content_handlers(SupPid, Cfg, DhtPid, {ok, _Pid}) ->
 boot_dht_custodians(SupPid, Cfg, DhtPid) ->
     Specs = [dht_replicate_child(DhtPid),
              dht_republish_child(DhtPid, Cfg),
-             dht_expire_child(DhtPid)],
+             dht_expire_child(DhtPid),
+             dht_liveness_child(DhtPid)],
     boot_dht_custodians_each(SupPid, Cfg, DhtPid, Specs).
 
 boot_dht_custodians_each(SupPid, Cfg, _DhtPid, []) ->
@@ -555,6 +556,23 @@ dht_expire_child(DhtPid) ->
         shutdown => 5_000,
         type     => worker,
         modules  => [macula_dht_expire]
+    }.
+
+%% Probes the least-recently-seen occupant of each FULL bucket and forgets it
+%% only when it provably fails to answer. Without it a saturated bucket admits
+%% nothing at all -- the admission score reduces to incumbency in production,
+%% so a newcomer always loses and the bucket keeps whatever connected first
+%% for the life of the process. See macula_dht_liveness for why only a timeout
+%% counts as death.
+dht_liveness_child(DhtPid) ->
+    #{
+        id       => macula_dht_liveness,
+        start    => {macula_station_sup, start_dht_liveness,
+                     [#{dht => DhtPid}]},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_dht_liveness]
     }.
 
 swim_child(#station_cfg{identity = Kp}) ->

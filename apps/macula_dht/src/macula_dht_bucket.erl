@@ -37,6 +37,8 @@
     contains/2,
     insert/2,
     insert/3,
+    is_full/1,
+    least_recently_seen/1,
     remove/2,
     touch/3,
     score/3
@@ -98,6 +100,21 @@ size(#{entries := Es}) -> length(Es).
 
 -spec members(bucket()) -> [macula_dht_entry:entry()].
 members(#{entries := Es}) -> Es.
+
+-spec is_full(bucket()) -> boolean().
+is_full(#{entries := Es, capacity := K}) -> length(Es) >= K.
+
+%% @doc The entry least recently heard from, i.e. the one classic Kademlia
+%% probes before admitting a newcomer into a full bucket. Pure; the probing
+%% itself lives in `macula_dht_liveness' because it is a network round trip.
+-spec least_recently_seen(bucket()) ->
+        {ok, macula_dht_entry:entry()} | empty.
+least_recently_seen(#{entries := []}) ->
+    empty;
+least_recently_seen(#{entries := Es}) ->
+    {ok, hd(lists:sort(fun(A, B) ->
+              macula_dht_entry:last_seen(A) =< macula_dht_entry:last_seen(B)
+          end, Es))}.
 
 -spec find(macula_dht_xor:id(), bucket()) ->
         {ok, macula_dht_entry:entry()} | error.

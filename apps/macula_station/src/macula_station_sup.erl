@@ -63,6 +63,7 @@
          start_dht_handlers/1,
          start_content_handlers/1,
          start_dht_replicate/1, start_dht_republish/1, start_dht_expire/1,
+         start_dht_liveness/1,
          start_announcer/1, start_content_announcer/1,
          start_bloom_exchange/1,
          start_peering_router/1, start_relay_ping/1]).
@@ -81,6 +82,7 @@
 -define(DHT_REPLICATE_NAME,              macula_dht_replicate).
 -define(DHT_REPUBLISH_NAME,              macula_dht_republish).
 -define(DHT_EXPIRE_NAME,                 macula_dht_expire).
+-define(DHT_LIVENESS_NAME,               macula_dht_liveness).
 -define(ANNOUNCER_NAME,                  macula_station_announcer).
 -define(CONTENT_ANNOUNCER_NAME,          macula_content_announcer).
 -define(BLOOM_EXCHANGE_NAME,             macula_station_bloom_exchange).
@@ -214,6 +216,11 @@ start_dht_republish(Opts) ->
 start_dht_expire(Opts) ->
     register_result(macula_dht_expire:start_link(Opts),
                     ?DHT_EXPIRE_NAME).
+
+-spec start_dht_liveness(map()) -> {ok, pid()} | {error, term()}.
+start_dht_liveness(Opts) ->
+    register_result(macula_dht_liveness:start_link(Opts),
+                    ?DHT_LIVENESS_NAME).
 
 -spec start_announcer(macula_station_announcer:opts()) ->
     {ok, pid()} | {error, term()}.
