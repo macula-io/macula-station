@@ -30,7 +30,8 @@
     add_peer/3,
     remove_peer/2,
     handle_frame/3,
-    members/1
+    members/1,
+    stats/1
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -81,7 +82,19 @@
     members = #{}    :: #{macula_identity:pubkey() => member()},
     probes = #{}     :: #{non_neg_integer() => probe()},
     suspect_timers = #{} :: #{macula_identity:pubkey() => reference()},
-    config           :: config()
+    config           :: config(),
+    %% MECHANISM COUNTERS. Without these a quiet fleet is unreadable: a
+    %% detector with nothing to detect and a detector that cannot fire look
+    %% identical from outside, and a fix whose code path never executes in
+    %% production has been validated by nothing.
+    %%
+    %% `probes_sent' vs `suspected' separates those two. `refuted' counts the
+    %% late-ACK rescue added in `on_ack/3' -- if it reads zero forever, that
+    %% branch is dead code on this fleet whatever the unit tests say.
+    probes_sent = 0  :: non_neg_integer(),
+    acks_matched = 0 :: non_neg_integer(),
+    refuted = 0      :: non_neg_integer(),
+    suspected = 0    :: non_neg_integer()
 }).
 
 %%------------------------------------------------------------------
@@ -111,6 +124,12 @@ handle_frame(Pid, FromNodeId, Frame)
   when is_binary(FromNodeId), byte_size(FromNodeId) =:= 32, is_map(Frame) ->
     gen_server:cast(Pid, {swim_frame, FromNodeId, Frame}).
 
+%% @doc Cumulative mechanism counters since boot. See the state record for
+%% why these exist rather than what they count.
+-spec stats(pid()) -> #{atom() => non_neg_integer()}.
+stats(Pid) ->
+    gen_server:call(Pid, stats).
+
 -spec members(pid()) -> [member()].
 members(Pid) ->
     gen_server:call(Pid, members).
@@ -136,6 +155,10 @@ init(#{self_node_id := Self, identity := Id, controlling_pid := Ctrl} = Opts) ->
 
 handle_call(members, _From, #state{members = M} = S) ->
     {reply, maps:values(M), S};
+handle_call(stats, _From, #state{probes_sent = P, acks_matched = A,
+                                 refuted = R, suspected = Su} = S) ->
+    {reply, #{probes_sent => P, acks_matched => A,
+              refuted => R, suspected => Su}, S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -221,7 +244,8 @@ mark_suspect(NodeId, #state{members = M, suspect_timers = T,
             NewM = M#{NodeId => Updated},
             Ref = erlang:send_after(Ms, self(), {suspect_timeout, NodeId}),
             notify_state_change(NodeId, suspect, S),
-            S#state{members = NewM, suspect_timers = T#{NodeId => Ref}};
+            S#state{members = NewM, suspect_timers = T#{NodeId => Ref},
+                    suspected = S#state.suspected + 1};
         _ ->
             S
     end.
@@ -302,7 +326,8 @@ send_ping(Round, Target, ConnPid,
     _ = macula_peering:send_frame(ConnPid, Signed),
     Ref = erlang:send_after(Ms, self(), {ping_timeout, Round, Target}),
     Probe = #{round => Round, target => Target, timer_ref => Ref},
-    S#state{probes = P#{Round => Probe}}.
+    S#state{probes = P#{Round => Probe},
+            probes_sent = S#state.probes_sent + 1}.
 
 on_ping_timeout(Round, Target, #state{probes = P} = S) ->
     case maps:take(Round, P) of
@@ -367,7 +392,9 @@ on_ack(From, #{round := Round}, #state{probes = P} = S) ->
         {#{target := Target, timer_ref := Ref}, NewP}
           when Target =:= From ->
             _ = erlang:cancel_timer(Ref),
-            maybe_touch_alive(From, S#state{probes = NewP});
+            maybe_touch_alive(From, S#state{probes = NewP,
+                                            acks_matched =
+                                                S#state.acks_matched + 1});
         _ ->
             refute_if_suspect(From, S)
     end.
@@ -381,7 +408,7 @@ refute_if_suspect(From, #state{members = M} = S) ->
     resolve_refutation(maps:get(From, M, undefined), From, S).
 
 resolve_refutation(#{state := suspect} = Member, From, S) ->
-    touch_alive(From, Member, S);
+    touch_alive(From, Member, S#state{refuted = S#state.refuted + 1});
 resolve_refutation(_Other, _From, S) ->
     S.
 

@@ -79,6 +79,54 @@ late_ack_does_not_resurrect_a_confirmed_peer_test() ->
     macula_swim:stop(Swim).
 
 %%---------------------------------------------------------------------
+%% Mechanism counters
+%%---------------------------------------------------------------------
+
+%% These exist so a QUIET FLEET IS READABLE. Post-capability-gate the fleet
+%% emits ~0 suspicions per hour, and from outside "nothing to detect" and
+%% "detector cannot fire" are indistinguishable. `probes_sent' separates them.
+%% `refuted' answers the separate question of whether the late-ACK branch has
+%% ever executed in production at all, which no conversion count can.
+probes_are_counted_even_when_nothing_is_suspected_test() ->
+    {ok, Swim} = start_swim(),
+    Live = spawn(fun Loop() -> receive _ -> Loop() end end),
+    PeerId = macula_identity:public(macula_identity:generate()),
+    ok = macula_swim:add_peer(Swim, PeerId, Live),
+    timer:sleep(?PERIOD_MS * 5),
+    #{probes_sent := Sent} = macula_swim:stats(Swim),
+    ?assert(Sent > 0),
+    exit(Live, kill),
+    macula_swim:stop(Swim).
+
+%% A dead conn must NOT be probed, so the counter must stay at zero. This is
+%% the pair to the test above: together they show the difference between a
+%% detector that is idle and one that is firing into the void.
+dead_conn_produces_no_probes_test() ->
+    {ok, Swim} = start_swim(),
+    Dead = spawn(fun() -> ok end),
+    ok = wait_until_dead(Dead),
+    PeerId = macula_identity:public(macula_identity:generate()),
+    ok = macula_swim:add_peer(Swim, PeerId, Dead),
+    timer:sleep(?PERIOD_MS * 5),
+    ?assertEqual(0, maps:get(probes_sent, macula_swim:stats(Swim))),
+    macula_swim:stop(Swim).
+
+refutation_is_counted_test() ->
+    {ok, Swim} = start_swim(),
+    Silent = spawn(fun Loop() -> receive _ -> Loop() end end),
+    PeerId = macula_identity:public(macula_identity:generate()),
+    ok = macula_swim:add_peer(Swim, PeerId, Silent),
+    ok = wait_for_state(Swim, PeerId, suspect, 2000),
+    ?assertEqual(0, maps:get(refuted, macula_swim:stats(Swim))),
+    macula_swim:handle_frame(Swim, PeerId, ack_frame(999999)),
+    ok = wait_for_state(Swim, PeerId, alive, 1000),
+    #{refuted := R, suspected := Su} = macula_swim:stats(Swim),
+    ?assertEqual(1, R),
+    ?assert(Su >= 1),
+    exit(Silent, kill),
+    macula_swim:stop(Swim).
+
+%%---------------------------------------------------------------------
 %% Helpers
 %%---------------------------------------------------------------------
 

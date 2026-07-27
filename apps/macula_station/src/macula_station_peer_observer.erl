@@ -1299,7 +1299,8 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     %% a mutual-peer with one direction still alive is still reachable.
     %% When it IS still reachable, re-point SWIM at the surviving conn:
     %% it was handed the pid that just died and would probe it forever.
-    resync_swim_after_conn_loss(NodeId, NewConns, Swim, S#state.is_station),
+    Resynced = resync_swim_after_conn_loss(NodeId, NewConns, Swim,
+                                           S#state.is_station),
     %% Same isolation rule for DHT: only forget when both directions
     %% are gone. DHT routing-table entries are expensive to rebuild
     %% (re-discovery via cross-station propagation), so keep them as
@@ -1310,12 +1311,16 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     maybe_forget_if_isolated(NodeId, NewConns, Dht, S#state.is_station),
     maybe_purge_advertise(R, ConnPid),
     NewIsStation = drop_is_station_if_isolated(NodeId, NewConns, S#state.is_station),
-    S#state{peers            = maps:remove(ConnPid, P),
-            conns            = NewConns,
-            direction_of_pid = maps:remove(ConnPid, D),
-            forwarded        = drop_forwarded_for(ConnPid, F),
-            last_frame_at    = maps:remove(ConnPid, LF),
-            is_station       = NewIsStation}.
+    S1 = bump_if_resynced(Resynced, S),
+    S1#state{peers            = maps:remove(ConnPid, P),
+             conns            = NewConns,
+             direction_of_pid = maps:remove(ConnPid, D),
+             forwarded        = drop_forwarded_for(ConnPid, F),
+             last_frame_at    = maps:remove(ConnPid, LF),
+             is_station       = NewIsStation}.
+
+bump_if_resynced(resynced, S) -> bump_verdict(conn_resynced, S);
+bump_if_resynced(_Other,   S) -> S.
 
 %% DAEMONS are forgotten on isolation. STATIONS are not.
 %%
@@ -1427,6 +1432,9 @@ drop_is_station_if_isolated(NodeId, NewConns, IsStation) ->
 %% bypass recipient pid silenced every pre-existing conn totally and silently.
 %%
 %% So: isolated means remove, surviving means RE-POINT at the survivor.
+-spec resync_swim_after_conn_loss(macula_identity:pubkey() | undefined,
+                                  map(), pid() | atom(), map()) ->
+          resynced | ok.
 resync_swim_after_conn_loss(undefined, _NewConns, _Swim, _IsStation) ->
     ok;
 resync_swim_after_conn_loss(NodeId, NewConns, Swim, IsStation) ->
@@ -1446,7 +1454,12 @@ on_surviving_conn(error, NodeId, Swim, _IsStation) ->
 on_surviving_conn({ok, _ConnPid}, _NodeId, _Swim, false) ->
     ok;
 on_surviving_conn({ok, ConnPid}, NodeId, Swim, true) ->
-    macula_swim:add_peer(Swim, NodeId, ConnPid).
+    ok = macula_swim:add_peer(Swim, NodeId, ConnPid),
+    resynced.
+
+%% Counted so a quiet fleet is readable. If `conn_resynced' sits at zero for
+%% weeks then the asymmetric-loss regime this fix addresses never occurred in
+%% production, and no amount of steady-state observation has validated it.
 
 %% Drop in-flight forwarded entries whose origin (or advertiser, for
 %% bulk-purge by either endpoint) has just gone. Cancels TTL timers
