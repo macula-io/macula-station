@@ -162,6 +162,12 @@
 %% macula_peering:?CAP_STATION (1 bsl 0). See macula_station_config.
 -define(CAP_STATION, 16#0000_0000_0000_0001).
 
+%% Capability resolution retry budget. `unknown' is not `daemon', so retry --
+%% but bounded, so a peer on an SDK that genuinely lacks the getter settles
+%% rather than probing forever.
+-define(STATION_RESOLVE_MAX,          5).
+-define(STATION_RESOLVE_BACKOFF_MS, 500).
+
 %% Hard upper bound on how long a forwarded CALL entry may live on
 %% the relay. Above any reasonable per-call deadline (the longest
 %% caller-side timeout in the fleet today is 10 s on
@@ -272,10 +278,11 @@ on_ets_lookup(Result, _Pid, _NodeId) ->
 init(#{dht := Dht, swim := Swim} = Opts)
   when is_pid(Dht), is_pid(Swim) ->
     %% Say once, loudly, whether the capability getter exists. `is_station' is
-    %% resolved through `macula_peering:peer_capabilities/1', and every failure
-    %% path in `peer_caps_station/1' collapses to `false' = daemon. So an SDK
-    %% that drops or renames this function would silently classify EVERY peer
-    %% as a daemon. That only misroutes an ADVERTISE today, but it is the
+    %% resolved through `macula_peering:peer_capabilities/1'. A missing getter
+    %% is reported as `unknown' by `resolve_capability/2' and retried, not
+    %% silently read as daemon -- but if it is missing FLEET-WIDE every peer
+    %% exhausts its retries and settles as daemon, and SWIM would end up
+    %% empty. That only misroutes an ADVERTISE today, but it is the
     %% single point on which any future capability-gating of the DHT or SWIM
     %% would rest, and a silent all-daemon verdict is exactly the failure that
     %% must never be quiet.
@@ -434,16 +441,19 @@ handle_info({stream_timeout, Sid}, #state{streams = St} = S) ->
 handle_info(conn_sweep, S) ->
     erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
     {noreply, run_conn_sweep(S)};
-handle_info({is_station_resolved, NodeId, Flag}, #state{is_station = IsSt,
-                                                        conns      = C} = S) ->
-    %% Apply the deferred peer_capabilities answer iff the NodeId is
-    %% still connected. A race-disconnect would have already removed
-    %% the entry via `drop_is_station_if_isolated/3'; preserve that
-    %% by gating on conns containing the NodeId.
-    case maps:is_key(NodeId, C) of
-        true  -> {noreply, S#state{is_station = IsSt#{NodeId => Flag}}};
-        false -> {noreply, S}
-    end;
+handle_info({is_station_resolved, NodeId, Attempt, unknown}, S) ->
+    {noreply, retry_resolve(maps:is_key(NodeId, S#state.conns),
+                            NodeId, Attempt, S)};
+handle_info({is_station_resolved, NodeId, _Attempt, {ok, Flag}}, S) ->
+    %% Apply the deferred answer iff the NodeId is still connected. A
+    %% race-disconnect would already have removed the entry via
+    %% `drop_is_station_if_isolated/3'; preserve that by gating on conns.
+    {noreply, apply_station_flag(maps:is_key(NodeId, S#state.conns),
+                                 NodeId, Flag, S)};
+handle_info({retry_resolve_is_station, NodeId, Attempt}, S) ->
+    {noreply, respawn_resolve(primary_conn_lookup(
+                                maps:find(NodeId, S#state.conns)),
+                              NodeId, Attempt, S)};
 %% THE CLAUSE THAT DID NOT EXIST. Without it this message hit the catch-all
 %% below and the detector's entire output was discarded.
 handle_info({macula_swim, member_state, NodeId, State}, S) ->
@@ -520,7 +530,14 @@ on_connected_directional(Direction, ConnPid, NodeId, Endpoints, S0) ->
     %% gen_server:call timeout to macula_dht:observe.
     macula_dht:observe_async(S0#state.dht,
                              direct_peer_spec(NodeId, Endpoints)),
-    ok = macula_swim:add_peer(S0#state.swim, NodeId, ConnPid),
+    %% SWIM membership is NOT added here. It is added when the capability
+    %% probe resolves the peer as a station -- see handle_info for
+    %% {is_station_resolved, ...}. Adding at connect time added every daemon
+    %% to SWIM, and daemons cannot answer a SWIM probe, so every one of them
+    %% timed out into suspect and then confirmed_failed. Measured before this
+    %% change: 142 of 142 confirmed_failed verdicts on the fleet were
+    %% contradicted by a live conn; the two leaves, whose only peer is a real
+    %% station, produced zero.
     %% Monitor ConnPid so observer cleans up on death without
     %% depending on a `disconnected' event flowing through some
     %% controlling_pid we may or may not own. Idempotent re-monitoring
@@ -561,6 +578,44 @@ on_connected_directional(Direction, ConnPid, NodeId, Endpoints, S0) ->
                                          maps:get(NodeId, S1#state.is_station, false),
                                          S1#state.is_station)}.
 
+apply_station_flag(false, _NodeId, _Flag, S) ->
+    S;
+apply_station_flag(true, NodeId, false, #state{is_station = IsSt} = S) ->
+    S#state{is_station = IsSt#{NodeId => false}};
+apply_station_flag(true, NodeId, true, #state{is_station = IsSt} = S) ->
+    %% Read the CURRENT conn pid rather than the one the resolver closed over:
+    %% `purge_stale_slot/4' may have evicted that pid while the probe was in
+    %% flight, and SWIM stores the pid it is handed and probes with it.
+    add_station_to_swim(primary_conn_lookup(maps:find(NodeId, S#state.conns)),
+                        NodeId, S),
+    S#state{is_station = IsSt#{NodeId => true}}.
+
+add_station_to_swim({ok, ConnPid}, NodeId, #state{swim = Swim}) ->
+    ok = macula_swim:add_peer(Swim, NodeId, ConnPid);
+add_station_to_swim(error, _NodeId, _S) ->
+    ok.
+
+%% Bounded retry. `unknown' means we could not ask, not that the answer is no,
+%% so retry with backoff while the peer is still connected. Capped so a peer
+%% whose SDK genuinely lacks the getter cannot retry forever.
+retry_resolve(false, _NodeId, _Attempt, S) ->
+    S;
+retry_resolve(true, NodeId, Attempt, S) when Attempt < ?STATION_RESOLVE_MAX ->
+    _ = erlang:send_after(?STATION_RESOLVE_BACKOFF_MS * (Attempt + 1), self(),
+                          {retry_resolve_is_station, NodeId, Attempt + 1}),
+    S;
+retry_resolve(true, NodeId, _Attempt, S) ->
+    logger:warning("[peer_observer] gave up resolving station capability for "
+                   "~s -- treating as daemon, so it will NOT join SWIM",
+                   [binary:encode_hex(binary:part(NodeId, 0, 4))]),
+    S.
+
+respawn_resolve({ok, ConnPid}, NodeId, Attempt, S) ->
+    spawn_resolve_is_station(ConnPid, NodeId, Attempt),
+    S;
+respawn_resolve(error, _NodeId, _Attempt, S) ->
+    S.
+
 log_capability_getter(true) ->
     logger:info("[peer_observer] macula_peering:peer_capabilities/1 exported "
                 "-- station capability detection is LIVE"),
@@ -572,29 +627,39 @@ log_capability_getter(false) ->
     ok.
 
 spawn_resolve_is_station(ConnPid, NodeId) ->
+    spawn_resolve_is_station(ConnPid, NodeId, 0).
+
+%% TRI-STATE, deliberately. The previous resolver answered a plain boolean and
+%% `peer_caps_station(_) -> false' swallowed every error, so a transient
+%% `{error, not_connected}' during a handshake race became a PERMANENT daemon
+%% verdict -- the resolver is one-shot and nothing ever re-probed. That was
+%% survivable while the flag only steered ADVERTISE routing. Now that it gates
+%% SWIM membership it would silently exclude a real station for the whole life
+%% of the connection, so `unknown' is distinguished from `daemon' and retried.
+spawn_resolve_is_station(ConnPid, NodeId, Attempt) ->
     Self = self(),
     spawn(fun() ->
-        Flag = peer_is_station(ConnPid),
-        Self ! {is_station_resolved, NodeId, Flag}
+        Self ! {is_station_resolved, NodeId, Attempt,
+                resolve_capability(ConnPid)}
     end),
     ok.
 
-%% Read the counterpart's capabilities bitmask post-handshake (SDK
-%% 4.5.0 added the getter; older SDKs report `not_connected', which
-%% we treat as "daemon" — same as if the bit were unset).
-peer_is_station(ConnPid) ->
-    Exported = erlang:function_exported(macula_peering, peer_capabilities, 1),
-    peer_is_station(Exported, ConnPid).
+-spec resolve_capability(pid()) -> {ok, boolean()} | unknown.
+resolve_capability(ConnPid) ->
+    resolve_capability(
+      erlang:function_exported(macula_peering, peer_capabilities, 1), ConnPid).
 
-peer_is_station(false, _ConnPid) ->
-    false;
-peer_is_station(true, ConnPid) ->
-    peer_caps_station(macula_peering:peer_capabilities(ConnPid)).
+%% A missing getter says nothing about the PEER, so it is unknown rather than
+%% daemon. The boot-time log already shouts if it is missing fleet-wide.
+resolve_capability(false, _ConnPid) ->
+    unknown;
+resolve_capability(true, ConnPid) ->
+    classify_caps(catch macula_peering:peer_capabilities(ConnPid)).
 
-peer_caps_station({ok, Caps}) when is_integer(Caps) ->
-    (Caps band ?CAP_STATION) =/= 0;
-peer_caps_station(_) ->
-    false.
+classify_caps({ok, Caps}) when is_integer(Caps) ->
+    {ok, (Caps band ?CAP_STATION) =/= 0};
+classify_caps(_Other) ->
+    unknown.
 
 %% Evict any stale ConnPid sitting in the (NodeId, Direction) slot so
 %% the incoming ConnPid starts from a clean lane. Idempotent for the

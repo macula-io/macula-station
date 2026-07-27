@@ -60,11 +60,41 @@ conn_for_bypasses_gen_server_mailbox_test_() ->
         end
     end}.
 
-connected_adds_peer_to_swim_test_() ->
+%% SWIM membership now requires a RESOLVED station capability, not merely a
+%% connection. Connecting alone must NOT add the peer: daemons connect too, and
+%% they cannot answer a SWIM probe, so every one of them timed out into suspect
+%% and then confirmed_failed. Measured on the fleet before this change: 142 of
+%% 142 confirmed_failed verdicts were contradicted by a live conn.
+connected_alone_does_not_add_to_swim_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {_Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
-            wait_for(fun() -> swim_alive(Swim, NodeId, ConnPid) end, 500)
+            {_Obs, _Dht, Swim, NodeId, _ConnPid} = one_connected_peer(Ctx),
+            %% The dummy conn cannot answer peer_capabilities, so resolution
+            %% stays `unknown' and the peer never joins.
+            timer:sleep(150),
+            ?assertNot(has_member(Swim, NodeId))
+        end
+    end}.
+
+%% ...and it IS added once the capability probe resolves it as a station.
+resolved_station_is_added_to_swim_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            Obs ! {is_station_resolved, NodeId, 0, {ok, true}},
+            wait_for(fun() -> swim_alive(Swim, NodeId, ConnPid) end, 500),
+            ?assert(swim_alive(Swim, NodeId, ConnPid))
+        end
+    end}.
+
+%% A resolved DAEMON stays out. This is the whole point of the gate.
+resolved_daemon_is_not_added_to_swim_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, Swim, NodeId, _ConnPid} = one_connected_peer(Ctx),
+            Obs ! {is_station_resolved, NodeId, 0, {ok, false}},
+            timer:sleep(150),
+            ?assertNot(has_member(Swim, NodeId))
         end
     end}.
 
@@ -104,6 +134,8 @@ disconnected_removes_from_swim_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
             {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            %% Resolve as a station first, since membership is now gated on it.
+            Obs ! {is_station_resolved, NodeId, 0, {ok, true}},
             wait_for(fun() -> has_member(Swim, NodeId) end, 500),
             Obs ! {macula_peering, disconnected, ConnPid, operator_stop},
             wait_for(fun() -> not has_member(Swim, NodeId) end, 500),
