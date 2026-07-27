@@ -156,8 +156,17 @@ handle_cast({replicate_one, Record},
     %% microsecond rate; the worker still spawns per-target stores
     %% inside `fire_eager_stores' so durability semantics are
     %% unchanged.
-    _ = spawn(fun() -> fire_eager_stores(Record, Dht, K, Tmo) end),
+    Server = self(),
+    _ = spawn(fun() -> fire_eager_stores(Server, Record, Dht, K, Tmo) end),
     {noreply, State};
+%% The eager path reports its outcome back so it lands in the SAME
+%% cumulative counters as the tick. It used to discard every result, which
+%% meant the per-put path -- the one every `_dht.put_record' RPC uses, and
+%% the one that matters for read-after-write -- was completely unmeasured.
+%% Only the 1h tick was ever counted, so `stats/1' could read all-zero on a
+%% station that had just failed every eager store it attempted.
+handle_cast({eager_outcome, Outcome}, State) ->
+    {noreply, advance(State, Outcome)};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -189,19 +198,45 @@ run_tick(#state{dht = Dht} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec fire_eager_stores(macula_record:record(), macula_dht:dht(),
+-spec fire_eager_stores(pid(), macula_record:record(), macula_dht:dht(),
                         pos_integer(), pos_integer()) -> ok.
-fire_eager_stores(Record, Dht, K, Tmo) ->
-    SelfId  = macula_dht:self_id(Dht),
-    Key     = macula_record:storage_key(Record),
-    Entries = macula_dht:k_closest(Dht, Key, K),
-    Targets = [macula_dht_entry:node_id(E)
-               || E <- Entries,
-                  macula_dht_entry:node_id(E) =/= SelfId],
+fire_eager_stores(Server, Record, Dht, K, Tmo) ->
+    SelfId    = macula_dht:self_id(Dht),
+    Key       = macula_record:storage_key(Record),
+    Entries   = macula_dht:k_closest(Dht, Key, K),
+    Targets   = [macula_dht_entry:node_id(E)
+                 || E <- Entries,
+                    macula_dht_entry:node_id(E) =/= SelfId],
+    Collector = self(),
+    Tag       = make_ref(),
     _ = [spawn(fun() ->
-            _ = macula_dht:send_store(Dht, PeerId, Record, Tmo)
+            Collector ! {eager_result, Tag,
+                         macula_dht:send_store(Dht, PeerId, Record, Tmo)}
          end) || PeerId <- Targets],
+    %% Still fully concurrent: every STORE is in flight before we collect.
+    %% The grace beyond `Tmo' is so a store that times out at the transport
+    %% is counted as a timeout rather than lost to OUR deadline, which would
+    %% under-report the very thing this exists to measure.
+    Deadline = erlang:monotonic_time(millisecond) + Tmo + 1_000,
+    Outcome  = collect_eager(length(Targets), Tag, Deadline,
+                             bump(zero_outcome(), records_seen)),
+    gen_server:cast(Server, {eager_outcome, Outcome}),
     ok.
+
+%% Folds through the same `account/2' as the tick, so `no_route' means the
+%% same thing on both paths and the cumulative counters stay comparable.
+-spec collect_eager(non_neg_integer(), reference(), integer(), outcome()) ->
+          outcome().
+collect_eager(0, _Tag, _Deadline, Acc) ->
+    Acc;
+collect_eager(Remaining, Tag, Deadline, Acc) ->
+    Wait = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {eager_result, Tag, Result} ->
+            collect_eager(Remaining - 1, Tag, Deadline, account(Result, Acc))
+    after Wait ->
+        Acc
+    end.
 
 -spec replicate_record(macula_record:record(), macula_identity:pubkey(),
                        #state{}, outcome()) -> outcome().
