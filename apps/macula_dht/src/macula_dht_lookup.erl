@@ -312,12 +312,27 @@ merge_fresh(State, PathId, Refs) ->
 %% with.
 %%
 %% It went unnoticed because every station in a mutually-dialled mesh is
-%% fed by INBOUND traffic instead — each handshake and each incoming
-%% FIND_NODE observes its sender, which masks the missing path entirely.
-%% The first degree-1 LEAF exposed it: nothing dials a leaf, so its only
-%% inbound is replies to its own queries, and its table stayed pinned at
-%% the single bootstrap seed while a self-lookup happily returned 20
-%% peers it then discarded.
+%% fed by the CONNECT path instead: `macula_station_peer_observer'
+%% observes each peer on handshake, in either direction. That is the only
+%% other production fill path — an inbound FIND_NODE does NOT observe its
+%% sender (`macula_dht_server:on_find_node/3' replies and returns state
+%% unchanged), so do not reason as though it does.
+%%
+%% The first degree-1 LEAF exposed the gap: nothing dials a leaf, so it
+%% gets exactly one handshake, and its table stayed pinned at that single
+%% bootstrap seed while a self-lookup happily returned 20 peers it then
+%% discarded.
+%%
+%% ⚠ WHAT THIS DOES NOT BUY. `macula_dht_protocol:entry_to_station_ref/2'
+%% hardcodes `addresses => []', so every ref arriving in a NODES reply is
+%% ADDRESS-LESS and the specs built below always carry `endpoints => []'.
+%% `macula_station_dht_transport:send_frame/2' resolves a node only
+%% through `peer_observer:conn_for/2' — an existing connection — and
+%% never dials. So a learned entry raises `dht:size/1` but is not
+%% reachable, and the "iterative" walk is one hop wide: every follow-up
+%% query to a newly learned peer returns `no_route'. Fixing that needs
+%% real addresses on the wire AND a dialling transport; until then treat
+%% a rising table as bookkeeping, not as routing capability.
 %%
 %% `observe_async' deliberately, not `observe': this runs on the lookup
 %% coordinator, which may be the DHT process itself, and a synchronous
@@ -331,9 +346,14 @@ observe_fresh(Dht, Fresh) ->
                   Fresh).
 
 %% The inverse the codebase was missing: a received `station_ref' back
-%% into a routing-table `spec'. The ref already carries the real `asn'
-%% and `country', so entries learned this way are NOT subject to the
-%% fabricated `asn => 0' that bootstrap-ingested entries carry.
+%% into a routing-table `spec'.
+%%
+%% The ref does carry the sender's `asn' and `country', so those two
+%% fields are not the fabricated `asn => 0' that bootstrap-ingested
+%% entries get. Do NOT read that as "the entry is fully populated":
+%% `addresses' is hardcoded empty by
+%% `macula_dht_protocol:entry_to_station_ref/2', so `endpoints' below is
+%% always `[]' and the entry cannot be dialled. Real metadata, no route.
 -spec ref_to_spec(macula_frame:station_ref()) -> macula_dht_entry:spec().
 ref_to_spec(#{node_id := Id} = Ref) ->
     #{
