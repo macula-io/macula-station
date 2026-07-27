@@ -36,7 +36,8 @@
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
 -export([conn_death_on_a_mutual_pair_keeps_the_peer_verified/1,
-         conn_death_repoints_swim_at_the_survivor/1]).
+         conn_death_repoints_swim_at_the_survivor/1,
+         a_wedged_peer_is_still_detected/1]).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
@@ -47,7 +48,8 @@
 
 all() ->
     [conn_death_on_a_mutual_pair_keeps_the_peer_verified,
-     conn_death_repoints_swim_at_the_survivor].
+     conn_death_repoints_swim_at_the_survivor,
+     a_wedged_peer_is_still_detected].
 
 init_per_suite(Config) -> Config.
 end_per_suite(_Config) -> ok.
@@ -107,6 +109,40 @@ conn_death_repoints_swim_at_the_survivor(Config) ->
     Survivor = swim_conn_pid(A, BId),
     ?assertNotEqual(Held, Survivor),
     ?assert(alive_on(A, Survivor)).
+
+%% RECALL, which this whole line of work never once measured.
+%%
+%% Every mechanism added here removes a path to condemnation: the capability
+%% gate excludes unresolved peers, `drop_probes_for/2' cancels in-flight
+%% evidence of non-response, `refute_if_not_alive/3' resurrects on any late ACK,
+%% and the `is_process_alive' filter stops selecting dead-conn members. Each was
+%% justified by reducing FALSE verdicts. None was ever checked against whether a
+%% REAL failure still gets caught, which is the detector's actual job.
+%%
+%% ⚠ THIS IS THE ONLY FAILURE CLASS SWIM STILL OWNS. Anything that takes the
+%% transport down is caught by QUIC first, because the observer removes the peer
+%% on `disconnected' before SWIM reaches a verdict. What is left is the peer
+%% that is wedged but still connected. If SWIM cannot catch that, it has no job
+%% and every precision fix in this suite was polish on a component with nothing
+%% to do.
+%%
+%% Bound: production defaults give a floor of one probe period + ping timeout +
+%% suspect timeout, roughly 9s. 30s allows three chances.
+a_wedged_peer_is_still_detected(Config) ->
+    {A, B} = mutual_pair(Config),
+    BId = macula_station_test_cluster:pubkey(B),
+    ?assertEqual(alive, state_on(A, BId)),
+
+    %% Freeze B's SWIM while leaving every QUIC conn up. B stops ACKing but
+    %% stays connected, so the observer never removes it and SWIM must decide.
+    ok = macula_station_test_cluster:rpc(
+           B, macula_station_test_cluster, on_peer_wedge_swim, []),
+
+    Reached = wait_for_state(A, BId, confirmed_failed, 30_000),
+    ct:pal("wedged peer after 30s: state=~p probes=~p suspected=~p refuted=~p",
+           [state_on(A, BId), swim_stat(A, probes_sent),
+            swim_stat(A, suspected), swim_stat(A, refuted)]),
+    ?assertEqual(ok, Reached).
 
 %%===================================================================
 %% Helpers
@@ -193,6 +229,22 @@ hold_state(Station, NodeId, Want, Budget) ->
     ?assertEqual(Want, state_on(Station, NodeId)),
     timer:sleep(500),
     hold_state(Station, NodeId, Want, Budget - 500).
+
+%% Unlike `wait_until/2' this returns a verdict instead of asserting, so the
+%% caller can log the full mechanism state before failing.
+wait_for_state(Station, NodeId, Want, Budget) when Budget =< 0 ->
+    verdict_of(state_on(Station, NodeId) =:= Want);
+wait_for_state(Station, NodeId, Want, Budget) ->
+    step_state(state_on(Station, NodeId) =:= Want,
+               Station, NodeId, Want, Budget).
+
+step_state(true, _Station, _NodeId, _Want, _Budget) -> ok;
+step_state(false, Station, NodeId, Want, Budget) ->
+    timer:sleep(500),
+    wait_for_state(Station, NodeId, Want, Budget - 500).
+
+verdict_of(true)  -> ok;
+verdict_of(false) -> timeout.
 
 wait_until(Pred, Budget) when Budget =< 0 ->
     ?assert(Pred()),

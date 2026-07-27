@@ -45,7 +45,8 @@
     on_peer_swim_stats/0,
     on_peer_swim_verdicts/0,
     on_peer_conns/0,
-    on_peer_start_outbound_link/1
+    on_peer_start_outbound_link/1,
+    on_peer_wedge_swim/0
 ]).
 
 -export_type([station_handle/0]).
@@ -465,6 +466,21 @@ start_link_from_env(Url) ->
     %% cannot apply either (the cert SPKI is not any station's Ed25519 pubkey).
     macula_station_outbound_link:start_link(
       #{url => Url, identity => Kp, capabilities => 1, verify => none}).
+
+%% @doc Wedge the peer's SWIM: alive as a process, holding every QUIC conn, but
+%% no longer servicing anything, so it stops ACKing.
+%%
+%% This is the ONLY failure class SWIM is still responsible for on this mesh.
+%% Every failure that takes the transport down is detected by QUIC first: the
+%% observer removes the peer on `disconnected' before SWIM can reach a verdict.
+%% So a wedged-but-connected peer is what is left, and if the detector cannot
+%% catch that, it has no job.
+-spec on_peer_wedge_swim() -> ok | {error, term()}.
+on_peer_wedge_swim() ->
+    suspend_swim(whereis(macula_swim)).
+
+suspend_swim(undefined) -> {error, no_swim};
+suspend_swim(Pid)       -> sys:suspend(Pid), ok.
 
 %% @doc The observer's conns map on the peer: NodeId => #{inbound, outbound}.
 %% Needed to tell "this peer is mutual" from "this peer has one direction",
