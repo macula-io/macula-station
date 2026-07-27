@@ -1107,7 +1107,7 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     %% IS reached, prune — without this, daemon entries leak forever
     %% and macula_dht's mailbox grows unbounded under sustained load
     %% (see docs/CASCADE_INVESTIGATION.md).
-    maybe_forget_if_isolated(NodeId, NewConns, Dht),
+    maybe_forget_if_isolated(NodeId, NewConns, Dht, S#state.is_station),
     maybe_purge_advertise(R, ConnPid),
     NewIsStation = drop_is_station_if_isolated(NodeId, NewConns, S#state.is_station),
     S#state{peers            = maps:remove(ConnPid, P),
@@ -1117,14 +1117,56 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
             last_frame_at    = maps:remove(ConnPid, LF),
             is_station       = NewIsStation}.
 
-maybe_forget_if_isolated(undefined, _NewConns, _Dht) ->
+%% DAEMONS are forgotten on isolation. STATIONS are not.
+%%
+%% Delete-on-disconnect was shipped in May to stop daemon entries leaking
+%% forever and growing macula_dht's mailbox without bound
+%% (docs/CASCADE_INVESTIGATION.md). It solved that, but it applies the same rule
+%% to stations, and for a station it is a RATCHET: a station entry is expensive
+%% to rebuild (re-discovery via cross-station propagation) and there is almost
+%% nothing on this fleet that rebuilds one — `macula_dht_lookup' runs only from
+%% the rebootstrap watchdog, and the core stations have no watchdog at all. So
+%% every station disconnect permanently shrinks the table.
+%%
+%% That matters more the moment anything dials: a successful-then-dropped dial
+%% would delete the very entry the dial created, and walk-learned entries
+%% (currently immortal, because no conn ever existed for them) would become
+%% forgettable. The precedent is on file — docs/DHT_FIND_FLAKE_ATTEMPT.md:23-30
+%% records a change that took the table from ~8 entries to ~3 and
+%% `cross_station_dht_put_find' from 2/5 to 0/5. "The real lever is keeping the
+%% routing table FULLER, not smaller."
+%%
+%% Stations are a bounded, long-lived population (7 on this fleet); daemons are
+%% the unbounded churning one, so keeping stations does not reopen the leak.
+%%
+%% ⚠ NOT the whole fix. The cascade doc scopes it as conn-aging PLUS
+%% routing-table TTL eviction. TTL is deliberately NOT added here: with no
+%% periodic bucket refresh in the tree, a TTL sweep would age out walk-learned
+%% entries faster than anything recreates them and drain the table by a second
+%% route. TTL and bucket refresh have to land together.
+%%
+%% `is_station' is resolved asynchronously and defaults to `false', so a station
+%% that drops before its capability probe returns is still treated as a daemon
+%% and forgotten. That is today's behaviour, so it is not a regression -- just
+%% not yet the improvement.
+maybe_forget_if_isolated(undefined, _NewConns, _Dht, _IsStation) ->
     ok;
-maybe_forget_if_isolated(NodeId, NewConns, Dht) ->
-    case maps:find(NodeId, NewConns) of
-        error                                                -> macula_dht:forget(Dht, NodeId);
-        {ok, #{inbound := undefined, outbound := undefined}} -> macula_dht:forget(Dht, NodeId);
-        _                                                    -> ok
-    end.
+maybe_forget_if_isolated(NodeId, NewConns, Dht, IsStation) ->
+    forget_if_isolated(is_isolated(maps:find(NodeId, NewConns)),
+                       maps:get(NodeId, IsStation, false), NodeId, Dht).
+
+is_isolated(error) ->
+    true;
+is_isolated({ok, #{inbound := undefined, outbound := undefined}}) ->
+    true;
+is_isolated(_) ->
+    false.
+
+%% isolated? | station? |
+forget_if_isolated(false, _Station, _NodeId, _Dht) -> ok;
+forget_if_isolated(true,  true,     _NodeId, _Dht) -> ok;
+forget_if_isolated(true,  false,     NodeId,  Dht) ->
+    macula_dht:forget(Dht, NodeId).
 
 drop_directional_conn(undefined, _Direction, _ConnPid, C) ->
     C;

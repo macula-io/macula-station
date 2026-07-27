@@ -930,3 +930,46 @@ wait_step(false, Pred, Ms) when Ms =< 0      -> ?assert(Pred());
 wait_step(false, Pred, Ms)                   ->
     timer:sleep(20),
     wait_step(Pred(), Pred, Ms - 20).
+
+%%==================================================================
+%% Isolation eviction is DAEMON-ONLY.
+%%
+%% Delete-on-disconnect was shipped to stop daemon entries leaking and
+%% growing macula_dht's mailbox without bound. Applied to a STATION it
+%% is a ratchet instead: station entries are expensive to rebuild and
+%% almost nothing on this fleet rebuilds one, so every disconnect
+%% shrinks the table permanently. It becomes actively harmful the
+%% moment anything dials, because a successful-then-dropped dial would
+%% delete the entry the dial just created.
+%%==================================================================
+
+isolated_daemon_is_forgotten_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            ?assertMatch({ok, _}, macula_dht:find(Dht, NodeId)),
+            %% is_station defaults to false, i.e. daemon-class.
+            Obs ! {macula_peering, disconnected, ConnPid, peer_closed},
+            wait_for(fun() -> macula_dht:find(Dht, NodeId) =:= error end, 500),
+            ?assertEqual(error, macula_dht:find(Dht, NodeId))
+        end
+    end}.
+
+isolated_station_is_kept_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            sys:replace_state(Obs, fun(S) ->
+                IsStMap = element(?IS_STATION_INDEX, S),
+                setelement(?IS_STATION_INDEX, S, IsStMap#{NodeId => true})
+            end),
+            Obs ! {macula_peering, disconnected, ConnPid, peer_closed},
+            %% Wait on an observable the disconnect DOES change, so this
+            %% cannot pass merely by racing ahead of the handler.
+            wait_for(fun() ->
+                macula_station_peer_observer:peers(Obs) =:= []
+            end, 500),
+            ?assertMatch({ok, _}, macula_dht:find(Dht, NodeId)),
+            ?assertEqual(1, macula_dht:size(Dht))
+        end
+    end}.
