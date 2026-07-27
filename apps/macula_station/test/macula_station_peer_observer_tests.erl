@@ -973,3 +973,65 @@ isolated_station_is_kept_test_() ->
             ?assertEqual(1, macula_dht:size(Dht))
         end
     end}.
+
+%%==================================================================
+%% SWIM verdicts are TALLIED, and corroborated against our own conns.
+%%
+%% macula_swim pushed alive/suspect/confirmed_failed transitions to its
+%% controlling pid, which is this process, and until 2026-07-27 there
+%% was no clause for the message: the whole output of an adaptive
+%% failure detector fell into the catch-all handle_info. These tests
+%% pin that it is now consumed, and that a confirmed_failed for a peer
+%% we still hold a live conn to is counted separately as a suspected
+%% false positive. Nothing here asserts an ACTION, deliberately: the
+%% accuracy of the verdicts is unknown and acting on a signal of
+%% unknown accuracy turns a failure detector into an amplifier.
+%%==================================================================
+
+swim_verdict_is_tallied_not_dropped_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(#{obs := Obs}) ->
+        fun() ->
+            ?assertEqual(#{}, macula_station_peer_observer:swim_verdicts(Obs)),
+            Obs ! {macula_swim, member_state, random_node_id(), suspect},
+            wait_for(fun() ->
+                maps:get(suspect,
+                         macula_station_peer_observer:swim_verdicts(Obs), 0) =:= 1
+            end, 500),
+            ?assertEqual(1, maps:get(suspect,
+                macula_station_peer_observer:swim_verdicts(Obs), 0))
+        end
+    end}.
+
+%% The measurement that matters: SWIM says dead, we still hold the conn.
+swim_confirmed_failed_with_live_conn_is_flagged_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, _Swim, NodeId, _ConnPid} = one_connected_peer(Ctx),
+            Obs ! {macula_swim, member_state, NodeId, confirmed_failed},
+            wait_for(fun() ->
+                maps:get(confirmed_live_conn,
+                         macula_station_peer_observer:swim_verdicts(Obs), 0) =:= 1
+            end, 500),
+            V = macula_station_peer_observer:swim_verdicts(Obs),
+            ?assertEqual(1, maps:get(confirmed_live_conn, V, 0)),
+            ?assertEqual(0, maps:get(confirmed_no_conn, V, 0)),
+            %% and the peer is STILL connected — observation only.
+            ?assertMatch({ok, _},
+                         macula_station_peer_observer:conn_for(Obs, NodeId))
+        end
+    end}.
+
+swim_confirmed_failed_without_conn_is_corroborated_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(#{obs := Obs}) ->
+        fun() ->
+            Unknown = random_node_id(),
+            Obs ! {macula_swim, member_state, Unknown, confirmed_failed},
+            wait_for(fun() ->
+                maps:get(confirmed_no_conn,
+                         macula_station_peer_observer:swim_verdicts(Obs), 0) =:= 1
+            end, 500),
+            V = macula_station_peer_observer:swim_verdicts(Obs),
+            ?assertEqual(1, maps:get(confirmed_no_conn, V, 0)),
+            ?assertEqual(0, maps:get(confirmed_live_conn, V, 0))
+        end
+    end}.

@@ -39,7 +39,8 @@
 -export([
     start_link/1, stop/1,
     peers/1,
-    conn_for/2
+    conn_for/2,
+    swim_verdicts/1
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -140,7 +141,20 @@
     %% mobility-across-stations cannot get shadowed by an older
     %% gossip echo). Pre-4.5.0 SDKs report 0, which evaluates as
     %% "daemon" — preserves legacy behaviour.
-    is_station    = #{}  :: #{macula_identity:pubkey() => boolean()}
+    is_station    = #{}  :: #{macula_identity:pubkey() => boolean()},
+    %% SWIM verdict tally. macula_swim computes alive -> suspect ->
+    %% confirmed_failed and pushes each transition to its controlling pid,
+    %% which is this process. Until 2026-07-27 there was NO CLAUSE for that
+    %% message and it fell into the catch-all handle_info -- an adaptive
+    %% failure detector whose verdict was consumed by nobody, after someone
+    %% had deliberately rewired the controlling pid here to stop the
+    %% notifications being dropped.
+    %%
+    %% This tally OBSERVES, it does not act. Nothing here forgets a peer,
+    %% drops a conn or sheds work. The open question is whether the verdicts
+    %% are TRUE at degree ~3 on a 5-7 station mesh, and acting on a signal of
+    %% unknown accuracy is how a failure detector becomes a failure amplifier.
+    swim_verdicts = #{} :: #{atom() => non_neg_integer()}
 }).
 
 %% Capability bit asserting a peer is a relay station. Matches
@@ -205,6 +219,16 @@ peers(Pid) -> gen_server:call(Pid, peers).
 %% already hold `whereis(macula_station_peer_observer)' or pass it
 %% explicitly) but is not used — `?CONNS_TABLE' is named, single
 %% per BEAM, so a stale pid does not matter.
+%% @doc SWIM verdict tally. `confirmed_live_conn' is the interesting one: it
+%% counts verdicts of `confirmed_failed' for a peer we STILL hold a live
+%% connection to, which is a contradiction and therefore a suspected false
+%% positive. `confirmed_no_conn' is the corroborated case. The ratio is the
+%% measurement that decides whether any failure-reactive mechanism can be
+%% trusted here.
+-spec swim_verdicts(pid()) -> #{atom() => non_neg_integer()}.
+swim_verdicts(Pid) ->
+    gen_server:call(Pid, swim_verdicts).
+
 -spec conn_for(pid(), macula_identity:pubkey()) ->
     {ok, pid()} | error.
 conn_for(Pid, <<_:256>> = NodeId) ->
@@ -295,6 +319,8 @@ absorb_known_dial(LinkPid, NodeId, Endpoints, S) ->
         _:_ -> S
     end.
 
+handle_call(swim_verdicts, _From, #state{swim_verdicts = V} = S) ->
+    {reply, V, S};
 handle_call(peers, _From, #state{peers = P} = S) ->
     {reply, maps:to_list(P), S};
 handle_call({conn_for, NodeId}, _From, #state{conns = C} = S) ->
@@ -381,6 +407,10 @@ handle_info({is_station_resolved, NodeId, Flag}, #state{is_station = IsSt,
         true  -> {noreply, S#state{is_station = IsSt#{NodeId => Flag}}};
         false -> {noreply, S}
     end;
+%% THE CLAUSE THAT DID NOT EXIST. Without it this message hit the catch-all
+%% below and the detector's entire output was discarded.
+handle_info({macula_swim, member_state, NodeId, State}, S) ->
+    {noreply, tally_swim_verdict(NodeId, State, S)};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -593,6 +623,37 @@ primary_conn_lookup({ok, _Empty}) ->
 %% on the fleet undialable and confined every DHT store to peers we already
 %% had a connection to. `asn' and `country' are still placeholders; they feed
 %% `macula_dht_diversity' and are a separate problem.
+%% Corroborate the verdict against the ground truth this process already
+%% owns. A `confirmed_failed' for a NodeId we still hold a live conn to is
+%% self-contradictory and counts as a suspected false positive; one with no
+%% conn is corroborated. Everything is counted, nothing is acted on.
+-spec tally_swim_verdict(macula_identity:pubkey(), atom(), #state{}) ->
+          #state{}.
+tally_swim_verdict(NodeId, confirmed_failed, #state{conns = C} = S) ->
+    Key = verdict_key(maps:find(NodeId, C)),
+    log_confirmed(Key, NodeId),
+    bump_verdict(Key, bump_verdict(confirmed_failed, S));
+tally_swim_verdict(_NodeId, State, S) ->
+    bump_verdict(State, S).
+
+%% A conn entry with BOTH directions undefined is a husk, not reachability.
+verdict_key(error) ->
+    confirmed_no_conn;
+verdict_key({ok, #{inbound := undefined, outbound := undefined}}) ->
+    confirmed_no_conn;
+verdict_key({ok, _Live}) ->
+    confirmed_live_conn.
+
+log_confirmed(confirmed_live_conn, NodeId) ->
+    logger:warning("[peer_observer] SWIM says confirmed_failed for ~s but we "
+                   "still hold a live conn -- suspected false positive",
+                   [binary:encode_hex(binary:part(NodeId, 0, 4))]);
+log_confirmed(_Corroborated, _NodeId) ->
+    ok.
+
+bump_verdict(Key, #state{swim_verdicts = V} = S) ->
+    S#state{swim_verdicts = maps:update_with(Key, fun(N) -> N + 1 end, 1, V)}.
+
 direct_peer_spec(NodeId, Endpoints) when is_list(Endpoints) ->
     #{node_id   => NodeId,
       endpoints => Endpoints,
