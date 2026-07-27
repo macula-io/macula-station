@@ -615,7 +615,23 @@ dispatch_find_node(Key, PeerId, Timeout, From,
                    #state{self_id = Self, identity = Id, send_frame = Send,
                           pending_find_nodes = P} = S) ->
     Frame = macula_dht_protocol:build_find_node(Key, Self, 0, Id),
-    Send(PeerId, Frame),
+    on_find_node_sent(Send(PeerId, Frame), Key, PeerId, Timeout, From, P, S).
+
+%% A FAILED SEND IS NOT A TIMEOUT. The transport's return value used to be
+%% discarded here: when `send_frame/2' answered `{error, no_route}' -- which it
+%% does for any peer we hold no connection to, and on this fleet that is most
+%% of the routing table because `entry_to_station_ref' publishes no addresses --
+%% we armed a timer anyway and reported `timeout' a full `Timeout' later.
+%%
+%% Two harms. The caller pays the entire timeout for a request that never left
+%% the process, and every unroutable custodian is mislabelled as a slow one, so
+%% the `no_route' accounting downstream can never fire. Measured on the
+%% Stockholm leaf: 3 of 4 stores "timed out" while `no_route' read 0.
+%%
+%% Answer immediately with whatever the transport said instead.
+on_find_node_sent({error, Reason}, _Key, _PeerId, _Timeout, _From, _P, S) ->
+    {reply, {error, Reason}, S};
+on_find_node_sent(_Sent, Key, PeerId, Timeout, From, P, S) ->
     TimerRef = erlang:send_after(Timeout, self(),
                                  {find_node_timeout, Key, PeerId}),
     {noreply, S#state{pending_find_nodes =
@@ -651,7 +667,12 @@ dispatch_find_value(Key, PeerId, Timeout, From,
                     #state{self_id = Self, identity = Id, send_frame = Send,
                            pending_find_values = P} = S) ->
     Frame = macula_dht_protocol:build_find_value(Key, Self, Id),
-    Send(PeerId, Frame),
+    on_find_value_sent(Send(PeerId, Frame), Key, PeerId, Timeout, From, P, S).
+
+%% See `on_find_node_sent/7' for why the send result must not be discarded.
+on_find_value_sent({error, Reason}, _Key, _PeerId, _Timeout, _From, _P, S) ->
+    {reply, {error, Reason}, S};
+on_find_value_sent(_Sent, Key, PeerId, Timeout, From, P, S) ->
     TimerRef = erlang:send_after(Timeout, self(),
                                  {find_value_timeout, Key, PeerId}),
     {noreply, S#state{pending_find_values =
@@ -732,8 +753,13 @@ dispatch_send_store(PeerId, Record, Timeout, From,
                     #state{identity = Id, send_frame = Send,
                            pending_stores = P} = S) ->
     Frame = macula_dht_protocol:build_store(Record, Id),
-    Send(PeerId, Frame),
-    Key = macula_record:storage_key(Record),
+    Key   = macula_record:storage_key(Record),
+    on_store_sent(Send(PeerId, Frame), Key, PeerId, Timeout, From, P, S).
+
+%% See `on_find_node_sent/7' for why the send result must not be discarded.
+on_store_sent({error, Reason}, _Key, _PeerId, _Timeout, _From, _P, S) ->
+    {reply, {error, Reason}, S};
+on_store_sent(_Sent, Key, PeerId, Timeout, From, P, S) ->
     TimerRef = erlang:send_after(Timeout, self(),
                                  {send_store_timeout, Key, PeerId}),
     {noreply, S#state{pending_stores =
