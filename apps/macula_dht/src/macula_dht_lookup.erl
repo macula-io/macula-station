@@ -294,6 +294,7 @@ clear_in_flight(State, PathId, PeerId) ->
 merge_fresh(State, PathId, Refs) ->
     Claimed = maps:get(claimed, State),
     Fresh = [R || R <- Refs, not sets:is_element(id_of(R), Claimed)],
+    ok = observe_fresh(maps:get(dht, State), Fresh),
     Paths = update_path(maps:get(paths, State), PathId,
                         fun(P) -> add_to_shortlist(P, Fresh,
                                                     maps:get(key, State))
@@ -301,6 +302,61 @@ merge_fresh(State, PathId, Refs) ->
     Claimed1 = lists:foldl(fun sets:add_element/2, Claimed,
                            [id_of(R) || R <- Fresh]),
     State#{paths := Paths, claimed := Claimed1}.
+
+%% Feed every newly-learned peer into the routing table.
+%%
+%% THIS IS HOW A KADEMLIA TABLE FILLS. Without it the lookup discovers
+%% peers, hands them to its caller, and forgets them: the walk is the
+%% only mechanism that learns nodes we were never told about, so a node
+%% that does not observe here can never know more than it was seeded
+%% with.
+%%
+%% It went unnoticed because every station in a mutually-dialled mesh is
+%% fed by INBOUND traffic instead — each handshake and each incoming
+%% FIND_NODE observes its sender, which masks the missing path entirely.
+%% The first degree-1 LEAF exposed it: nothing dials a leaf, so its only
+%% inbound is replies to its own queries, and its table stayed pinned at
+%% the single bootstrap seed while a self-lookup happily returned 20
+%% peers it then discarded.
+%%
+%% `observe_async' deliberately, not `observe': this runs on the lookup
+%% coordinator, which may be the DHT process itself, and a synchronous
+%% call would deadlock. A cast also keeps the walk off the routing
+%% table's critical path.
+-spec observe_fresh(macula_dht:dht(), [macula_frame:station_ref()]) -> ok.
+observe_fresh(_Dht, []) ->
+    ok;
+observe_fresh(Dht, Fresh) ->
+    lists:foreach(fun(R) -> macula_dht:observe_async(Dht, ref_to_spec(R)) end,
+                  Fresh).
+
+%% The inverse the codebase was missing: a received `station_ref' back
+%% into a routing-table `spec'. The ref already carries the real `asn'
+%% and `country', so entries learned this way are NOT subject to the
+%% fabricated `asn => 0' that bootstrap-ingested entries carry.
+-spec ref_to_spec(macula_frame:station_ref()) -> macula_dht_entry:spec().
+ref_to_spec(#{node_id := Id} = Ref) ->
+    #{
+        node_id   => Id,
+        endpoints => maps:get(addresses, Ref, []),
+        asn       => ref_asn(Ref),
+        country   => maps:get(country, Ref, <<"??">>),
+        tier      => ref_tier(Ref)
+    }.
+
+%% `asn' is `non_neg_integer() | undefined' on the wire; the routing
+%% table requires an integer.
+ref_asn(#{asn := A}) when is_integer(A) -> A;
+ref_asn(_)                              -> 0.
+
+%% Wire tier is 0..4; the routing table's is t0..t3, so 4 caps at t3 —
+%% the same cap `macula_station_bootstrap:dht_tier/1' already applies.
+ref_tier(#{tier := 0}) -> t0;
+ref_tier(#{tier := 1}) -> t1;
+ref_tier(#{tier := 2}) -> t2;
+ref_tier(#{tier := 3}) -> t3;
+ref_tier(#{tier := 4}) -> t3;
+ref_tier(_)            -> t0.
 
 -spec add_to_shortlist(path(), [macula_frame:station_ref()],
                        macula_dht_xor:id()) -> path().
