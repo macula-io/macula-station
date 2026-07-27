@@ -1297,7 +1297,9 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     NewConns  = drop_directional_conn(NodeId, Direction, ConnPid, C),
     %% Remove the peer from SWIM only when BOTH directions are gone —
     %% a mutual-peer with one direction still alive is still reachable.
-    maybe_remove_if_isolated(NodeId, NewConns, Swim),
+    %% When it IS still reachable, re-point SWIM at the surviving conn:
+    %% it was handed the pid that just died and would probe it forever.
+    resync_swim_after_conn_loss(NodeId, NewConns, Swim, S#state.is_station),
     %% Same isolation rule for DHT: only forget when both directions
     %% are gone. DHT routing-table entries are expensive to rebuild
     %% (re-discovery via cross-station propagation), so keep them as
@@ -1413,14 +1415,38 @@ drop_is_station_if_isolated(NodeId, NewConns, IsStation) ->
         _ -> IsStation
     end.
 
-maybe_remove_if_isolated(undefined, _NewConns, _Swim) ->
+%% SWIM holds exactly ONE `conn_pid' per member, handed to it once by
+%% `apply_station_flag/4' when capability resolution completed. A mutual
+%% station pair holds TWO conns, so when one direction dies the peer is not
+%% isolated, is not removed, and no fresh resolution re-adds it — leaving SWIM
+%% probing a DEAD pid forever. `is_pid/1' is true for a dead pid, so nothing
+%% downstream noticed, and every probe timed out into a `confirmed_failed'
+%% verdict about a station that was reachable the whole time.
+%%
+%% Same pathogen as the 2026-07-26 multihop pubsub root cause, where a stale
+%% bypass recipient pid silenced every pre-existing conn totally and silently.
+%%
+%% So: isolated means remove, surviving means RE-POINT at the survivor.
+resync_swim_after_conn_loss(undefined, _NewConns, _Swim, _IsStation) ->
     ok;
-maybe_remove_if_isolated(NodeId, NewConns, Swim) ->
-    case maps:find(NodeId, NewConns) of
-        error                                                            -> maybe_remove(NodeId, Swim);
-        {ok, #{inbound := undefined, outbound := undefined}}             -> maybe_remove(NodeId, Swim);
-        _                                                                -> ok
-    end.
+resync_swim_after_conn_loss(NodeId, NewConns, Swim, IsStation) ->
+    %% `primary_conn_lookup/1' already collapses "no entry" and "both slots
+    %% empty" to `error', which is exactly the isolation test this used to
+    %% spell out, and yields the surviving pid otherwise.
+    on_surviving_conn(primary_conn_lookup(maps:find(NodeId, NewConns)),
+                      NodeId, Swim,
+                      maps:get(NodeId, IsStation, false)).
+
+on_surviving_conn(error, NodeId, Swim, _IsStation) ->
+    maybe_remove(NodeId, Swim);
+%% ⚠ ONLY re-point a STATION. `macula_swim:add_peer/3' upserts, so calling it
+%% for a daemon would ADD a member that the capability gate deliberately keeps
+%% out — silently re-polluting the membership this fleet just spent a whole
+%% investigation draining. A daemon that was never in SWIM stays out.
+on_surviving_conn({ok, _ConnPid}, _NodeId, _Swim, false) ->
+    ok;
+on_surviving_conn({ok, ConnPid}, NodeId, Swim, true) ->
+    macula_swim:add_peer(Swim, NodeId, ConnPid).
 
 %% Drop in-flight forwarded entries whose origin (or advertiser, for
 %% bulk-purge by either endpoint) has just gone. Cancels TTL timers

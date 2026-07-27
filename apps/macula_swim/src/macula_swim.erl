@@ -256,11 +256,36 @@ run_round(#state{round = R} = S) ->
             S1
     end.
 
+%% ⚠ `is_pid/1' IS TRUE FOR A DEAD PID. Guarding on it alone selects probe
+%% targets whose conn died, sends every ping into the void, and converts a
+%% perfectly healthy station to `confirmed_failed' on a timeout that says
+%% nothing about the peer.
+%%
+%% That is not hypothetical here. A mutual station pair holds TWO conns,
+%% inbound and outbound, but SWIM stores exactly ONE `conn_pid', handed to it
+%% once by `macula_station_peer_observer:apply_station_flag/4' at capability
+%% resolution. When that one direction dies while the other survives, the peer
+%% is NOT isolated, so it is never removed from SWIM and no fresh capability
+%% resolution re-adds it — SWIM keeps the dead pid for the lifetime of the
+%% process. `touch_alive/3' does not refresh `conn_pid' either, so even a
+%% rescue leaves the stale pid in place and the member re-enters the suspect
+%% cycle immediately: rescue becomes a metronome rather than a recovery.
+%%
+%% This is the same pathogen as the 2026-07-26 multihop pubsub root cause,
+%% where a stale bypass recipient pid silenced every pre-existing connection
+%% totally and silently, for exactly this reason. The observer now re-points
+%% SWIM at the surviving conn (`resync_swim_after_conn_loss/3'), which is the
+%% real fix; this liveness check is the defence in depth, because a pid can
+%% die at any moment between that resync and this selection.
+%%
+%% A comprehension FILTER may be an arbitrary boolean expression, unlike a
+%% guard, so `is_process_alive/1' is legal here. These conns are always local.
 pick_alive_target(#state{members = M}) ->
     Alive = [{NodeId, ConnPid}
              || {NodeId, #{state := alive, conn_pid := ConnPid}}
                     <- maps:to_list(M),
-                is_pid(ConnPid)],
+                is_pid(ConnPid),
+                erlang:is_process_alive(ConnPid)],
     pick_one(Alive).
 
 pick_one([]) -> none;
@@ -320,6 +345,23 @@ on_ping(From, #{round := Round}, #state{identity = Id} = S) ->
     end.
 
 %% Matching ACK cancels the in-flight probe and marks sender alive.
+%%
+%% A NON-matching ACK still proves life, and used to be dropped on the floor.
+%% `on_ping_timeout/3' has already done `maps:take' on the round, so an ACK
+%% arriving even microseconds late matches nothing — and the fall-through
+%% discarded the one verified, signed, freshly-arrived frame proving the peer
+%% we just suspected is alive. Production routes every frame through
+%% `deliver_swim' verification before it reaches here, so its arrival is
+%% evidence, not a rumour.
+%%
+%% This is the SWIM Lifeguard refutation rule: any verified message from a
+%% suspect refutes the suspicion. It matters because a suspect is otherwise
+%% unreachable by design — `pick_alive_target/1' selects only `alive' members,
+%% so we never re-probe it, and the sole remaining rescue path is the suspect
+%% happening to pick US out of its own membership. That gives a conversion
+%% probability of (1 - 1/M)^3, which RISES with mesh size; see
+%% `macula_swim_conversion_tests'. Refuting on a late ACK adds a rescue channel
+%% proportional to actual traffic rather than to luck.
 on_ack(From, #{round := Round}, #state{probes = P} = S) ->
     case maps:take(Round, P) of
         {#{target := Target, timer_ref := Ref}, NewP}
@@ -327,8 +369,21 @@ on_ack(From, #{round := Round}, #state{probes = P} = S) ->
             _ = erlang:cancel_timer(Ref),
             maybe_touch_alive(From, S#state{probes = NewP});
         _ ->
-            S
+            refute_if_suspect(From, S)
     end.
+
+%% Only a SUSPECT is refuted. An ACK from a member already `alive' says nothing
+%% new, and one from `confirmed_failed' must NOT silently resurrect it: that
+%% verdict has already been published to the consumer, which has acted on it.
+%% Recovery from a confirmed failure is a re-add through `add_peer/3', where it
+%% is visible, not a side effect of a stray frame.
+refute_if_suspect(From, #state{members = M} = S) ->
+    resolve_refutation(maps:get(From, M, undefined), From, S).
+
+resolve_refutation(#{state := suspect} = Member, From, S) ->
+    touch_alive(From, Member, S);
+resolve_refutation(_Other, _From, S) ->
+    S.
 
 maybe_touch_alive(NodeId, #state{members = M} = S) ->
     case maps:get(NodeId, M, undefined) of
