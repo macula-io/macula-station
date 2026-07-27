@@ -30,6 +30,20 @@
 %%
 %% These tests pin the real behaviour so a future change to the scoring
 %% inputs is a deliberate, visible decision rather than a silent one.
+%%
+%% ⚠ SCOPE. These assert on `macula_dht_bucket' directly, which IS conclusive
+%% for admission: `macula_dht_routing_table:insert/3' adds no logic between
+%% caller and bucket, and this implementation has no bucket splitting, so live
+%% churn cannot produce an outcome the pure function does not.
+%%
+%% But do NOT read a bucket `rejected' as "the peer was dropped".
+%% `macula_dht_server:handle_observe/2' inserts into TWO containers, the routing
+%% table via `apply_rt/3' and the sibling list via `apply_siblings/3', and
+%% `classify/1' reports only the ROUTING-TABLE verdict. The sibling list admits
+%% by pure XOR distance with displacement of the farthest and has no scoring, so
+%% it cannot freeze. A peer rejected here may be a live sibling, and `dht.size'
+%% counts only the routing table, so it will not show that. Any conclusion drawn
+%% from `observe' returning `rejected' is reasoning about half the state.
 -module(macula_dht_bucket_saturation_tests).
 
 -include_lib("eunit/include/eunit.hrl").

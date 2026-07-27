@@ -48,6 +48,16 @@
 -define(W_UPTIME,          1.0).
 -define(W_NOVELTY,         0.8).
 -define(W_INCUMBENCY,      0.3).
+%% ⚠ Nothing in the tree sets `observed_latency_ms', so `latency_frac/1'
+%% returns 1.0 for every entry and this weight contributes a CONSTANT -0.5
+%% that cancels out of every comparison. That is why admission currently
+%% reduces to incumbency alone.
+%%
+%% It also means a PARTIAL rollout of latency measurement would be violent:
+%% the first entries to carry a real latency would immediately outscore every
+%% unmeasured entry by up to 0.5, which is larger than the entire 24h
+%% incumbency range of 0.3, and buckets would reshuffle wholesale. Populate it
+%% for all entries or none.
 -define(W_LATENCY,         0.5).
 -define(LATENCY_FLOOR_MS,   20).
 -define(LATENCY_CEIL_MS,   500).
