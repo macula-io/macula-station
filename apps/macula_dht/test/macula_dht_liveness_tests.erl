@@ -76,8 +76,15 @@ timed_out_peer_is_evicted_and_slot_frees_test() ->
     ?assertEqual(rejected, macula_dht:observe(D, spec(<<250:256>>))),
 
     {ok, L} = macula_dht_liveness:start_link(#{dht => D, ping_timeout_ms => 60}),
+    %% Eviction now needs ?STRIKES consecutive unanswered probes, so one tick
+    %% must NOT be enough. That is the point: a single lost packet cannot
+    %% remove a station.
     _ = macula_dht_liveness:tick(L),
-    timer:sleep(500),
+    timer:sleep(300),
+    ?assertEqual(0, maps:get(evicted, macula_dht_liveness:stats(L))),
+    ?assertEqual(?K, macula_dht:size(D)),
+    [begin _ = macula_dht_liveness:tick(L), timer:sleep(300) end
+     || _ <- lists:seq(1, 3)],
     #{evicted := E} = macula_dht_liveness:stats(L),
     ?assert(E >= 1),
     ?assert(macula_dht:size(D) < ?K),

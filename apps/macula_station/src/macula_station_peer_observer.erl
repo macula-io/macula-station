@@ -528,8 +528,23 @@ on_connected_directional(Direction, ConnPid, NodeId, Endpoints, S0) ->
     %% Empirical evidence: cascade root-cause investigation 2026-05-10
     %% caught peer_observer dying with mailbox=504, exit=
     %% gen_server:call timeout to macula_dht:observe.
-    macula_dht:observe_async(S0#state.dht,
-                             direct_peer_spec(NodeId, Endpoints)),
+    %% OUTBOUND is observed immediately and needs no capability probe: this
+    %% station only ever dials peers from its own `outbound_peers' config, so
+    %% an outbound conn IS a station by construction. It is also the only
+    %% direction that carries a dialable address, so deferring it would either
+    %% lose the endpoint or require carrying it to resolution.
+    %%
+    %% INBOUND is deferred to the capability probe. Observing it here put every
+    %% daemon into the routing table: measured on the fleet, frankfurt held a
+    %% 30-entry table of which 4 were stations, and 26 daemons with live conns
+    %% all answered a DHT ping with {error, timeout} because they do not speak
+    %% DHT at all.
+    %%
+    %% Direction is a fast path, NOT the discriminator. Using direction ALONE
+    %% is what reverted commit c08ef8d did, and it collapsed tables to the
+    %% outbound peer count because inbound stations were excluded; those still
+    %% arrive, via resolution.
+    observe_if_outbound(Direction, NodeId, Endpoints, S0),
     %% SWIM membership is NOT added here. It is added when the capability
     %% probe resolves the peer as a station -- see handle_info for
     %% {is_station_resolved, ...}. Adding at connect time added every daemon
@@ -583,12 +598,22 @@ apply_station_flag(false, _NodeId, _Flag, S) ->
 apply_station_flag(true, NodeId, false, #state{is_station = IsSt} = S) ->
     S#state{is_station = IsSt#{NodeId => false}};
 apply_station_flag(true, NodeId, true, #state{is_station = IsSt} = S) ->
+    %% An inbound station enters the routing table here. Endpoints are `[]'
+    %% because we do not know an inbound peer's LISTENING address. If it is
+    %% already present from the outbound fast path, `insert' answers `touched'
+    %% and keeps the existing entry, so the real address is not clobbered.
+    macula_dht:observe_async(S#state.dht, direct_peer_spec(NodeId, [])),
     %% Read the CURRENT conn pid rather than the one the resolver closed over:
     %% `purge_stale_slot/4' may have evicted that pid while the probe was in
     %% flight, and SWIM stores the pid it is handed and probes with it.
     add_station_to_swim(primary_conn_lookup(maps:find(NodeId, S#state.conns)),
                         NodeId, S),
     S#state{is_station = IsSt#{NodeId => true}}.
+
+observe_if_outbound(outbound, NodeId, Endpoints, #state{dht = Dht}) ->
+    macula_dht:observe_async(Dht, direct_peer_spec(NodeId, Endpoints));
+observe_if_outbound(_Inbound, _NodeId, _Endpoints, _S) ->
+    ok.
 
 add_station_to_swim({ok, ConnPid}, NodeId, #state{swim = Swim}) ->
     ok = macula_swim:add_peer(Swim, NodeId, ConnPid);

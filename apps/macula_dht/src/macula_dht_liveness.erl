@@ -36,6 +36,23 @@
 %% cache would add per-rejection state to `macula_dht_server' for a race it
 %% does not need to win.
 %%
+%% ⚠ ITS CORRECTNESS IS NOW DOWNSTREAM OF THE CAPABILITY GATE.
+%%
+%% Before the gate, the routing table was ~88% daemons, so this module's
+%% evictions landed almost entirely on peers that were alive but do not speak
+%% DHT — the right ACTION for the wrong REASON. After the gate the table holds
+%% only stations, so the blast radius inverts: this module can now only ever
+%% evict a STATION.
+%%
+%% That is why a single unanswered ping is no longer enough. One lost packet,
+%% or one moment of scheduler pressure on a loaded DHT server, must not remove
+%% a healthy station from a table that has no cheap way to relearn it. Eviction
+%% now requires `?STRIKES' CONSECUTIVE timeouts, and any answer resets the
+%% count.
+%%
+%% If the gate is ever reverted, revisit this: the strike rule is calibrated
+%% for a station-only population.
+%%
 %% == Why only a TIMEOUT evicts ==
 %%
 %% `macula_dht:ping_peer/3' goes out through
@@ -72,6 +89,9 @@
 -define(DEFAULT_INTERVAL_MS,      60_000).
 -define(DEFAULT_PING_TIMEOUT_MS,   3_000).
 -define(DEFAULT_MAX_PROBES,            4).
+%% Consecutive unanswered probes before eviction. >1 because post-gate the only
+%% population here is stations.
+-define(STRIKES,                       3).
 
 -type opts() :: #{
     dht                 := macula_dht:dht(),
@@ -97,6 +117,8 @@
     ping_timeout_ms     :: pos_integer(),
     max_probes_per_tick :: pos_integer(),
     ticks               :: non_neg_integer(),
+    %% NodeId -> consecutive unanswered probes. Reset by any answer.
+    strikes             :: #{macula_identity:pubkey() => pos_integer()},
     probed              :: non_neg_integer(),
     alive               :: non_neg_integer(),
     evicted             :: non_neg_integer(),
@@ -140,7 +162,8 @@ init(#{dht := Dht} = Opts) ->
                                        ?DEFAULT_PING_TIMEOUT_MS),
         max_probes_per_tick = maps:get(max_probes_per_tick, Opts,
                                        ?DEFAULT_MAX_PROBES),
-        ticks = 0, probed = 0, alive = 0, evicted = 0, unreachable = 0
+        ticks = 0, strikes = #{}, probed = 0, alive = 0, evicted = 0,
+        unreachable = 0
     }}.
 
 handle_call(tick, _From, State) ->
@@ -151,11 +174,15 @@ handle_call(stats, _From, State) ->
 handle_call(_Msg, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
-handle_cast({probe_result, alive}, #state{alive = A} = S) ->
-    {noreply, S#state{alive = A + 1}};
-handle_cast({probe_result, evicted}, #state{evicted = E} = S) ->
-    {noreply, S#state{evicted = E + 1}};
-handle_cast({probe_result, unreachable}, #state{unreachable = U} = S) ->
+handle_cast({probe_result, NodeId, alive}, #state{alive = A,
+                                                  strikes = K} = S) ->
+    {noreply, S#state{alive = A + 1, strikes = maps:remove(NodeId, K)}};
+handle_cast({probe_result, NodeId, silent}, S) ->
+    {noreply, count_strike(NodeId, S)};
+handle_cast({probe_result, NodeId, unreachable}, #state{unreachable = U,
+                                                        strikes = K} = S) ->
+    %% Says nothing about the peer, so it neither strikes nor clears.
+    _ = NodeId, _ = K,
     {noreply, S#state{unreachable = U + 1}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -200,26 +227,34 @@ probe_targets(Dht, Max) ->
 -spec probe(pid(), macula_dht:dht(), macula_identity:pubkey(),
             pos_integer()) -> ok.
 probe(Server, Dht, NodeId, Timeout) ->
-    Outcome = classify_ping(macula_dht:ping_peer(Dht, NodeId, Timeout)),
-    act_on(Outcome, Dht, NodeId),
-    gen_server:cast(Server, {probe_result, Outcome}).
+    gen_server:cast(Server, {probe_result, NodeId,
+                             classify_ping(macula_dht:ping_peer(Dht, NodeId,
+                                                                Timeout))}).
+
+%% Eviction is decided in the SERVER, not the probe, because it needs the
+%% strike history. A probe only reports what it saw.
+-spec count_strike(macula_identity:pubkey(), #state{}) -> #state{}.
+count_strike(NodeId, #state{strikes = K} = S) ->
+    N = maps:get(NodeId, K, 0) + 1,
+    decide_eviction(N >= ?STRIKES, NodeId, N, S).
+
+decide_eviction(false, NodeId, N, #state{strikes = K} = S) ->
+    S#state{strikes = K#{NodeId => N}};
+decide_eviction(true, NodeId, _N, #state{strikes = K, evicted = E,
+                                         dht = Dht} = S) ->
+    logger:info("[dht_liveness] evicting ~s after ~p consecutive unanswered "
+                "probes", [binary:encode_hex(binary:part(NodeId, 0, 4)),
+                           ?STRIKES]),
+    macula_dht:forget(Dht, NodeId),
+    S#state{strikes = maps:remove(NodeId, K), evicted = E + 1}.
 
 %% `timeout' is the only verdict about the PEER. Every other error is a
 %% verdict about our own transport — see the moduledoc.
 -spec classify_ping(macula_dht:ping_result()) ->
-        alive | evicted | unreachable.
+        alive | silent | unreachable.
 classify_ping({ok, _})           -> alive;
-classify_ping({error, timeout})  -> evicted;
+classify_ping({error, timeout})  -> silent;
 classify_ping({error, _Other})   -> unreachable.
-
--spec act_on(alive | evicted | unreachable, macula_dht:dht(),
-             macula_identity:pubkey()) -> ok.
-act_on(evicted, Dht, NodeId) ->
-    logger:info("[dht_liveness] evicting unresponsive bucket occupant ~s",
-                [binary:encode_hex(binary:part(NodeId, 0, 4))]),
-    macula_dht:forget(Dht, NodeId);
-act_on(_Other, _Dht, _NodeId) ->
-    ok.
 
 -spec build_stats(#state{}) -> stats().
 build_stats(#state{ticks = T, probed = P, alive = A,

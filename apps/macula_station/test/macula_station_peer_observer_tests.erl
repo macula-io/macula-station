@@ -20,7 +20,7 @@
 connected_observes_into_dht_as_t0_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_station(Ctx),
             {ok, Entry} = macula_dht:find(Dht, NodeId),
             ?assertEqual(t0, macula_dht_entry:tier(Entry)),
             ?assertEqual(1,  macula_dht:size(Dht)),
@@ -37,7 +37,7 @@ connected_observes_into_dht_as_t0_test_() ->
 conn_for_bypasses_gen_server_mailbox_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, _Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            {Obs, _Dht, _Swim, NodeId, ConnPid} = one_connected_station(Ctx),
             %% Confirm the lookup works via the ETS mirror.
             ?assertEqual({ok, ConnPid},
                          macula_station_peer_observer:conn_for(Obs, NodeId)),
@@ -116,6 +116,7 @@ duplicate_connected_touches_test_() ->
             NodeId  = random_node_id(),
             ConnPid = spawn_dummy(),
             Obs ! {macula_peering, connected, ConnPid, NodeId},
+            resolve_as_station(Obs, NodeId),
             wait_for(fun() -> macula_dht:size(Dht) =:= 1 end, 500),
             %% A direct call confirms the DHT's own idempotence and
             %% matches what the observer's next event would do.
@@ -133,9 +134,7 @@ duplicate_connected_touches_test_() ->
 disconnected_removes_from_swim_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
-            %% Resolve as a station first, since membership is now gated on it.
-            Obs ! {is_station_resolved, NodeId, 0, {ok, true}},
+            {Obs, _Dht, Swim, NodeId, ConnPid} = one_connected_station(Ctx),
             wait_for(fun() -> has_member(Swim, NodeId) end, 500),
             Obs ! {macula_peering, disconnected, ConnPid, operator_stop},
             wait_for(fun() -> not has_member(Swim, NodeId) end, 500),
@@ -151,7 +150,7 @@ disconnected_removes_from_swim_test_() ->
 signed_swim_ping_reaches_swim_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
+            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_station(Ctx),
             Kp = maps:get(peer_kp, Ctx),
             Ping = macula_frame:swim_ping(#{round => 1,
                                             incarnation => 0,
@@ -170,7 +169,7 @@ signed_swim_ping_reaches_swim_test_() ->
 unsigned_frame_is_dropped_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
+            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_station(Ctx),
             %% Build an unsigned frame — `macula_frame:verify/2'
             %% returns `{error, _}', so the observer must drop it
             %% silently without crashing.
@@ -934,11 +933,28 @@ teardown_with_pubsub(#{obs := Obs, swim := Swim, dht := Dht, reg := Reg}) ->
     _ = catch macula_dht:stop(Dht),
     ok.
 
+%% Connect only. Since the capability gate, an INBOUND peer is not observed
+%% into the DHT and not added to SWIM until its capability probe resolves it as
+%% a station, so waiting on `macula_dht:size/1' here would hang forever. Wait on
+%% the conns map, which the connect path still populates. Tests that need the
+%% peer to BE a station call `resolve_as_station/2'.
 one_connected_peer(#{obs := Obs, dht := Dht, swim := Swim,
                      peer_kp := PeerKp}) ->
     NodeId  = macula_identity:public(PeerKp),
     ConnPid = spawn_dummy(),
     Obs ! {macula_peering, connected, ConnPid, NodeId},
+    wait_for(fun() -> macula_station_peer_observer:peers(Obs) =/= [] end, 500),
+    {Obs, Dht, Swim, NodeId, ConnPid}.
+
+%% Drive the deferred capability answer, as the resolver would.
+resolve_as_station(Obs, NodeId) ->
+    Obs ! {is_station_resolved, NodeId, 0, {ok, true}},
+    ok.
+
+%% Connect AND resolve as a station: the pre-gate meaning of "connected".
+one_connected_station(Ctx) ->
+    {Obs, Dht, Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+    resolve_as_station(Obs, NodeId),
     wait_for(fun() -> macula_dht:size(Dht) =:= 1 end, 500),
     {Obs, Dht, Swim, NodeId, ConnPid}.
 
@@ -975,14 +991,22 @@ wait_step(false, Pred, Ms)                   ->
 %% delete the entry the dial just created.
 %%==================================================================
 
-isolated_daemon_is_forgotten_test_() ->
+%% Since the capability gate this is stronger than "forgotten on isolation":
+%% a daemon never ENTERS the routing table at all, so there is nothing to
+%% forget. The daemon-only clause in `maybe_forget_if_isolated/4' is now
+%% belt-and-braces rather than the thing doing the work.
+isolated_daemon_never_enters_the_dht_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
             {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
-            ?assertMatch({ok, _}, macula_dht:find(Dht, NodeId)),
-            %% is_station defaults to false, i.e. daemon-class.
+            Obs ! {is_station_resolved, NodeId, 0, {ok, false}},
+            timer:sleep(150),
+            ?assertEqual(error, macula_dht:find(Dht, NodeId)),
+            ?assertEqual(0, macula_dht:size(Dht)),
+            %% and disconnecting it is still harmless
             Obs ! {macula_peering, disconnected, ConnPid, peer_closed},
-            wait_for(fun() -> macula_dht:find(Dht, NodeId) =:= error end, 500),
+            wait_for(fun() ->
+                macula_station_peer_observer:peers(Obs) =:= [] end, 500),
             ?assertEqual(error, macula_dht:find(Dht, NodeId))
         end
     end}.
@@ -990,7 +1014,7 @@ isolated_daemon_is_forgotten_test_() ->
 isolated_station_is_kept_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_peer(Ctx),
+            {Obs, Dht, _Swim, NodeId, ConnPid} = one_connected_station(Ctx),
             sys:replace_state(Obs, fun(S) ->
                 IsStMap = element(?IS_STATION_INDEX, S),
                 setelement(?IS_STATION_INDEX, S, IsStMap#{NodeId => true})
@@ -1038,7 +1062,7 @@ swim_verdict_is_tallied_not_dropped_test_() ->
 swim_confirmed_failed_with_live_conn_is_flagged_test_() ->
     {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
         fun() ->
-            {Obs, _Dht, _Swim, NodeId, _ConnPid} = one_connected_peer(Ctx),
+            {Obs, _Dht, _Swim, NodeId, _ConnPid} = one_connected_station(Ctx),
             Obs ! {macula_swim, member_state, NodeId, confirmed_failed},
             wait_for(fun() ->
                 maps:get(confirmed_live_conn,
