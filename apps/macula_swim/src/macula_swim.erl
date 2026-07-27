@@ -199,7 +199,27 @@ upsert_alive(NodeId, ConnPid, #state{members = M} = S) ->
         conn_pid  => ConnPid
     },
     NewMembers = M#{NodeId => Entry},
-    cancel_suspect_timer(NodeId, S#state{members = NewMembers}).
+    S1 = drop_probes_for(NodeId, S#state{members = NewMembers}),
+    cancel_suspect_timer(NodeId, S1).
+
+%% ⚠ A PROBE SENT ON A CONN THAT NO LONGER EXISTS PROVES NOTHING.
+%%
+%% `upsert_alive/3' runs when the observer hands us a NEW conn for a member,
+%% which is fresh evidence of life. But any probe already in flight was sent on
+%% the OLD conn, and its timeout is still pending. Left alone it fires after the
+%% re-point, calls `mark_suspect/2', and re-suspects a member we just verified.
+%% Nothing then rescues it: `pick_alive_target/1' never re-probes a suspect, so
+%% the sole remaining escape is the peer independently contacting us.
+%%
+%% Measured in `macula_swim_three_arm_tests': this race converted 1 trial in 10
+%% even with the conn resync applied. Dropping the stale probes takes it to 0.
+drop_probes_for(NodeId, #state{probes = P} = S) ->
+    Stale = [R || {R, #{target := T}} <- maps:to_list(P), T =:= NodeId],
+    [cancel_probe_timer(maps:get(R, P)) || R <- Stale],
+    S#state{probes = maps:without(Stale, P)}.
+
+cancel_probe_timer(#{timer_ref := Ref}) ->
+    erlang:cancel_timer(Ref).
 
 drop_member(NodeId, #state{members = M} = S) ->
     S1 = cancel_suspect_timer(NodeId, S),
