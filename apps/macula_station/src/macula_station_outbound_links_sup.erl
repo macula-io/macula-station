@@ -49,7 +49,20 @@ link_child(#{host := Host, port := Port}, Kp, Caps) ->
         modules  => [macula_station_outbound_link]
     }.
 
+%% ⚠ AN IPv6 LITERAL MUST BE BRACKETED HERE TOO. Without it this built
+%% `quic://::1:5000', which `macula_station_outbound_link:parse_url/1' cannot
+%% split -- the port delimiter is ambiguous when the host is full of colons.
+%% This is the construction half of the same defect; fixing only the parser
+%% would leave every URL this function emits for an IPv6 peer unparseable.
 peer_url(Host, Port) when is_binary(Host) ->
-    iolist_to_binary(["quic://", Host, ":", integer_to_binary(Port)]);
+    iolist_to_binary(["quic://", bracket_if_ipv6(Host), ":",
+                      integer_to_binary(Port)]);
 peer_url(Host, Port) when is_list(Host) ->
     peer_url(list_to_binary(Host), Port).
+
+%% A colon in a host can only be IPv6: DNS names and IPv4 literals have none.
+bracket_if_ipv6(Host) ->
+    wrap(binary:match(Host, <<":">>) =/= nomatch, Host).
+
+wrap(true,  Host) -> [$[, Host, $]];
+wrap(false, Host) -> Host.

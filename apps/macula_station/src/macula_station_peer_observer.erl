@@ -39,6 +39,7 @@
 -export([
     start_link/1, stop/1,
     peers/1,
+    conns/1,
     conn_for/2,
     swim_verdicts/1,
     station_view/1
@@ -253,6 +254,17 @@ station_view(Pid) ->
 %% positive. `confirmed_no_conn' is the corroborated case. The ratio is the
 %% measurement that decides whether any failure-reactive mechanism can be
 %% trusted here.
+%% @doc The full per-NodeId conns view: `NodeId => #{inbound, outbound}'.
+%%
+%% `peers/1' flattens to a NodeId list and `conn_for/2' answers for ONE
+%% direction, so neither can distinguish a mutual peer from a single-direction
+%% one. That distinction decides whether losing a conn is an isolation or an
+%% asymmetric loss, which is the difference between removing a peer from SWIM
+%% and re-pointing it.
+-spec conns(pid()) -> #{macula_identity:pubkey() => map()}.
+conns(Pid) ->
+    gen_server:call(Pid, conns).
+
 -spec swim_verdicts(pid()) -> #{atom() => non_neg_integer()}.
 swim_verdicts(Pid) ->
     gen_server:call(Pid, swim_verdicts).
@@ -363,6 +375,8 @@ handle_call(station_view, _From, #state{is_station = IsSt} = S) ->
     {reply, #{stations    => length(Ids),
               daemons     => maps:size(IsSt) - length(Ids),
               station_ids => Ids}, S};
+handle_call(conns, _From, #state{conns = C} = S) ->
+    {reply, C, S};
 handle_call(swim_verdicts, _From, #state{swim_verdicts = V} = S) ->
     {reply, V, S};
 handle_call(peers, _From, #state{peers = P} = S) ->

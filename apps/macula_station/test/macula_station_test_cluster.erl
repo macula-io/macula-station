@@ -19,6 +19,7 @@
 
     %% Inter-station connectivity:
     dial/2,
+    dial_outbound/2,
     wait_for_handshakes/3,
 
     %% Run a function on the peer node:
@@ -39,7 +40,12 @@
     %% Internal — invoked via peer:call to run on the peer node.
     %% Public so the peer can resolve the function reference.
     on_peer_boot_station/0,
-    on_peer_count_peers/0
+    on_peer_count_peers/0,
+    on_peer_swim_members/0,
+    on_peer_swim_stats/0,
+    on_peer_swim_verdicts/0,
+    on_peer_conns/0,
+    on_peer_start_outbound_link/1
 ]).
 
 -export_type([station_handle/0]).
@@ -243,6 +249,29 @@ rpc(Handle, Module, Function, Args) ->
 rpc(Handle, Module, Function, Args, TimeoutMs) ->
     peer:call(peer_pid(Handle), Module, Function, Args, TimeoutMs).
 
+%% @doc Dial `To' from `From' as a real OUTBOUND link, so the conn registers in
+%% the outbound slot. Pair with `dial/2' in the other direction to build a
+%% genuine mutual pair, which is the only way to exercise asymmetric conn loss.
+-spec dial_outbound(From :: station_handle(), To :: station_handle()) ->
+    {ok, pid()} | {error, term()}.
+dial_outbound(From, To) ->
+    {Host, Port} = listen_addr(To),
+    %% `listen_addr/1' is an ip6 TUPLE, not a binary. Passing it straight to a
+    %% binary function is a badarg, which is exactly how the first version of
+    %% this failed.
+    Url = outbound_url(host_to_str(Host), Port),
+    rpc(From, ?MODULE, on_peer_start_outbound_link, [Url]).
+
+%% Brackets an IPv6 literal, matching macula_station_outbound_links_sup.
+outbound_url(Host, Port) when is_list(Host) ->
+    outbound_url(list_to_binary(Host), Port);
+outbound_url(Host, Port) ->
+    Bracketed = case binary:match(Host, <<":">>) of
+                    nomatch -> Host;
+                    _       -> <<"[", Host/binary, "]">>
+                end,
+    <<"quic://", Bracketed/binary, ":", (integer_to_binary(Port))/binary>>.
+
 %%------------------------------------------------------------------
 %% Internal — spawning
 %%------------------------------------------------------------------
@@ -369,6 +398,84 @@ on_peer_boot_station() ->
         catch exit(Pid, kill),
         {error, boot_timeout}
     end.
+
+%% @doc SWIM's member list as seen ON the peer. Exported rather than passed as
+%% a fun through `peer:call' because a fun closes over its defining module, and
+%% a CT suite's module is not guaranteed loadable on the spawned node; this one
+%% is, by construction, since the peer is booted from it.
+-spec on_peer_swim_members() -> [map()].
+on_peer_swim_members() ->
+    members_of(whereis(macula_swim)).
+
+members_of(undefined) -> [];
+members_of(Pid)       -> macula_swim:members(Pid).
+
+%% @doc Cumulative SWIM mechanism counters on the peer. `probes_sent' against
+%% `suspected' distinguishes an idle detector from a broken one; `acks_matched'
+%% is what proves a peer is VERIFIED alive rather than merely un-condemned.
+-spec on_peer_swim_stats() -> #{atom() => non_neg_integer()}.
+on_peer_swim_stats() ->
+    stats_of(whereis(macula_swim)).
+
+stats_of(undefined) -> #{};
+stats_of(Pid)       -> macula_swim:stats(Pid).
+
+%% @doc The observer's verdict tallies on the peer, including `conn_resynced'.
+-spec on_peer_swim_verdicts() -> #{atom() => non_neg_integer()}.
+on_peer_swim_verdicts() ->
+    verdicts_of(whereis(macula_station_peer_observer)).
+
+verdicts_of(undefined) -> #{};
+verdicts_of(Pid)       -> macula_station_peer_observer:swim_verdicts(Pid).
+
+%% @doc Start a REAL `macula_station_outbound_link' on the peer.
+%%
+%% ⚠ WITHOUT THIS THE HARNESS CANNOT BUILD A MUTUAL PAIR AT ALL, which makes
+%% every asymmetric-loss scenario untestable here. `dial/2' goes through
+%% `macula_station:connect_to/1', a bare `macula_peering:connect' that emits a
+%% plain `connected' event; the observer records that as INBOUND. So two dials
+%% between the same pair both land in the inbound slot and `purge_stale_slot/4'
+%% evicts the first. Only `macula_station_outbound_link' re-tags the event as
+%% `connected_outbound', which is what populates the second slot.
+%%
+%% Started under a long-lived owner process for the same reason
+%% `on_peer_boot_station/0' uses a guardian: `start_link' from the transient
+%% `peer:call' handler would die the moment the call returns.
+-spec on_peer_start_outbound_link(binary()) -> {ok, pid()} | {error, term()}.
+on_peer_start_outbound_link(Url) ->
+    Caller = self(),
+    Owner = spawn(fun() ->
+        Result = start_link_from_env(Url),
+        Caller ! {link_started, self(), Result},
+        guardian_loop()
+    end),
+    receive
+        {link_started, Owner, Result} -> Result
+    after 30_000 ->
+        catch exit(Owner, kill),
+        {error, link_start_timeout}
+    end.
+
+start_link_from_env(Url) ->
+    {ok, KeyFile} = application:get_env(macula_station, identity_file),
+    {ok, Kp} = macula_identity:load(KeyFile),
+    %% `verify => none' for the same reason `dial/2' needs it: test stations
+    %% share one openssl self-signed cert and are dialled by loopback IP, so
+    %% the webpki default rejects the handshake and `expected_node_id' pinning
+    %% cannot apply either (the cert SPKI is not any station's Ed25519 pubkey).
+    macula_station_outbound_link:start_link(
+      #{url => Url, identity => Kp, capabilities => 1, verify => none}).
+
+%% @doc The observer's conns map on the peer: NodeId => #{inbound, outbound}.
+%% Needed to tell "this peer is mutual" from "this peer has one direction",
+%% which no other accessor exposes and which decides whether a conn death is
+%% an isolation or an asymmetric loss.
+-spec on_peer_conns() -> map().
+on_peer_conns() ->
+    conns_of(whereis(macula_station_peer_observer)).
+
+conns_of(undefined) -> #{};
+conns_of(Pid)       -> macula_station_peer_observer:conns(Pid).
 
 guardian_loop() ->
     receive

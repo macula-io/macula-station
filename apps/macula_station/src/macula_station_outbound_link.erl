@@ -36,7 +36,14 @@
 -type opts() :: #{
     url             := binary(),
     identity        := macula_identity:key_pair(),
-    capabilities    => non_neg_integer()
+    capabilities    => non_neg_integer(),
+    %% TLS peer verification, passed straight through to the SDK dial. Omit for
+    %% the secure default (webpki against a real CA), which is what production
+    %% wants when dialling a DNS name with a Let's Encrypt cert. `none' is the
+    %% SDK's documented escape for self-signed dev/lab peers dialled by IP,
+    %% where no CA chain can validate and `expected_node_id' pinning cannot
+    %% apply either because the cert SPKI is not the station's Ed25519 pubkey.
+    verify          => term()
 }.
 
 %% Must stay >= 2: schedule_reconnect jitters the delay with `Backoff div 2`, and
@@ -78,6 +85,7 @@
 
 -record(state, {
     url             :: binary(),
+    verify          :: term(),
     host            :: binary(),
     port            :: inet:port_number(),
     identity        :: macula_identity:key_pair(),
@@ -202,6 +210,7 @@ init(#{url := Url, identity := Kp} = Opts) ->
         host         = Host,
         port         = Port,
         identity     = Kp,
+        verify       = maps:get(verify, Opts, undefined),
         capabilities = maps:get(capabilities, Opts, 0)
     },
     %% Register in peer_links immediately so the registry can monitor
@@ -576,9 +585,10 @@ forward_to_observer(Msg) ->
         Pid       -> Pid ! Msg, ok
     end.
 
-do_dial(#state{host = H, port = P, identity = Kp,
+do_dial(#state{host = H, port = P, identity = Kp, verify = V,
                capabilities = Caps} = S) ->
-    Target = #{host => H, port => P, timeout_ms => ?HANDSHAKE_TIMEOUT_MS},
+    Target = maybe_verify(V, #{host => H, port => P,
+                               timeout_ms => ?HANDSHAKE_TIMEOUT_MS}),
     Result = macula_peering:connect(#{
         role            => client,
         identity        => Kp,
@@ -588,6 +598,12 @@ do_dial(#state{host = H, port = P, identity = Kp,
         target          => Target
     }),
     handle_dial_result(Result, S).
+
+%% Absent means "leave the SDK default alone", which is the secure one. This
+%% must never default to `none': a silent downgrade to unverified TLS is the
+%% kind of thing that ships once and is never noticed.
+maybe_verify(undefined, Target) -> Target;
+maybe_verify(V, Target)         -> Target#{verify => V}.
 
 handle_dial_result({ok, ConnPid}, S) ->
     {noreply, S#state{conn_pid = ConnPid}};

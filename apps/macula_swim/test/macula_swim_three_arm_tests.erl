@@ -28,6 +28,14 @@
 %% answered, so a live process that ignores every frame reproduces the old
 %% behaviour precisely, and does so through the current code.
 %%
+%% ⚠ ARMS B' AND C ARE THE SAME EXPERIMENT UNDER TWO NAMES. Both spawn a mute
+%% process, add it, and settle. The equivalence arguments above are each
+%% defensible, but this harness does NOT give the two fixes independent floors:
+%% it demonstrates ONE floor, that a member which never answers converts, and
+%% that floor is compatible with either mechanism. What separates them is the
+%% A2-versus-C contrast, where the only difference is whether a late ACK ever
+%% arrives. Do not read the two 10/10 rows as two pieces of evidence.
+%%
 %% == The outcome that is not binary ==
 %%
 %% ⚠ THREE OUTCOMES, NOT TWO. The `is_process_alive/1' filter means a member
