@@ -40,7 +40,8 @@
     start_link/1, stop/1,
     peers/1,
     conn_for/2,
-    swim_verdicts/1
+    swim_verdicts/1,
+    station_view/1
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -219,6 +220,27 @@ peers(Pid) -> gen_server:call(Pid, peers).
 %% already hold `whereis(macula_station_peer_observer)' or pass it
 %% explicitly) but is not used — `?CONNS_TABLE' is named, single
 %% per BEAM, so a stale pid does not matter.
+%% @doc Who is actually in our connection set, split by capability.
+%%
+%% Exists because the DHT routing table and the SWIM member list are fed
+%% UNCONDITIONALLY from `on_connected_directional/5' -- every peer that
+%% connects is observed into the DHT and added to SWIM, including daemons,
+%% which implement neither protocol. Measured on the live fleet 2026-07-27:
+%% frankfurt held 43 conns of which 4 were stations, a 30-entry DHT table of
+%% which 4 were stations, and 43 SWIM members of which 4 were stations.
+%%
+%% Returns the station node-id SET rather than a count, so a caller can
+%% intersect it with the DHT table and the SWIM membership and report the
+%% split per container. Deliberately does NOT call into macula_dht or
+%% macula_swim: this runs in the observer's handle_call, and a cross-server
+%% call from here is the shape that produced the cascade in
+%% docs/CASCADE_INVESTIGATION.md.
+-spec station_view(pid()) -> #{stations := non_neg_integer(),
+                               daemons  := non_neg_integer(),
+                               station_ids := [macula_identity:pubkey()]}.
+station_view(Pid) ->
+    gen_server:call(Pid, station_view).
+
 %% @doc SWIM verdict tally. `confirmed_live_conn' is the interesting one: it
 %% counts verdicts of `confirmed_failed' for a peer we STILL hold a live
 %% connection to, which is a contradiction and therefore a suspected false
@@ -249,6 +271,16 @@ on_ets_lookup(Result, _Pid, _NodeId) ->
 
 init(#{dht := Dht, swim := Swim} = Opts)
   when is_pid(Dht), is_pid(Swim) ->
+    %% Say once, loudly, whether the capability getter exists. `is_station' is
+    %% resolved through `macula_peering:peer_capabilities/1', and every failure
+    %% path in `peer_caps_station/1' collapses to `false' = daemon. So an SDK
+    %% that drops or renames this function would silently classify EVERY peer
+    %% as a daemon. That only misroutes an ADVERTISE today, but it is the
+    %% single point on which any future capability-gating of the DHT or SWIM
+    %% would rest, and a silent all-daemon verdict is exactly the failure that
+    %% must never be quiet.
+    log_capability_getter(
+      erlang:function_exported(macula_peering, peer_capabilities, 1)),
     %% `protected' = anyone reads, only owner writes. `set' = unique
     %% NodeId key, last write wins (matches the `conns' map's
     %% per-NodeId semantics). `read_concurrency' biases the BEAM
@@ -319,6 +351,11 @@ absorb_known_dial(LinkPid, NodeId, Endpoints, S) ->
         _:_ -> S
     end.
 
+handle_call(station_view, _From, #state{is_station = IsSt} = S) ->
+    Ids = [N || {N, true} <- maps:to_list(IsSt)],
+    {reply, #{stations    => length(Ids),
+              daemons     => maps:size(IsSt) - length(Ids),
+              station_ids => Ids}, S};
 handle_call(swim_verdicts, _From, #state{swim_verdicts = V} = S) ->
     {reply, V, S};
 handle_call(peers, _From, #state{peers = P} = S) ->
@@ -523,6 +560,16 @@ on_connected_directional(Direction, ConnPid, NodeId, Endpoints, S0) ->
              is_station       = maps:put(NodeId,
                                          maps:get(NodeId, S1#state.is_station, false),
                                          S1#state.is_station)}.
+
+log_capability_getter(true) ->
+    logger:info("[peer_observer] macula_peering:peer_capabilities/1 exported "
+                "-- station capability detection is LIVE"),
+    ok;
+log_capability_getter(false) ->
+    logger:error("[peer_observer] macula_peering:peer_capabilities/1 NOT "
+                 "exported -- EVERY peer will be classified as a daemon. "
+                 "Any capability-gated behaviour is now wrong fleet-wide."),
+    ok.
 
 spawn_resolve_is_station(ConnPid, NodeId) ->
     Self = self(),
