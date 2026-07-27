@@ -2,8 +2,16 @@
 %%
 %% Composes `macula_bootstrap:run/0,1' (the peer-discovery cascade) with
 %% `macula_station_bootstrap:ingest/2' (the bridge that seeds the
-%% DHT routing table). Called by `macula_station_app:start/2' after
-%% the DHT child is up, and before SWIM is started.
+%% DHT routing table), then performs the self-lookup that turns those
+%% seeds into a populated table. Called by `macula_station_app:start/2'
+%% after the DHT child is up, and before SWIM is started.
+%%
+%% The self-lookup is not optional decoration — it is the half of a
+%% Kademlia bootstrap that discovers everyone the seeds know. Without it
+%% a node's table only ever holds its configured seeds, which is
+%% invisible on a mutually-dialled station (inbound traffic fills the
+%% table by another route) and fatal on a degree-1 leaf, which has no
+%% inbound at all.
 %%
 %% == Behaviour ==
 %%
@@ -54,4 +62,43 @@ classify_cascade({error, Reason},         _Dht) -> {error, {bootstrap_failed, Re
 
 ingest(Dht, Peers) ->
     Summary = macula_station_bootstrap:ingest(Dht, Peers),
+    ok = self_lookup(Dht, Summary),
     {ok, #{peers => Peers, summary => Summary}}.
+
+%% The second half of a Kademlia bootstrap: having inserted the seeds,
+%% ASK THEM WHO ELSE EXISTS.
+%%
+%% Ingest alone only ever puts the configured seeds in the table. On a
+%% mutually-dialled station that is enough, because inbound handshakes
+%% and inbound FIND_NODEs then observe their senders and the table fills
+%% by itself. A degree-1 LEAF gets no inbound at all, so without this
+%% walk it stays pinned at exactly its seed count forever -- observed on
+%% station-se-stockholm, which sat at 1 entry indefinitely while its
+%% upstream knew all 45 members.
+%%
+%% Skipped when ingest seeded nothing: with an empty table there is
+%% nobody to ask, and `min_peers => 0' means that is a legitimate
+%% first-boot state rather than an error.
+%%
+%% FIRE AND FORGET, for three reasons rather than laziness.
+%%
+%% Nothing needs the return value: `macula_dht_lookup' now observes what
+%% it learns as a side effect, so the routing table fills whether or not
+%% anyone reads the result.
+%%
+%% Boot must not wait on the network. This runs in
+%% `macula_station_app:start/2' before SWIM comes up, and a walk costs
+%% up to `overall_timeout_ms' (15s default). A station that cannot
+%% complete a walk still has to come up and serve its links.
+%%
+%% And a synchronous call here made eunit CANCEL two tests: with a stub
+%% DHT the walk has nobody to answer it and simply runs out its
+%% deadline, which a `catch' cannot rescue because a hang is not an
+%% exception.
+-spec self_lookup(macula_dht:dht(),
+                  macula_station_bootstrap:ingest_summary()) -> ok.
+self_lookup(_Dht, #{observed := 0}) ->
+    ok;
+self_lookup(Dht, _Summary) ->
+    _ = spawn(fun() -> catch macula_dht:lookup_nodes(Dht, macula_dht:self_id(Dht)) end),
+    ok.
