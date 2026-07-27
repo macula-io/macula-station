@@ -288,7 +288,8 @@ handle_cast(_Msg, S) ->
 handle_info(dial, S) ->
     do_dial(S);
 handle_info({macula_peering, connected, ConnPid, NodeId},
-            #state{conn_pid = ConnPid, url = Url} = S)
+            #state{conn_pid = ConnPid, url = Url,
+                   host = Host, port = Port} = S)
   when is_binary(NodeId) ->
     ok = macula_station_peer_links:set_peer_node_id(Url, NodeId),
     %% Re-tag the connected event with `connected_outbound' so
@@ -297,7 +298,15 @@ handle_info({macula_peering, connected, ConnPid, NodeId},
     %% mutual-peering produces. Without it peer_observer's `conns'
     %% map would race between inbound + outbound for the same NodeId
     %% and EVENT delivery would land on the wrong side of the link.
-    forward_to_observer({macula_peering, connected_outbound, ConnPid, NodeId}),
+    %% Carry the DIALLED endpoint with the event rather than letting the
+    %% observer look it up in `macula_station_peer_links'. Both are casts, to
+    %% two different gen_servers, so a lookup could run before the
+    %% `set_peer_node_id' above lands and would then silently observe the peer
+    %% with no address — indistinguishable from a peer whose address we
+    %% genuinely do not know. This address is the one we actually dialled, so
+    %% it is known-good by construction.
+    forward_to_observer({macula_peering, connected_outbound, ConnPid, NodeId,
+                         [#{host => Host, port => Port, transport => quic}]}),
     %% Successful handshake — reset backoff for the next disconnect
     %% and replay every active SUBSCRIBE so the peer rebuilds its
     %% interest set after the reconnect.

@@ -271,17 +271,26 @@ reconcile_outbound_dials(S) ->
     Verified = try macula_station_peer_links:verified_peers()
                catch _:_ -> []
                end,
-    lists:foldl(fun(#{pid := LinkPid, node_id := NodeId}, Acc) ->
-        absorb_known_dial(LinkPid, NodeId, Acc)
+    lists:foldl(fun(#{pid := LinkPid, node_id := NodeId} = Link, Acc) ->
+        %% peer_links already holds the dialled host/port for this link, so
+        %% the reconciled entry gets a real address like the live-event path.
+        absorb_known_dial(LinkPid, NodeId, link_endpoints(Link), Acc)
     end, S, Verified).
 
-absorb_known_dial(LinkPid, NodeId, S) ->
+%% Same shape `direct_peer_spec/2' expects. Missing host/port yields `[]',
+%% which observes an address-less entry rather than a wrong one.
+link_endpoints(#{host := H, port := P}) ->
+    [#{host => H, port => P, transport => quic}];
+link_endpoints(_) ->
+    [].
+
+absorb_known_dial(LinkPid, NodeId, Endpoints, S) ->
     try macula_station_outbound_link:conn_pid(LinkPid) of
         undefined -> S;
         ConnPid when is_pid(ConnPid) ->
             logger:info("[peer_observer] reconciled outbound dial "
                         "pid=~p peer=~p", [ConnPid, NodeId]),
-            on_connected_directional(outbound, ConnPid, NodeId, S)
+            on_connected_directional(outbound, ConnPid, NodeId, Endpoints, S)
     catch
         _:_ -> S
     end.
@@ -303,7 +312,16 @@ handle_info({macula_peering, connected, ConnPid, PeerNodeId}, S) ->
     %% Inbound (listener-accepted) handshake — peer dialled us.
     logger:info("[peer_observer] connected pid=~p peer=~p direction=inbound",
                 [ConnPid, PeerNodeId]),
-    {noreply, on_connected_directional(inbound, ConnPid, PeerNodeId, S)};
+    {noreply, on_connected_directional(inbound, ConnPid, PeerNodeId, [], S)};
+handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId,
+             Endpoints}, S) when is_list(Endpoints) ->
+    %% 5-tuple carries the endpoint WE DIALLED, so the routing-table entry for
+    %% an outbound peer is reachable rather than address-less. Only
+    %% `macula_station_outbound_link' emits this.
+    logger:info("[peer_observer] connected pid=~p peer=~p direction=outbound",
+                [ConnPid, PeerNodeId]),
+    {noreply, on_connected_directional(outbound, ConnPid, PeerNodeId,
+                                       Endpoints, S)};
 handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId}, S) ->
     %% Outbound (client-side) handshake — `outbound_link' relays
     %% peering events here with the `_outbound' suffix so direction
@@ -312,7 +330,7 @@ handle_info({macula_peering, connected_outbound, ConnPid, PeerNodeId}, S) ->
     %% land on the wrong side of the link.
     logger:info("[peer_observer] connected pid=~p peer=~p direction=outbound",
                 [ConnPid, PeerNodeId]),
-    {noreply, on_connected_directional(outbound, ConnPid, PeerNodeId, S)};
+    {noreply, on_connected_directional(outbound, ConnPid, PeerNodeId, [], S)};
 handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
     %% Legacy 4-tuple from peering_conn without `timing_enabled' — no
     %% mailbox-wait timestamp available. Still record dispatch latency.
@@ -422,7 +440,7 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% connected
 %%==================================================================
 
-on_connected_directional(Direction, ConnPid, NodeId, S0) ->
+on_connected_directional(Direction, ConnPid, NodeId, Endpoints, S0) ->
     %% Fire-and-forget admit. `macula_dht:observe/2' is a sync
     %% gen_server:call; under accumulated daemon-conn load the DHT
     %% server gets slow enough that the call times out (5s default)
@@ -433,7 +451,8 @@ on_connected_directional(Direction, ConnPid, NodeId, S0) ->
     %% Empirical evidence: cascade root-cause investigation 2026-05-10
     %% caught peer_observer dying with mailbox=504, exit=
     %% gen_server:call timeout to macula_dht:observe.
-    macula_dht:observe_async(S0#state.dht, direct_peer_spec(NodeId)),
+    macula_dht:observe_async(S0#state.dht,
+                             direct_peer_spec(NodeId, Endpoints)),
     ok = macula_swim:add_peer(S0#state.swim, NodeId, ConnPid),
     %% Monitor ConnPid so observer cleans up on death without
     %% depending on a `disconnected' event flowing through some
@@ -564,9 +583,19 @@ primary_conn_lookup({ok, #{outbound := Pid}}) when is_pid(Pid) ->
 primary_conn_lookup({ok, _Empty}) ->
     error.
 
-direct_peer_spec(NodeId) ->
+%% `endpoints' is the address we DIALLED for an outbound peer, and `[]' for an
+%% inbound one — we do not know an inbound peer's LISTENING address, and its
+%% source port is ephemeral, so publishing that would be worse than publishing
+%% nothing: it would turn an honest `no_route' into a connection attempt
+%% against an address that cannot accept one.
+%%
+%% This used to be `[]' unconditionally, which made every routing-table entry
+%% on the fleet undialable and confined every DHT store to peers we already
+%% had a connection to. `asn' and `country' are still placeholders; they feed
+%% `macula_dht_diversity' and are a separate problem.
+direct_peer_spec(NodeId, Endpoints) when is_list(Endpoints) ->
     #{node_id   => NodeId,
-      endpoints => [],
+      endpoints => Endpoints,
       asn       => 0,
       country   => <<"??">>,
       tier      => t0}.

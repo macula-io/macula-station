@@ -146,7 +146,18 @@ entry_to_station_ref(Entry, NowMono) ->
     macula_frame:station_ref(#{
         node_id      => macula_dht_entry:node_id(Entry),
         station_id   => macula_dht_entry:node_id(Entry),
-        addresses    => [],
+        %% Publish the entry's real endpoints. This was hardcoded `[]', which
+        %% made every ref in every NODES reply address-less and therefore
+        %% undialable: a receiver could add the node to its routing table and
+        %% still never reach it, because
+        %% `macula_station_dht_transport:send_frame/2' resolves only through an
+        %% EXISTING connection. An entry with no endpoints still publishes
+        %% none, which is the honest answer for an inbound-only peer whose
+        %% listening address we do not know.
+        %% Guarded by macula_dht_endpoint_propagation_tests, which asserts the
+        %% address survives a real CBOR encode/decode rather than only the
+        %% call site.
+        addresses    => macula_dht_entry:endpoints(Entry),
         tier         => tier_to_int(macula_dht_entry:tier(Entry)),
         asn          => macula_dht_entry:asn(Entry),
         country      => macula_dht_entry:country(Entry),
