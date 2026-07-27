@@ -1,6 +1,6 @@
 %% @doc Custodian replication loop (tReplicate, Part 3 §11.1 / §5.5).
 %%
-%% Every `interval_ms' (default 1h), iterate every record currently
+%% Every `interval_ms' (default 5 min), iterate every record currently
 %% held in the local ETS store and send a STORE to each of the
 %% current k-closest peers known for that storage key. Whether a
 %% given peer already has the record is irrelevant — STORE is
@@ -11,9 +11,29 @@
 %% any given key. Without periodic refresh, a record could end up
 %% held only by nodes that are no longer among the k-closest, and
 %% new arrivals closer to the key would never learn it — fatal for
-%% lookup success. The 1h cadence sits well below the 48h
-%% `T_EXPIRE_MS', giving ≥ 48 refresh opportunities before any
-%% replica would reach expiry.
+%% lookup success. The cadence must therefore sit comfortably BELOW
+%% the shortest record TTL in the system, so every replica is
+%% refreshed several times before it can expire.
+%%
+%% ⚠ THAT INVARIANT WAS VIOLATED BY A FACTOR OF 288 AND THE FLEET
+%% DECAYED SILENTLY. This comment used to justify a 1h cadence
+%% against a 48h `T_EXPIRE_MS'. Nothing publishes a 48h TTL:
+%% `macula_station_announcer' uses `?DEFAULT_TTL_MS' of 600_000, ten
+%% minutes (`macula_station_announcer.erl:65'). A remote node record
+%% therefore lived ten minutes and was refreshed at most hourly — it
+%% was EXPIRED for fifty minutes in every sixty. Measured 2026-07-27
+%% over 2.5h of unforced ticks: record counts FELL, paris 5 -> 3 and
+%% frankfurt 3 -> 2, converging on "own record plus whatever arrived
+%% in the last ten minutes".
+%%
+%% The owner cannot save it either: `macula_dht:put_record/2' is a
+%% local ETS write with no fan-out (`macula_dht_server.erl:405-408'),
+%% and `macula_dht_republish' is 24h and owner-only.
+%%
+%% Cadence now sits below the announce TTL. `warn_if_ttl_too_short/2'
+%% makes any future divergence LOUD instead of silent — the failure
+%% mode here was a decay nobody could see, which is why the check
+%% matters more than the constant.
 %%
 %% This is the custodian obligation. The complementary owner
 %% obligation (tRepublish, 24h) lands in Session 3.10 along with
@@ -38,7 +58,11 @@
 
 -export_type([opts/0, outcome/0, stats/0]).
 
--define(DEFAULT_INTERVAL_MS,          3_600_000).  %% 1 h
+%% Half the shortest TTL in the system (announcer, 600_000), so a replica
+%% gets at least two refresh opportunities before it can expire. Raising
+%% this above any publisher's TTL silently decays the record layer; see the
+%% moduledoc. Keep the two coupled.
+-define(DEFAULT_INTERVAL_MS,            300_000).  %% 5 min
 -define(DEFAULT_K,                           20).
 -define(DEFAULT_PER_STORE_TIMEOUT_MS,     3_000).
 
@@ -102,7 +126,7 @@ tick(Pid) ->
 %% out to the k-closest custodians in the background.
 %%
 %% This is the on-write half of the durability contract. The
-%% periodic tick is the long-period repair sweep (default 1 h);
+%% periodic tick is the repair sweep (default 5 min);
 %% without `replicate_one/2', a record put on station A would only
 %% reach station B after the next tick — too slow for any client
 %% that puts and immediately reads from a different station.
@@ -190,13 +214,35 @@ schedule_next(IntervalMs) ->
     erlang:send_after(IntervalMs, self(), replicate_tick).
 
 -spec run_tick(#state{}) -> {outcome(), #state{}}.
-run_tick(#state{dht = Dht} = State) ->
+run_tick(#state{dht = Dht, interval_ms = Interval} = State) ->
     SelfId  = macula_dht:self_id(Dht),
     Records = macula_dht:list_records(Dht),
+    warn_if_ttl_too_short(Records, Interval),
     Outcome = lists:foldl(
                 fun(R, Acc) -> replicate_record(R, SelfId, State, Acc) end,
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
+
+%% A record that expires before the NEXT tick cannot be kept alive by this
+%% worker, no matter how well replication itself works. That is a
+%% configuration defect, not a network one, and it is invisible in every
+%% other counter: stores succeed, acks arrive, and the copies quietly lapse
+%% between ticks. Say so once per tick, with the numbers needed to fix it.
+-spec warn_if_ttl_too_short([macula_record:record()], pos_integer()) -> ok.
+warn_if_ttl_too_short(Records, IntervalMs) ->
+    Now = erlang:system_time(millisecond),
+    Doomed = [R || R <- Records,
+                   macula_record:expires_at(R) - Now < IntervalMs],
+    log_doomed(length(Doomed), length(Records), IntervalMs).
+
+log_doomed(0, _Total, _IntervalMs) ->
+    ok;
+log_doomed(N, Total, IntervalMs) ->
+    logger:warning("[dht_replicate] ~p/~p held records expire before the next "
+                   "tick (~pms) and will lapse between refreshes -- the "
+                   "replicate cadence is above the publisher TTL",
+                   [N, Total, IntervalMs]),
+    ok.
 
 -spec fire_eager_stores(pid(), macula_record:record(), macula_dht:dht(),
                         pos_integer(), pos_integer()) -> ok.
