@@ -326,10 +326,43 @@ Chaos is where the 7 pillars face reality. Each scenario maps to one or more pil
 
 ### 7.2 Phase-2 chaos
 
-Run on every CI build after Phase 2 completes:
-
-- Random 1-of-3 kill every 30 s for 1 h; assert SWIM always converges within 12 s.
-- 10% packet loss for 30 min; false-positive rate <1%.
+> **⚠ RETIRED 2026-07-27. Do not implement as written.** Both bullets predate
+> the capability gate, the conn-resync fix and the late-ACK refutation, and each
+> is now wrong for a separate reason.
+>
+> **"Random 1-of-3 kill, assert confirmed_failed within 12s"** fails on CORRECT
+> behaviour in at least three ways. A whole-station kill takes BOTH conn
+> directions down, so the observer removes the peer on isolation and SWIM never
+> reaches a verdict at all. If the stop is graceful the conns close cleanly and
+> the member is gone in milliseconds, so `confirmed_failed` never occurs. If it
+> is brutal, no CONNECTION_CLOSE crosses the wire and QUIC's idle timeout races
+> the confirmation. And at 3 stations M=2, so probe-target selection alone
+> misses a 12s bound in roughly a quarter of runs. The 12s figure was derived in
+> §10.1 for a 10-station group.
+>
+> **"10% packet loss, false-positive rate <1%"** measures a population that no
+> longer exists. The pre-gate false-verdict rate was dominated by daemons in the
+> membership, which cannot answer a probe at any loss rate.
+>
+> **Replacement, implemented in
+> `apps/macula_station/test/macula_station_asymmetric_loss_SUITE.erl`:**
+>
+> - The only failure class SWIM still owns is the peer that is WEDGED BUT STILL
+>   CONNECTED. Everything that takes the transport down is caught first by QUIC
+>   (`idle_timeout` 300s) or by the observer's isolation path. Test it by
+>   suspending the victim's SWIM while leaving its QUIC conns up, and assert
+>   `confirmed_failed` within 30s.
+> - For a kill, the assertion must be disjunctive and time-generous: within T
+>   the member is either `confirmed_failed` OR removed, and never returns to
+>   alive.
+> - Asymmetric conn loss on a mutual pair needs `acks_matched` to keep rising,
+>   NOT merely "stays alive". With the resync reverted the peer also stays
+>   alive, because the liveness filter stops selecting the dead pid; the red
+>   signature is stalled ACKs, not a conversion.
+>
+> Any future bar here must be derived from a CONSUMER's requirements. Precision
+> and recall are properties of what acts on a verdict, and nothing acts on these
+> yet.
 
 ### 7.3 Phase-4 chaos
 
