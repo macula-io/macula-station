@@ -40,16 +40,33 @@
 %% @doc Dispatch a CALL frame against a registry.
 %% Returns the reply frame. The caller is responsible for signing
 %% and sending the frame on the originating connection.
+%%
+%% THE REGISTRY IS A PID OR A REGISTERED NAME, and this guard used to insist on
+%% a pid. `macula_station_sup' registers the registry under the name
+%% `macula_handler_registry' and hands that name to the peer observer, so every
+%% call arriving at a real station came in here as an atom and raised
+%% `function_clause'.
+%%
+%% IT FAILED AFTER THE LOOKUP HAD ALREADY SUCCEEDED, which is what made it hard
+%% to see. `local_lookup' resolves the handler through the same atom without
+%% complaint, because `gen_server:call/2' takes a registered name; only this
+%% guard objected. The observer then spawns a worker per call, so the crash
+%% killed the worker, `send_reply_to' never ran, and the caller waited out its
+%% deadline. The container stayed healthy and the station went on reporting
+%% healthy links the whole time.
+%%
+%% Measured on station-de-frankfurt: 11,638 of these in 24 hours, about eight a
+%% minute, every one of them a `_relay.ping' that was never answered.
 -spec dispatch_call(macula_frame:frame(),
-                    pid(),
+                    macula_handler_registry:registry(),
                     macula_identity:pubkey()) ->
     dispatch_result().
-dispatch_call(CallFrame, RegistryPid, ResponderId)
-  when is_map(CallFrame), is_pid(RegistryPid),
+dispatch_call(CallFrame, Registry, ResponderId)
+  when is_map(CallFrame), is_pid(Registry) orelse is_atom(Registry),
        is_binary(ResponderId), byte_size(ResponderId) =:= 32 ->
     Procedure = maps:get(procedure, CallFrame),
     on_lookup(CallFrame, ResponderId,
-              macula_handler_registry:lookup(RegistryPid, Procedure)).
+              macula_handler_registry:lookup(Registry, Procedure)).
 
 %%====================================================================
 %% Internals

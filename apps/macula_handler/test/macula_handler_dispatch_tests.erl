@@ -125,3 +125,38 @@ bare_value_handler_returned_verbatim_test() ->
     ?assertEqual(result, macula_frame:frame_type(Reply)),
     ?assertEqual(not_found, maps:get(payload, Reply)),
     catch macula_handler_registry:stop(Reg).
+
+%%==================================================================
+%% Addressed by REGISTERED NAME, which is how a real station calls it
+%%==================================================================
+
+%% THE BUG THIS SUITE COULD NOT SEE. Every test above hands `dispatch_call/3' a
+%% pid, and the guard required one, so the suite agreed with itself and was
+%% wrong about production for as long as both existed.
+%%
+%% `macula_station_sup' starts the registry unnamed and then registers it as
+%% `macula_handler_registry', handing the NAME to the peer observer, whose own
+%% record type has always said `atom() | pid() | undefined'. So every call
+%% arriving at a live station came in here as an atom and raised
+%% `function_clause'.
+%%
+%% IT FAILED AFTER THE LOOKUP HAD ALREADY SUCCEEDED, which is what hid it.
+%% `local_lookup' resolves the handler through the same atom without complaint,
+%% because `gen_server:call/2' takes a registered name. The observer spawns a
+%% worker per call, so the crash killed the worker, the reply was never sent,
+%% and the caller waited out its deadline while the container went on reporting
+%% healthy. 11,638 of them in 24 hours on station-de-frankfurt, every one a
+%% `_relay.ping' that was never answered.
+dispatch_through_a_registered_name_test() ->
+    Reg = fresh_registry(),
+    Name = macula_handler_dispatch_tests_registry,
+    true = erlang:register(Name, Reg),
+    SelfId = <<3:256>>,
+    ok = macula_handler_registry:advertise(Name, ?PROC,
+            fun(<<"args">>) -> {ok, <<"pong">>} end),
+    Frame = call_frame_for(?PROC, <<"args">>),
+    Reply = macula_handler_dispatch:dispatch_call(Frame, Name, SelfId),
+    ?assertEqual(result, macula_frame:frame_type(Reply)),
+    ?assertEqual(<<"pong">>, maps:get(payload, Reply)),
+    true = erlang:unregister(Name),
+    catch macula_handler_registry:stop(Reg).

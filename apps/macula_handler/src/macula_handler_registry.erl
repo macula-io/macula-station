@@ -45,7 +45,20 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--export_type([procedure/0, handler/0]).
+-export_type([procedure/0, handler/0, registry/0]).
+
+%% HOW THIS REGISTRY IS ADDRESSED, and it is not always a pid.
+%%
+%% `macula_station_sup' registers it under the name `macula_handler_registry'
+%% and hands that NAME to the peer observer, whose own record has said
+%% `atom() | pid() | undefined' all along. Every function here already accepted
+%% it, because none of them guards the first argument and `gen_server:call/2'
+%% resolves a registered name perfectly well.
+%%
+%% The specs said `pid()' anyway, and one consumer believed them: dispatch
+%% guarded on `is_pid/1' and crashed a worker per call on the live fleet. The
+%% type is written down so the next consumer is told the truth.
+-type registry() :: pid() | atom().
 
 -type procedure() :: binary().
 -type handler()   :: fun((term()) -> term())
@@ -70,26 +83,26 @@ start_link(Opts) when is_map(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 %% @doc Advertise (or replace) a procedure handler.
--spec advertise(pid(), procedure(), handler()) -> ok.
+-spec advertise(registry(), procedure(), handler()) -> ok.
 advertise(Pid, Procedure, Handler)
   when is_binary(Procedure),
        (is_function(Handler, 1) orelse
         (is_tuple(Handler) andalso tuple_size(Handler) =:= 2)) ->
     gen_server:call(Pid, {advertise, Procedure, Handler}).
 
--spec unadvertise(pid(), procedure()) -> ok.
+-spec unadvertise(registry(), procedure()) -> ok.
 unadvertise(Pid, Procedure) when is_binary(Procedure) ->
     gen_server:call(Pid, {unadvertise, Procedure}).
 
--spec lookup(pid(), procedure()) -> {ok, handler()} | {error, not_found}.
+-spec lookup(registry(), procedure()) -> {ok, handler()} | {error, not_found}.
 lookup(Pid, Procedure) when is_binary(Procedure) ->
     gen_server:call(Pid, {lookup, Procedure}).
 
--spec list(pid()) -> [procedure()].
+-spec list(registry()) -> [procedure()].
 list(Pid) ->
     gen_server:call(Pid, list).
 
--spec stop(pid()) -> ok.
+-spec stop(registry()) -> ok.
 stop(Pid) ->
     gen_server:stop(Pid).
 
