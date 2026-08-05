@@ -1191,3 +1191,74 @@ swim_confirmed_failed_without_conn_is_corroborated_test_() ->
             ?assertEqual(0, maps:get(confirmed_live_conn, V, 0))
         end
     end}.
+
+%%==================================================================
+%% ⚠ AN OBSERVER RESTART MUST RECOVER THE CONNECTIONS THAT NEVER DIED
+%%==================================================================
+%%
+%% On 2026-08-05 station-de-frankfurt's observer died on a timed-out
+%% `gen_server:call' into `macula_handler_registry'. The supervisor restarted
+%% it; `init/1' recreated the public conns ETS mirror EMPTY; and pubsub
+%% fan-out, which resolves subscriber connections through that mirror, was
+%% blind to every already-connected client for the rest of the node's life.
+%% Publishes were accepted and delivered to nobody. `/health' said healthy.
+%%
+%% The observer already rebuilt its OUTBOUND view from `macula_station_peer_links'
+%% and its own comment called restart "a non-issue". It was a non-issue only for
+%% the peers this station dials. Nothing remembered the peers that dialled US.
+%% The listener does, and is now asked.
+
+observer_restart_recovery_test_() ->
+    {foreach,
+     fun() -> application:ensure_all_started(crypto), ok end,
+     fun(_) -> catch gen_server:stop(macula_station_listener), ok end,
+     [fun a_restarted_observer_absorbs_live_inbound_accepts/0,
+      fun a_dead_inbound_worker_is_not_absorbed/0,
+      fun no_listener_is_not_a_crash/0]}.
+
+%% The one that would have caught the outage.
+a_restarted_observer_absorbs_live_inbound_accepts() ->
+    NodeId  = peer_node_id(),
+    ConnPid = spawn(fun() -> receive stop -> ok end end),
+    {ok, _L} = stub_listener:start_link([{NodeId, ConnPid}]),
+    Obs = start_bare_observer(),
+    ?assertMatch([{NodeId, #{inbound := ConnPid}}],
+                 ets:lookup(macula_station_peer_observer_conns, NodeId)),
+    ConnPid ! stop,
+    gen_server:stop(Obs).
+
+%% A worker that died between the listener answering and the fold running is
+%% skipped rather than installed, so fan-out never resolves to a dead pid.
+a_dead_inbound_worker_is_not_absorbed() ->
+    NodeId  = peer_node_id(),
+    ConnPid = spawn(fun() -> ok end),
+    _ = wait_dead(ConnPid),
+    {ok, _L} = stub_listener:start_link([{NodeId, ConnPid}]),
+    Obs = start_bare_observer(),
+    ?assertEqual([], ets:lookup(macula_station_peer_observer_conns, NodeId)),
+    gen_server:stop(Obs).
+
+%% First boot: the observer starts before the listener exists. Nothing to
+%% reconcile is the right answer, and it must not be a crash.
+no_listener_is_not_a_crash() ->
+    Obs = start_bare_observer(),
+    ?assertEqual(0, ets:info(macula_station_peer_observer_conns, size)),
+    gen_server:stop(Obs).
+
+start_bare_observer() ->
+    SelfKp = macula_identity:generate(),
+    SelfId = maps:get(public, SelfKp),
+    {ok, Dht}  = macula_dht:start_link(#{self_id => SelfId}),
+    {ok, Swim} = macula_swim:start_link(#{self_node_id    => SelfId,
+                                          identity        => SelfKp,
+                                          controlling_pid => self()}),
+    {ok, Obs}  = macula_station_peer_observer:start_link(#{dht => Dht, swim => Swim}),
+    Obs.
+
+peer_node_id() -> maps:get(public, macula_identity:generate()).
+
+wait_dead(Pid) ->
+    case is_process_alive(Pid) of
+        false -> ok;
+        true  -> timer:sleep(5), wait_dead(Pid)
+    end.

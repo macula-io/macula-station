@@ -334,7 +334,53 @@ init(#{dht := Dht, swim := Swim} = Opts)
     %% missed notifications all become non-issues because the observer
     %% reconciles whatever is true at init time and uses
     %% `erlang:monitor/2' for ongoing death detection.
-    {ok, reconcile_outbound_dials(State0)}.
+    %%
+    %% ⚠⚠ AND THE SAME FOR INBOUND, WHICH IS THE HALF THAT WAS MISSING AND
+    %% COST A STATION A DAY. The paragraph above claimed observer restart was
+    %% a non-issue. It was a non-issue for the peers this station DIALS,
+    %% because peer_links remembers them. Nothing remembered the peers that
+    %% dialled US, so on 2026-08-05 station-de-frankfurt's observer crashed,
+    %% restarted with an empty conns mirror, re-registered only its three
+    %% outbound station links, and every client connection — all of which
+    %% were still perfectly alive — stayed invisible to pubsub fan-out for
+    %% the rest of the node's life. Publishes were accepted and delivered to
+    %% nobody, with no error anywhere and `/health' reporting healthy.
+    %%
+    %% A crash must cost a blip, not a day. The listener is the canonical
+    %% record of inbound accepts, so it is now asked, exactly as peer_links
+    %% is asked for outbound.
+    {ok, reconcile_inbound_accepts(reconcile_outbound_dials(State0))}.
+
+%% Walk the listener's current inbound peer index and fold each live worker
+%% in through the standard on_connected path. Tolerant throughout: at first
+%% boot the listener may not exist yet (nothing to reconcile, which is
+%% correct), and a worker that died between the call and the fold is simply
+%% skipped — its DOWN would have been handled anyway.
+reconcile_inbound_accepts(S) ->
+    lists:foldl(fun({NodeId, Pid}, Acc) -> absorb_known_accept(NodeId, Pid, Acc) end,
+                S, listener_peers()).
+
+listener_peers() ->
+    try macula_station:listener() of
+        {ok, Pid} -> macula_station_listener:peers(Pid);
+        _NotStarted -> []
+    catch
+        _:_ -> []
+    end.
+
+absorb_known_accept(NodeId, Pid, S) when is_pid(Pid) ->
+    absorb_live_accept(is_process_alive(Pid), NodeId, Pid, S);
+absorb_known_accept(_NodeId, _Other, S) ->
+    S.
+
+absorb_live_accept(false, _NodeId, _Pid, S) ->
+    S;
+absorb_live_accept(true, NodeId, Pid, S) ->
+    logger:info("[peer_observer] reconciled inbound accept pid=~p peer=~p",
+                [Pid, NodeId]),
+    %% `[]' endpoints, matching the live inbound path: a peer that dialled us
+    %% told us nothing about where to reach it.
+    on_connected_directional(inbound, Pid, NodeId, [], S).
 
 %% Walk peer_links' current verified entries; for each link with a
 %% known peer node-id, query the link for its underlying conn_pid and
@@ -936,11 +982,43 @@ deliver_call({error, _}, _Frame, _ConnPid, _NodeId, S) ->
 deliver_call({ok, Frame}, _OrigFrame, ConnPid, NodeId, S) ->
     on_call_lookup(local_lookup(Frame, S), Frame, ConnPid, NodeId, S).
 
+%% ⚠ A REGISTRY THAT IS SLOW COSTS ONE DROPPED CALL, NEVER THIS PROCESS.
+%%
+%% This exact line killed station-de-frankfurt on 2026-08-05:
+%%
+%%   exception exit: {timeout, {gen_server,call,
+%%                    [macula_handler_registry, {lookup, <<"_macula.ping">>}]}}
+%%
+%% The observer died, the supervisor restarted it, `init/1' recreated the
+%% public conns ETS mirror EMPTY, and pubsub fan-out — which resolves
+%% subscriber connections through that mirror — was permanently blind to
+%% every client that connected afterwards. `/health' said healthy for hours.
+%%
+%% The lookup itself is now an ETS read (see `macula_handler_registry'), so
+%% this should not be reachable. It is caught anyway, because the comment on
+%% `on_connected_directional/5' records the SAME crash from a different
+%% callee in 2026-05, and the lesson that was not learnt then is that this
+%% process must survive ANY callee, not the one that last misbehaved.
 local_lookup(_Frame, #state{handler_registry = undefined}) ->
     {error, not_found};
 local_lookup(Frame, #state{handler_registry = Registry}) ->
     Procedure = maps:get(procedure, Frame),
-    macula_handler_registry:lookup(Registry, Procedure).
+    guarded(fun() -> macula_handler_registry:lookup(Registry, Procedure) end,
+            handler_registry, Procedure).
+
+%% Not found, loudly. A dropped CALL is a caller-visible timeout and a line in
+%% the log; a dead observer is a silent station. Never swallow the reason: the
+%% 2026-08-05 outage was diagnosed from a single crash report, and had this
+%% path already existed the log would have named the culprit on the first frame
+%% instead of on the one that happened to kill the process.
+guarded(Fun, Which, Procedure) ->
+    try Fun()
+    catch Class:Reason ->
+        logger:warning("[peer_observer] ~p lookup failed for ~p: ~p:~p — "
+                       "dropping this CALL, staying alive",
+                       [Which, Procedure, Class, Reason]),
+        {error, not_found}
+    end.
 
 on_call_lookup({ok, _Handler}, Frame, _ConnPid, NodeId,
                #state{handler_registry = Registry,
@@ -966,12 +1044,15 @@ on_call_lookup({ok, _Handler}, Frame, _ConnPid, NodeId,
 on_call_lookup({error, not_found}, Frame, ConnPid, NodeId, S) ->
     on_remote_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
 
+%% Guarded for the same reason as `local_lookup/2', and it is on the same
+%% frame path: every CALL that is not a local procedure reaches this one.
 remote_lookup(_Frame, #state{remote_advertise = undefined}) ->
     {error, not_found};
 remote_lookup(Frame, #state{remote_advertise = R}) ->
     Realm     = maps:get(realm,     Frame),
     Procedure = maps:get(procedure, Frame),
-    macula_remote_advertise_registry:lookup(R, Realm, Procedure).
+    guarded(fun() -> macula_remote_advertise_registry:lookup(R, Realm, Procedure) end,
+            remote_advertise_registry, Procedure).
 
 %% Remote-advertise miss — synthesize a signed `unknown_next_peer'
 %% reply to the caller (origin connection) so they fail fast.

@@ -65,7 +65,7 @@
 -module(macula_station_listener).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, listen_addr/1, stats/1]).
+-export([start_link/1, stop/1, listen_addr/1, stats/1, peers/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -172,6 +172,20 @@ listen_addr(Pid) ->
 stats(Pid) ->
     gen_server:call(Pid, stats).
 
+%% @doc The inbound peers this listener currently holds, as
+%% `[{PeerNodeId, WorkerPid}]'.
+%%
+%% ⚠ THIS EXISTS SO A RESTARTED OBSERVER CAN FIND THE CONNECTIONS THAT
+%% NEVER WENT AWAY. `macula_station_peer_observer' rebuilds its outbound
+%% view at init from `macula_station_peer_links', and had NO equivalent
+%% source for inbound accepts, so an observer crash made every already
+%% connected client invisible to pubsub fan-out for the rest of the node's
+%% life. This listener is the canonical record of who dialled us, exactly as
+%% peer_links is for who we dialled.
+-spec peers(pid()) -> [{macula_identity:pubkey(), pid()}].
+peers(Pid) ->
+    gen_server:call(Pid, peers).
+
 %%==================================================================
 %% gen_server
 %%==================================================================
@@ -203,6 +217,8 @@ on_listen({error, Reason}, _Opts) ->
 
 handle_call(listen_addr, _From, #state{listen_addr = A} = S) ->
     {reply, A, S};
+handle_call(peers, _From, #state{peers = P} = S) ->
+    {reply, [{NodeId, Pid} || {NodeId, {_Ref, Pid}} <- maps:to_list(P)], S};
 handle_call(stats, _From, #state{handshaking = HS, connected = C,
                                   cap = Cap, rejected = R} = S) ->
     HSize = maps:size(HS),
