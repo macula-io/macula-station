@@ -77,3 +77,54 @@ listener_opts() ->
 
 dial_template() ->
     #{identity => macula_identity:generate()}.
+
+%%====================================================================
+%% ⚠ THE OBSERVER, WHICH WAS THE ONE RECIPIENT LEFT AS A CAPTURED PID
+%%====================================================================
+%%
+%% `dht_recipient' and `pubsub_recipient' became registered names on
+%% 2026-07-26 because a captured pid is a black hole after the recipient
+%% restarts: `Pid ! Msg' to a dead pid succeeds and the VM discards it, with
+%% no error at either end. `controlling_pid' kept the bug.
+%%
+%% On 2026-08-05 station-de-frankfurt's peer_observer died at 06:30:54. The
+%% listener's opts map, built once at its own init, went on handing the dead
+%% pid to every accept. Those connections announced themselves to nobody,
+%% never entered the conns ETS mirror, and pubsub fan-out — which resolves
+%% subscribers through that mirror — delivered nothing to any of them for
+%% hours, while `/health' reported healthy.
+
+the_observer_is_resolved_at_accept_not_captured_at_init_test() ->
+    Dead = dead_pid(),
+    Live = spawn(fun() -> receive stop -> ok end end),
+    true = register(macula_station_peer_observer, Live),
+    try
+        Opts = macula_station_listener:peering_opts(
+                 maps:put(observer, Dead, listener_opts())),
+        ?assertEqual(Live, maps:get(controlling_pid, Opts))
+    after
+        catch unregister(macula_station_peer_observer),
+        Live ! stop
+    end.
+
+%% The restart window: for the instant in which no observer is registered,
+%% the configured value is still handed over rather than `undefined', which
+%% would crash the peering worker's init. A connection accepted in that
+%% window is recovered by the observer's own `reconcile_inbound_accepts/1'.
+the_configured_observer_is_the_fallback_when_the_name_is_free_test() ->
+    catch unregister(macula_station_peer_observer),
+    Configured = self(),
+    Opts = macula_station_listener:peering_opts(
+             maps:put(observer, Configured, listener_opts())),
+    ?assertEqual(Configured, maps:get(controlling_pid, Opts)).
+
+dead_pid() ->
+    P = spawn(fun() -> ok end),
+    wait_gone(P),
+    P.
+
+wait_gone(P) ->
+    case is_process_alive(P) of
+        false -> ok;
+        true  -> timer:sleep(5), wait_gone(P)
+    end.

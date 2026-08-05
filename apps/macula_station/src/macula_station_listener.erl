@@ -422,6 +422,10 @@ maybe_close_old_worker({ok, {_OldRef, OldPid}}, NewPid, PeerNodeId)
 maybe_close_old_worker(_, _, _) ->
     ok.
 
+%% The station's observer is a named singleton. Kept as a define so the
+%% resolution below cannot drift from the name the supervisor registers.
+-define(OBSERVER_NAME, macula_station_peer_observer).
+
 peering_opts(#{identity := Id, realms := R, capabilities := C,
                observer := Observer}) ->
     Base = #{
@@ -429,7 +433,30 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
         identity        => Id,
         realms          => R,
         capabilities    => C,
-        controlling_pid => Observer,
+        %% ⚠ RESOLVED PER ACCEPT, NEVER THE PID CAPTURED AT LISTENER INIT.
+        %% This map is built once at `init/1' and reused for every accept, so
+        %% `Observer' is the pid the observer had when the LISTENER started.
+        %% After an observer crash-restart that pid is dead, and a dead pid is
+        %% a black hole: `Pid ! Msg' to it succeeds and the VM discards the
+        %% message. Every connection accepted afterwards therefore announced
+        %% itself to nobody, never entered the conns mirror, and was invisible
+        %% to pubsub fan-out for its whole life.
+        %%
+        %% ⚠⚠ THE COMMENT ON `dht_recipient' BELOW ALREADY SAYS ALL OF THIS.
+        %% Those two were converted to registered names on 2026-07-26 for
+        %% exactly this failure; `controlling_pid' was left as a pid and kept
+        %% the bug. On 2026-08-05 station-de-frankfurt's observer died at
+        %% 06:30:54 and every client that connected after it was dark until
+        %% the container was restarted.
+        %%
+        %% Resolved by name here rather than passed AS a name because the SDK
+        %% types `controlling_pid' as a `pid()' and sends to it unconditionally
+        %% — an atom would work while the name is registered and raise
+        %% `badarg' in the restart window, killing the peering worker. The
+        %% configured pid remains the fallback for that window, and a
+        %% connection accepted inside it is picked up by the observer's own
+        %% `reconcile_inbound_accepts/1' when it comes back.
+        controlling_pid => live_observer(Observer),
         %% Tells the peering worker to send us a single
         %% {macula_peering, handshake_complete, self()} message the
         %% moment it transitions from `handshaking' to `connected'.
@@ -468,6 +495,12 @@ peering_opts(#{identity := Id, realms := R, capabilities := C,
     %% earlier SDKs ignore it and pubsub frames flow via
     %% controlling_pid (backward-compatible).
     Base1#{pubsub_recipient => macula_station_route_pubsub_frames}.
+
+live_observer(Configured) ->
+    observer_or(erlang:whereis(?OBSERVER_NAME), Configured).
+
+observer_or(Pid, _Configured) when is_pid(Pid) -> Pid;
+observer_or(undefined, Configured) -> Configured.
 
 %% DOWN routing — a monitored worker died. Could be in either lifecycle
 %% map. Probe both; the matching entry is removed. Always also drop
