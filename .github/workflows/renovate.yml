@@ -1,14 +1,23 @@
 name: Renovate
 
-# Self-hosted Renovate: runs on GitHub Actions (where CI already lives)
-# but operates against the canonical Codeberg repo. Keeps the `macula`
-# SDK family in lock-step with hex.pm and auto-merges the bump on green
-# (config lives in-repo: renovate.json5).
+# Self-hosted Renovate: runs on GitHub Actions against THIS repo. Keeps
+# the `macula` SDK family in lock-step with hex.pm and auto-merges the
+# bump on green (config lives in-repo: renovate.json5).
 #
-# Requires a repo Actions secret RENOVATE_TOKEN — a Codeberg personal
-# access token with read+write `repository`, `issue` and `pull request`
-# scopes for this repo, so Renovate can push the branch, open the PR,
-# and enable auto-merge.
+# ⚠ It pointed at Codeberg until 2026-08-13, months after GitHub became
+# canonical, and so failed on EVERY scheduled run from 2026-08-08
+# onward — dying in 6 to 15 seconds against an endpoint it could no
+# longer authenticate to. Nothing watched the schedule, so the repo
+# believed it had dependency automation while having none: the macula
+# 7.1 -> 8.0 bump had to be found and made by hand.
+#
+# Requires a repo Actions secret RENOVATE_TOKEN — a GITHUB personal
+# access token (classic, `repo` scope, or fine-grained with Contents
+# read+write and Pull requests read+write on this repo) so Renovate can
+# push the branch, open the PR and enable auto-merge. The built-in
+# GITHUB_TOKEN is deliberately NOT used: PRs it opens do not trigger
+# workflow runs, so auto-merge-on-green would wait for a check that
+# never starts.
 
 on:
   schedule:
@@ -35,11 +44,10 @@ jobs:
         with:
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
-          RENOVATE_PLATFORM: gitea
-          RENOVATE_ENDPOINT: https://codeberg.org
-          RENOVATE_REPOSITORIES: macula-internal/macula-station
+          RENOVATE_PLATFORM: github
+          RENOVATE_REPOSITORIES: macula-io/macula-station
           RENOVATE_AUTODISCOVER: "false"
           RENOVATE_ONBOARDING: "false"
           RENOVATE_REQUIRE_CONFIG: "required"
-          RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate-bot@users.noreply.codeberg.org>"
+          RENOVATE_GIT_AUTHOR: "Renovate Bot <renovate-bot@users.noreply.github.com>"
           LOG_LEVEL: ${{ github.event.inputs.logLevel || 'info' }}
