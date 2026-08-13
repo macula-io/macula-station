@@ -115,10 +115,27 @@ ENV RELX_REPLACE_OS_VARS=true
 EXPOSE 4433/udp
 EXPOSE 8443
 
-# Health check uses the unauthenticated `/status' route on the admin
-# port. Bearer auth is only required for `/admin/*' management
-# routes; `/status' stays open for liveness probes.
+# Health check uses the unauthenticated `/wire' route on the admin port.
+# Bearer auth is only required for `/admin/*' management routes; the
+# readout routes stay open for liveness probes.
+#
+# ⚠ It used to target `/status', which could not fail. `curl -f' keys off
+# the HTTP STATUS CODE, and `/status' is hardcoded 200 — so a station
+# reporting `healthy: false' in its own body was still GREEN to Docker.
+# That is not hypothetical: station-it-milan passed this check every 30
+# seconds for 30 hours on 2026-08-13 while receiving every packet sent to
+# it and answering none.
+#
+# `/wire' returns 503 when the kernel is holding datagrams on our
+# listener socket that we are not dispatching. See
+# plans/PLAN_WIRE_LIVENESS_TRIPWIRE.md.
+#
+# ⚠ Going red is NOT sufficient on its own: the restart policy on the
+# station boxes is `unless-stopped', which restarts on EXIT and not on
+# UNHEALTHY, and watchtower only chases registry digests. This makes the
+# fault VISIBLE in `docker ps' and to the fleet scripts; commit 3 of the
+# plan is what makes it act.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8443/status || exit 1
+    CMD curl -sf http://localhost:8443/wire || exit 1
 
 CMD ["./bin/macula_station", "foreground"]

@@ -189,3 +189,42 @@ cleanup_sup(Sup) ->
     exit(Sup, shutdown),
     receive {'DOWN', Ref, process, Sup, _} -> ok
     after 5000 -> timeout end.
+
+%%==================================================================
+%% GET /wire — the HEALTHCHECK target
+%%
+%% This is the one route whose status code can go non-200 for a reason
+%% other than "not started", which is the whole point: /status is
+%% hardcoded 200 and `curl -f' keys off the code, so a station could
+%% report `healthy: false' in its body and still be GREEN to Docker.
+%%==================================================================
+
+wire_endpoint_is_200_on_a_healthy_station_test_() ->
+    {setup, fun setup_app/0, fun teardown_app/1, fun(#{port := Port}) ->
+        fun() ->
+            {ok, Body, Status} = get_json(Port, "/wire"),
+            ?assertEqual(200, Status),
+            Verdict = maps:get(<<"verdict">>, Body),
+            %% A station that just booted has either not sampled yet
+            %% (`unknown') or sampled a draining socket (`ok'). It must
+            %% never be `stalled' — a boot that alarms would restart-loop
+            %% the fleet.
+            ?assert(lists:member(Verdict, [<<"ok">>, <<"unknown">>])),
+            ?assert(is_integer(maps:get(<<"strikes">>, Body))),
+            %% Counts its own passes, so a detector that never runs is
+            %% distinguishable from one with nothing to report.
+            ?assert(is_integer(maps:get(<<"checks">>, Body)))
+        end
+    end}.
+
+status_carries_the_wire_verdict_test_() ->
+    {setup, fun setup_app/0, fun teardown_app/1, fun(#{port := Port}) ->
+        fun() ->
+            {ok, Body, 200} = get_json(Port, "/status"),
+            %% Present on /status for operators, while `healthy' keeps
+            %% its old meaning exactly — the wire verdict must not be
+            %% folded into that andalso chain.
+            ?assertMatch(#{<<"verdict">> := _}, maps:get(<<"wire">>, Body)),
+            ?assertEqual(true, maps:get(<<"healthy">>, Body))
+        end
+    end}.

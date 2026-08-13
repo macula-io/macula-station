@@ -33,23 +33,93 @@
 %%% tick) and one recovery log on the falling edge. Data-plane procs
 %%% legitimately run at millions of reds/s, so the rate rule applies to
 %%% control-plane procs only; the mailbox-growth rule applies to all.
+%%%
+%%% == Wire tripwire (`ingress_stall') ==
+%%%
+%%% ⚠ On 2026-08-13 `station-it-milan' served nothing for THIRTY HOURS
+%%% while every signal above read green. The container healthcheck was
+%%% healthy (it curls this station's own admin port over loopback), the
+%%% listener process was alive with mailbox 0 and a clean cap, and
+%%% `peer_observer' held 54 conns. tcpdump on the box showed every
+%%% inbound QUIC Initial ARRIVING and ZERO packets leaving, including
+%%% the keepalive to its own configured peer.
+%%%
+%%% Nothing fired because every signal this module publishes is derived
+%%% from BEAM state, and a dead transport does not disturb BEAM state.
+%%% No counter disagreed with any other counter. The only two things
+%%% that disagreed were THE STATION AND THE NETWORK, and nothing
+%%% compared those two. This rule is that comparison.
+%%%
+%%% The invariant: <em>while the kernel is holding undelivered datagrams
+%%% on this station's own listener socket, the dispatched-frame counter
+%%% must advance.</em>
+%%%
+%%% Both halves are chosen, not convenient:
+%%%
+%%% <ul>
+%%%   <li>The backlog comes from `/proc/net/udp6' — the KERNEL's view of
+%%%       the one socket we own. It is the only station-attributable
+%%%       observable in this system that is not BEAM state.</li>
+%%%   <li>The counter is `dispatch_self' from
+%%%       `macula_station_frame_telemetry', which is recorded
+%%%       unconditionally on both the legacy 4-tuple and the
+%%%       timing-enabled 5-tuple receive paths, so it advances whenever
+%%%       the station actually processes inbound work.</li>
+%%% </ul>
+%%%
+%%% ⚠ NEVER rebuild this on a send-side quantity. Every one of them is a
+%%% statement of intent rather than of transmission, and every one was
+%%% GREEN for all thirty hours: `macula_peering:send_frame/2' is a
+%%% `gen_statem:cast' that returns `ok' to a dead pid, the router's
+%%% `forwarded' counter counts that cast and climbed throughout, and
+%%% `macula_quic:getstat/2' answers hardcoded zeros. See
+%%% `plans/PLAN_WIRE_LIVENESS_TRIPWIRE.md' §2 and §6.
+%%%
+%%% This rule is SILENT during a network partition by construction, not
+%%% by tuning: its antecedent is a non-empty receive backlog, and a
+%%% partition delivers no packets to queue. That is what makes it a
+%%% local-fault detector, and it is why this is the rule permitted to
+%%% escalate while `outbound_futility' only ever reports.
 -module(macula_station_health_publisher).
 -behaviour(gen_server).
 
 -include_lib("kernel/include/logger.hrl").
 
--export([start_link/1, stop/1]).
+-export([start_link/1, stop/1, wire/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
 -export([rate/4, rate_strikes/3, mbox_strikes/3, eval_one/3, evaluate/3,
          new_strike/0]).
+-export([parse_udp6/2, port_hex/1, new_wire/0, wire_step/2, wire_verdict/1,
+         sum_dispatch/2]).
 -endif.
 
 -define(TICK_MS, 10_000).
 -define(MESH_REALM, <<0:256>>).
 -define(TOPIC, <<"_mesh.health.v1">>).
+
+%% Wire tripwire. See the moduledoc for why the kernel and not the BEAM.
+%%
+%% 30 samples is 5 minutes at ?TICK_MS. A healthy station drains its UDP
+%% receive queue sub-millisecond, so a backlog that is non-empty AND
+%% never shrinks across 30 consecutive ticks is not a busy station. Milan
+%% held that state for 10,800 samples — 360x this threshold — so the
+%% headroom is enormous and the false-positive cost (one logged station
+%% during a five-minute total processing stall) is accepted.
+%%
+%% The floor is 1 rather than a byte count on purpose: the rule is
+%% "non-empty AND not draining", and the non-decreasing half is what
+%% keeps a merely busy station safe. A queue that grows and shrinks
+%% never accumulates a strike however deep it gets.
+-define(WIRE_STALL_SAMPLES,  30).
+-define(WIRE_RX_FLOOR_BYTES,  1).
+-define(PROC_NET_UDP6, "/proc/net/udp6").
+%% Short, because this call reaches into the listener and the listener is
+%% exactly the process that may be wedged. A tripwire must never block on
+%% the thing it is watching.
+-define(LISTEN_ADDR_TIMEOUT_MS, 1_000).
 
 %% Tripwire thresholds. Control-plane baseline is near-idle (the router
 %% post-leak-fix sits at ~34 reds/s); the leak ran ~34,000x that, so a
@@ -93,7 +163,13 @@
     prev = #{} :: #{binary() => {non_neg_integer(), integer()}},
     %% Label => strike map (see new_strike/0). Tracks consecutive-tick
     %% counters + current alarm edge so logs fire on transitions only.
-    strikes = #{} :: #{binary() => map()}
+    strikes = #{} :: #{binary() => map()},
+    %% Wire tripwire state (see new_wire/0).
+    wire = new_wire() :: map(),
+    %% Listener port, resolved lazily and cached. Resolved lazily rather
+    %% than at init because this module boots after the listener but a
+    %% restart of either must not order-depend on the other.
+    port :: inet:port_number() | undefined
 }).
 
 -type opts() :: #{identity := macula_identity:key_pair()}.
@@ -103,12 +179,33 @@
 %% API
 %%====================================================================
 
+%% Registered under the module name so `macula_station_admin' can read
+%% the wire verdict without holding a pid. Matches the station's house
+%% pattern of a fixed local atom per long-lived child.
 -spec start_link(opts()) -> {ok, pid()} | {error, term()}.
 start_link(#{identity := _} = Opts) ->
-    gen_server:start_link(?MODULE, Opts, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Opts, []).
 
 -spec stop(pid()) -> ok.
 stop(Pid) -> gen_server:stop(Pid).
+
+%% @doc Current wire verdict, for the admin readout.
+%%
+%% Answers `unknown' rather than `ok' when this process is absent or too
+%% busy to reply. That asymmetry is the whole point: the failure being
+%% detected is one where everything reported healthy, so an unreachable
+%% detector must never be reported as a passing one.
+-spec wire() -> map().
+wire() ->
+    try gen_server:call(?MODULE, wire, ?LISTEN_ADDR_TIMEOUT_MS) of
+        Verdict -> Verdict
+    catch
+        %% Deviation from let-it-crash, deliberate: without this an admin
+        %% HTTP request would die with the detector instead of reporting
+        %% that the detector is unreachable, which is the one answer a
+        %% caller must never lose.
+        exit:_ -> (new_wire())#{reason => publisher_unreachable}
+    end.
 
 %%====================================================================
 %% gen_server
@@ -118,6 +215,8 @@ init(#{identity := Kp}) ->
     process_flag(trap_exit, true),
     {ok, schedule_tick(#state{identity = Kp})}.
 
+handle_call(wire, _From, #state{wire = W} = S) ->
+    {reply, W, S};
 handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
 handle_cast(_Msg, S) -> {noreply, S}.
 
@@ -129,7 +228,9 @@ handle_info({tick, Ref}, #state{timer_ref = Ref} = S0) ->
     Strikes1 = evaluate(Samples, Rates, S0#state.strikes),
     Prev1 = maps:from_list(
               [{maps:get(label, X), {maps:get(reds, X), Now}} || X <- Samples]),
-    {noreply, schedule_tick(S0#state{prev = Prev1, strikes = Strikes1})};
+    {Port1, Wire1} = tick_wire(S0#state.port, S0#state.wire),
+    {noreply, schedule_tick(S0#state{prev = Prev1, strikes = Strikes1,
+                                     port = Port1, wire = Wire1})};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -269,6 +370,200 @@ edge(false, true, Label, Rate, Mbox, _R1, _M1) ->
     false;
 edge(Tripped, _Al0, _Label, _Rate, _Mbox, _R1, _M1) ->
     Tripped.
+
+%%====================================================================
+%% Wire tripwire — the kernel's view, not the BEAM's
+%%====================================================================
+
+%% One tick of the wire rule. Impure edges (procfs, ETS, the listener)
+%% live here; every decision lives in `wire_step/2', which is pure and
+%% test-exported.
+tick_wire(Port0, Wire) ->
+    Port = resolve_port(Port0),
+    {Port, wire_step(wire_sample(Port), Wire)}.
+
+%% Cached after the first success. `undefined' means "ask again next
+%% tick", so a station whose listener is not up yet simply reports
+%% `unknown' until it is, and never accumulates a strike for it.
+resolve_port(Port) when is_integer(Port) -> Port;
+resolve_port(undefined)                  -> listen_port().
+
+listen_port() ->
+    try macula_station:listen_addr() of
+        {_Bind, Port} when is_integer(Port) -> Port;
+        _Other                              -> undefined
+    catch
+        %% Deviation from let-it-crash, deliberate: `listen_addr/0' is a
+        %% gen_server:call INTO THE LISTENER, and a wedged listener is
+        %% precisely the fault being detected. Letting that exit kill the
+        %% detector would make the tripwire fail exactly when it matters.
+        _:_ -> undefined
+    end.
+
+%% `unavailable' is a THIRD state, never 0 and never ok. A station that
+%% cannot read its own socket has not observed a healthy socket.
+wire_sample(undefined) ->
+    unavailable;
+wire_sample(Port) ->
+    build_sample(read_udp6(Port), frames_dispatched()).
+
+build_sample({ok, #{rx_queue := Rx}}, Frames) when is_integer(Frames) ->
+    #{rx_queue => Rx, frames => Frames};
+build_sample(_Row, _Frames) ->
+    unavailable.
+
+read_udp6(Port) ->
+    parse_udp6(file:read_file(?PROC_NET_UDP6), Port).
+
+%% Total inbound frames this station has DISPATCHED, across every frame
+%% type and latency bucket.
+%%
+%% `dispatch_self' and not `forward_send': the former is recorded after
+%% the receive handler has actually run, the latter times a cast that
+%% returns ok to a dead pid. Folding the wrong phase here would rebuild
+%% the exact blindness this rule exists to remove.
+frames_dispatched() ->
+    total_from(ets:whereis(macula_station_frame_telemetry)).
+
+total_from(undefined) -> unavailable;
+total_from(Tid)       -> ets:foldl(fun sum_dispatch/2, 0, Tid).
+
+sum_dispatch({{_Type, dispatch_self, _Bucket}, N}, Acc) -> Acc + N;
+sum_dispatch(_Row, Acc)                                 -> Acc.
+
+new_wire() ->
+    #{verdict => unknown, strikes => 0, checks => 0,
+      prev => undefined, alarmed => false}.
+
+%% @doc Fold one sample into the wire state. Pure.
+%%
+%% `checks' always advances, including on `unavailable'. Per the SWIM
+%% mechanism-counter rule: a detector with nothing to detect and a
+%% detector that cannot run look identical from outside unless it counts
+%% its own passes.
+wire_step(unavailable, #{checks := C} = W) ->
+    %% Cannot see => cannot judge. Strikes reset, so a gap in
+    %% observability can never accumulate into a verdict.
+    W#{verdict => unknown, strikes => 0, prev => undefined, checks => C + 1};
+wire_step(#{rx_queue := Rx, frames := F} = Sample, #{checks := C} = W) ->
+    Strikes = wire_strikes(Sample, maps:get(prev, W), maps:get(strikes, W)),
+    Verdict = wire_verdict(Strikes),
+    Alarmed = wire_edge(Verdict, maps:get(alarmed, W), Rx, F, Strikes),
+    W#{verdict => Verdict, strikes => Strikes, prev => Sample,
+       checks => C + 1, alarmed => Alarmed}.
+
+%% No prior sample means no delta to judge.
+wire_strikes(_Sample, undefined, _Strikes) ->
+    0;
+%% Frames advanced: the consequent holds, whatever the queue is doing.
+%% This is the clause that keeps a slow-draining busy station green.
+wire_strikes(#{frames := F}, #{frames := P}, _Strikes) when F > P ->
+    0;
+%% Counter went backwards — POST /telemetry/frames/reset. Clamp exactly
+%% as rate/4 does; a reset is not evidence of a stall.
+wire_strikes(#{frames := F}, #{frames := P}, _Strikes) when F < P ->
+    0;
+%% Frames flat AND the backlog is non-empty and not shrinking.
+wire_strikes(#{rx_queue := Rx}, #{rx_queue := PrevRx}, Strikes)
+  when Rx >= ?WIRE_RX_FLOOR_BYTES, Rx >= PrevRx ->
+    Strikes + 1;
+wire_strikes(_Sample, _Prev, _Strikes) ->
+    0.
+
+wire_verdict(Strikes) when Strikes >= ?WIRE_STALL_SAMPLES -> stalled;
+wire_verdict(_Strikes)                                    -> ok.
+
+%% Rising edge logs once, falling edge logs once. Per-tick logging of a
+%% 30-hour condition is how a signal becomes noise and stops being read.
+wire_edge(stalled, false, Rx, Frames, Strikes) ->
+    ?LOG_ERROR("station wire tripwire: INGRESS STALLED — the kernel is "
+               "holding ~B bytes on our listener socket and the dispatched "
+               "frame counter has not moved for ~B ticks (~B s). "
+               "frames_total=~B. This station is receiving packets and "
+               "processing none of them.",
+               [Rx, Strikes, Strikes * ?TICK_MS div 1000, Frames]),
+    emit_wire_event(Rx, Frames, Strikes),
+    true;
+wire_edge(ok, true, Rx, Frames, _Strikes) ->
+    ?LOG_NOTICE("station wire tripwire cleared: ingress draining again "
+                "(rx_queue=~B, frames_total=~B)", [Rx, Frames]),
+    false;
+wire_edge(_Verdict, Alarmed, _Rx, _Frames, _Strikes) ->
+    Alarmed.
+
+emit_wire_event(Rx, Frames, Strikes) ->
+    catch macula_diagnostics:event(<<"_macula.peering.wire_stalled">>,
+                                   #{rx_queue     => Rx,
+                                     frames_total => Frames,
+                                     strikes      => Strikes}),
+    ok.
+
+%% @doc Find this station's own row in `/proc/net/udp6' and read its
+%% queue depths. Pure over the file contents.
+%%
+%% Three outcomes, never collapsed: `{ok, Map}', `not_found' (the socket
+%% is not bound — a real answer), and `unavailable' (no procfs, i.e. not
+%% Linux, or unreadable). Collapsing `unavailable' to a zero backlog
+%% would make every non-Linux dev box permanently green.
+%%
+%% Matches on the PORT SUFFIX only. The 32-hex-char local address is
+%% word-wise little-endian and parsing it buys nothing but a new way to
+%% be wrong.
+-spec parse_udp6({ok, binary()} | {error, term()}, inet:port_number()) ->
+    {ok, #{tx_queue := non_neg_integer(),
+           rx_queue := non_neg_integer(),
+           drops := non_neg_integer()}} | not_found | unavailable.
+parse_udp6({error, _Reason}, _Port) ->
+    unavailable;
+parse_udp6({ok, Bin}, Port) ->
+    Rows = binary:split(Bin, <<"\n">>, [global]),
+    scan_rows(Rows, port_hex(Port)).
+
+scan_rows([], _Want) ->
+    not_found;
+scan_rows([Row | Rest], Want) ->
+    scan_row(string:lexemes(Row, " "), Rest, Want).
+
+%% local_address is field 2 (1-based), queues field 5, drops last.
+scan_row([_Sl, Local, _Remote, _St, Queues | Tail], Rest, Want) ->
+    match_local(binary:split(Local, <<":">>), Queues, Tail, Rest, Want);
+scan_row(_Fields, Rest, Want) ->
+    scan_rows(Rest, Want).
+
+match_local([_Addr, Want], Queues, Tail, _Rest, Want) ->
+    row_queues(binary:split(Queues, <<":">>), Tail);
+match_local(_Split, _Queues, _Tail, Rest, Want) ->
+    scan_rows(Rest, Want).
+
+row_queues([Tx, Rx], Tail) ->
+    {ok, #{tx_queue => hex(Tx), rx_queue => hex(Rx), drops => drops_of(Tail)}};
+row_queues(_Other, _Tail) ->
+    unavailable.
+
+%% Last column. Older kernels omit it; absence must read as 0 drops
+%% rather than as a parse failure, since drops are reported and never
+%% alarmed on.
+drops_of([])   -> 0;
+drops_of(Tail) -> hex_dec(lists:last(Tail)).
+
+hex(Bin) ->
+    binary_to_integer(Bin, 16).
+
+%% The drops column is decimal while the queue columns are hex, which is
+%% a genuine inconsistency in the kernel's own format.
+hex_dec(Bin) ->
+    try binary_to_integer(Bin) of
+        N -> N
+    catch
+        _:_ -> 0
+    end.
+
+%% @doc Port as the kernel renders it: uppercase hex, zero-padded to 4.
+%% 4433 becomes `<<"1151">>'.
+-spec port_hex(inet:port_number()) -> binary().
+port_hex(Port) ->
+    list_to_binary(string:pad(string:uppercase(integer_to_list(Port, 16)),
+                              4, leading, $0)).
 
 %%====================================================================
 %% Timer

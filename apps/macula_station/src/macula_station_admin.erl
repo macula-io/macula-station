@@ -231,6 +231,7 @@ route(#{method := Method, path := Path} = Req) ->
 dispatch(<<"GET">>,  [<<"health">>],                  _Req) -> health();
 dispatch(<<"GET">>,  [<<"ready">>],                   _Req) -> ready();
 dispatch(<<"GET">>,  [<<"status">>],                  _Req) -> status();
+dispatch(<<"GET">>,  [<<"wire">>],                    _Req) -> wire();
 dispatch(<<"GET">>,  [<<"dht">>, <<"stats">>],        _Req) -> dht_stats();
 dispatch(<<"GET">>,  [<<"swim">>, <<"members">>],     _Req) -> swim_members();
 dispatch(<<"GET">>,  [<<"telemetry">>, <<"frames">>], _Req) -> telemetry_frames();
@@ -286,11 +287,50 @@ status() ->
         listen_addr => maps:get(listen_addr, Runtime),
         dht         => #{size => maps:get(dht_size, Runtime)},
         swim        => #{members => maps:get(swim_count, Runtime)},
+        wire        => wire_body(),
         %% Stations are realm-agnostic — this field stays in the
         %% response for operator-tool compatibility but always empty.
         realms      => [],
         version     => macula_station:version()
     }).
+
+%% @doc Wire-liveness verdict. The one probe here that asks the KERNEL
+%% rather than the BEAM.
+%%
+%% ⚠ This is the HEALTHCHECK target, and it is the only route whose
+%% status code can go non-200 for a reason other than "not started".
+%% `/status' cannot serve that purpose: it is hardcoded 200, and
+%% `curl -f' keys off the status code alone, so a station reporting
+%% `healthy: false' in the body was still GREEN to Docker — which is
+%% part of why milan went unnoticed for thirty hours.
+%%
+%% Only `stalled' is a 503. `unknown' stays 200 on purpose: it means the
+%% station could not read its own socket (not Linux, or the listener is
+%% not up yet), and a station that cannot judge itself must not be
+%% restarted on the strength of that. Every dev box and every boot would
+%% otherwise be unhealthy.
+wire() ->
+    Verdict = macula_station_health_publisher:wire(),
+    json_response(wire_status_code(maps:get(verdict, Verdict, unknown)),
+                  wire_json(Verdict)).
+
+wire_status_code(stalled) -> 503;
+wire_status_code(_Other)  -> 200.
+
+%% Built by its own function rather than threaded through
+%% `runtime_snapshot/0'. That snapshot exists to compose the three
+%% `whereis/1' lookups behind `healthy', and putting wire keys in it
+%% would drag the wire verdict into `healthy''s dependency set — which
+%% is exactly the coupling the plan forbids.
+wire_body() ->
+    wire_json(macula_station_health_publisher:wire()).
+
+wire_json(Verdict) ->
+    #{verdict => atom_to_binary(maps:get(verdict, Verdict, unknown), utf8),
+      strikes => maps:get(strikes, Verdict, 0),
+      %% A detector with nothing to detect and a detector that cannot run
+      %% look identical from outside unless it reports its own passes.
+      checks  => maps:get(checks, Verdict, 0)}.
 
 dht_stats() ->
     case macula_station:dht() of
