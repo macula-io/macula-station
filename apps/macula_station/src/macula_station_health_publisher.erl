@@ -68,11 +68,19 @@
 %%% </ul>
 %%%
 %%% ⚠ NEVER rebuild this on a send-side quantity. Every one of them is a
-%%% statement of intent rather than of transmission, and every one was
-%%% GREEN for all thirty hours: `macula_peering:send_frame/2' is a
-%%% `gen_statem:cast' that returns `ok' to a dead pid, the router's
-%%% `forwarded' counter counts that cast and climbed throughout, and
-%%% `macula_quic:getstat/2' answers hardcoded zeros. See
+%%% statement of intent rather than of transmission:
+%%% `macula_peering:send_frame/2' is a `gen_statem:cast' that returns
+%%% `ok' to a dead pid, the router's `forwarded' counter counts that
+%%% cast rather than a transmission, and `macula_quic:getstat/2'
+%%% answered hardcoded zeros until 2026-08-13.
+%%%
+%%% Precision about the evidence, since this comment is the thing a
+%%% future reader will trust: `send_frame/2' and `getstat/2' were read
+%%% in source. That `forwarded' kept climbing through the outage was
+%%% NOT measured — it follows from cast semantics and from milan still
+%%% holding 54 conns that were fanning EVENTs, but nobody read the
+%%% counter before the reboot destroyed the chance. Treat it as a sound
+%%% inference, not a reading. See
 %%% `plans/PLAN_WIRE_LIVENESS_TRIPWIRE.md' §2 and §6.
 %%%
 %%% This rule is SILENT during a network partition by construction, not

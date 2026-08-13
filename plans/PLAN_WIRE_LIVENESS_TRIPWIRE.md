@@ -67,7 +67,7 @@ hours.
 |---|---|---|
 | `macula_quic:getstat/2` | returns `{ok, [{S, 0} \|\| S <- Stats]}` — **hardcoded zeros** | `macula/src/peering/macula_quic.erl:316` |
 | `macula_peering:send_frame/2` return | a `gen_statem:cast`; returns `ok` to a dead pid | — |
-| `route_pubsub_frames` `forwarded` counter | increments on `count_send(ok)` where ok is that cast. **Climbed for the whole outage** | — |
+| `route_pubsub_frames` `forwarded` counter | increments on `count_send(ok)` where ok is that cast. **INFERRED** to have climbed through the outage (cast semantics + 54 conns still fanning EVENTs); never read on milan, and the reboot destroyed the chance | inference, not a reading |
 | `macula_transport` | exposes no stats, counter or timestamp at all | `apps/macula_transport/src/macula_transport.erl` |
 | only last-activity timestamp in the system | `last_inbound_at`, receive-only, private record field, per-link | `macula_station_outbound_link.erl:108` |
 
