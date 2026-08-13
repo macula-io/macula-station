@@ -1,6 +1,7 @@
 # Advertise propagation has no reconciliation, and the two-hop pair pays for it
 
-**Status:** Root cause CONFIRMED by code; fix is a design decision for Raf.
+**Status:** Root cause CONFIRMED. Reconcile fix SHIPPED 2026-08-14 (01aed36).
+Honest limit below: it bounds the failure, it does not yet prevent it.
 **Created:** 2026-08-13
 **One line:** so a service's re-advertise reliably crosses two stations that
 have no direct edge.
@@ -84,7 +85,36 @@ in the bloom path before claiming it there.
 
 ---
 
-## 3. Fix options
+## 2.5 What shipped, and its honest limit
+
+**Shipped:** every 15th periodic tick (30s) the router re-asserts the FULL local
+advertise set to each peer instead of a diff — `?RECONCILE_EVERY_TICKS`,
+`advertise_to_send/3`. Chosen mechanism is Option C-as-reconcile (periodic full
+re-send), NOT the digest+pull of Option A, because it needs no new wire frame, a
+station on the old build understands a re-sent ADVERTISE, and it matches
+`bloom_exchange` (30s full-filter rebuild) and `dht_replicate` (5-min full
+re-STORE) exactly. Scope is advertise-only: the bloom/pubsub path was audited and
+already reconciles, which is why bloom-carried pubsub RECOVERS after a loss.
+
+**Effective heal time ~30s, not 60s:** the origin's reconcile re-registers the
+entry on the intermediate, which is a state change there and kicks the
+intermediate's router to diff-propagate onward immediately — the second hop does
+not wait for its own reconcile period.
+
+**⚠ The limit, stated plainly:** this converts *permanent* into *≤~30s*. It does
+NOT make an immediate re-advertise reliable. A re-advertise that wedges still
+fails for up to a reconcile period before the safety net heals it. That is the
+same recovery profile bloom-carried pubsub already has (first-publish-loss
+recovers on the next 30s rebuild), so advertise now matches the rest of the
+mesh — but "the procedure is callable the instant you re-advertise it" is not
+guaranteed, and the existing torture round (`rpc_readvertise_restores_serving`,
+~12s window) will still show the wedge on the runs where it happens; a re-check
+30-45s later should now find it healed.
+
+Preventing the wedge outright needs the exact triggering interleaving pinned
+(§5), which the reconcile deliberately did not require. That is the follow-up.
+
+## 3. Fix options (for reference / the deferred drop-reconciliation)
 
 The class is fixed by making propagation **self-healing** rather than
 diff-only. Ranked.

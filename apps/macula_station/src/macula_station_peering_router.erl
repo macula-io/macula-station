@@ -286,7 +286,7 @@ safe_topics_of(_) ->
     [].
 
 %%====================================================================
-%% Cross-station ADVERTISE propagation (single-hop, diff-driven)
+%% Cross-station ADVERTISE propagation (multi-hop, diff + periodic reconcile)
 %%
 %% Each tick we compute the set of (Realm, Procedure) pairs WE
 %% directly know about — local handler_registry plus
@@ -296,12 +296,19 @@ safe_topics_of(_) ->
 %% the last set we sent to that peer and ship ADVERTISE for adds,
 %% UNADVERTISE for drops. Steady state = zero frames.
 %%
-%% Single-hop only: we don't propagate gossip we received. That
-%% bounds amplification at O(direct-advertises × peers) per change
-%% event. For our partial-mesh topology (each station has 3
-%% outbound + ~3 inbound peers), every two-stations-at-most pair
-%% has at least one shared neighbour through which CALL forwarding
-%% works.
+%% ⚠ NOT single-hop. This comment used to claim "we don't propagate
+%% gossip we received", but the code does: send_advertise_diff rewrites
+%% `advertiser => SelfId' on every relayed frame, so a gossip entry
+%% (whose advertiser is the RELAYING station, not self) passes the
+%% `Adv =/= SelfId' filter in local_advertised_set/1 and IS re-broadcast.
+%% Propagation is distance-vector — each hop re-attributes to itself and
+%% routes one hop back toward the origin. The only loop guard is the
+%% self-check. This is why a call crosses two stations with no direct
+%% edge at all.
+%%
+%% Because it is diff-driven, it also needed a reconciliation pass, which
+%% it did not have until 2026-08-14: see ?RECONCILE_EVERY_TICKS and
+%% plans/DESIGN_ADVERTISE_PROPAGATION_RECONCILE.md.
 %%====================================================================
 
 sync_advertises(Kp, Advertised, Reconcile) ->
@@ -418,9 +425,12 @@ pick_one_conn(_NodeId, _Empty, Acc) ->
 %%      ourselves and get filtered. (Daemon advertises always have
 %%      advertiser = the daemon's pubkey, never SelfId.)
 %%
-%% We deliberately do NOT include gossip-received entries in this
-%% set. Single-hop propagation: we only re-broadcast our own direct
-%% advertises. Anti-loop is structural — gossip never echoes.
+%% ⚠ This includes GOSSIP-received entries too, despite the wording
+%% below that predates the current code. A gossip entry's advertiser is
+%% the relaying peer station (send_advertise_diff sets advertiser =
+%% SelfId on relay), never our own SelfId, so `Adv =/= SelfId' keeps it.
+%% That is what makes propagation multi-hop. The only entries filtered
+%% are self-loops (advertiser = SelfId), which is the anti-echo guard.
 local_advertised_set(undefined) ->
     sets:new();
 local_advertised_set(SelfId) ->
