@@ -310,3 +310,64 @@ assert_backlog(Other, Port) ->
     %% Loud on purpose: a silent pass here would mean the tripwire is
     %% watching a socket that is not ours.
     erlang:error({expected_backlog_on_port, Port, got, Other}).
+
+%%====================================================================
+%% Outbound futility (I2) — reports, never acts
+%%
+%% milan held one configured peer, verified none of them, for 30 hours,
+%% and nothing counted it. These pin the states that must NOT alarm as
+%% hard as the one that must, because this rule's predicate is exactly
+%% what a real network partition produces on every station at once.
+%%====================================================================
+
+-define(FUTILE_MS, 300_000).
+
+verified(Since) -> #{verified => true,  unverified_since => Since}.
+unverified(Since) -> #{verified => false, unverified_since => Since}.
+
+futility_no_sup_is_ok_test() ->
+    %% A LEAF station has no outbound links sup at all. Having no
+    %% outbound link is correct there — gate on presence, never a count,
+    %% or both leaves alarm forever.
+    ?assertEqual(ok, ?M:outbound_futility([], 1_000_000, ?FUTILE_MS)).
+
+futility_one_verified_link_is_ok_test() ->
+    %% One verified link means the station can reach the mesh. The
+    %% others being down is a peer problem, not a self problem.
+    Stats = [verified(undefined), unverified(0)],
+    ?assertEqual(ok, ?M:outbound_futility(Stats, 1_000_000, ?FUTILE_MS)).
+
+futility_all_unverified_past_threshold_test() ->
+    %% The milan shape: configured to dial, verified nothing, long past
+    %% the worst legitimate dial cycle.
+    Stats = [unverified(0)],
+    ?assertEqual(futile, ?M:outbound_futility(Stats, ?FUTILE_MS, ?FUTILE_MS)).
+
+futility_within_threshold_is_ok_test() ->
+    %% 90s is the worst legitimate cycle (30s handshake + 60s backoff).
+    %% A station still inside its dial budget must not be called futile.
+    Stats = [unverified(0)],
+    ?assertEqual(ok, ?M:outbound_futility(Stats, ?FUTILE_MS - 1, ?FUTILE_MS)).
+
+futility_boot_window_is_ok_test() ->
+    %% Every station is unverified for the first instants of its life.
+    %% A rule that alarmed there would fire on every deploy.
+    Stats = [unverified(1_000_000)],
+    ?assertEqual(ok, ?M:outbound_futility(Stats, 1_000_000, ?FUTILE_MS)).
+
+futility_unknown_link_never_reads_as_futile_test() ->
+    %% A stats/1 call that timed out. A slow link must never be reported
+    %% as an unreachable one — `unknown' is a third state.
+    Stats = [unknown, unverified(0)],
+    ?assertEqual(unknown, ?M:outbound_futility(Stats, ?FUTILE_MS, ?FUTILE_MS)).
+
+futility_uses_the_oldest_unverified_link_test() ->
+    %% Two links, one long dead and one just restarted. The station has
+    %% been unable to reach anyone for the OLDER interval; taking the
+    %% newest would let a flapping link mask a permanently dead one.
+    Stats = [unverified(0), unverified(?FUTILE_MS)],
+    ?assertEqual(futile, ?M:outbound_futility(Stats, ?FUTILE_MS, ?FUTILE_MS)).
+
+futility_verified_with_no_clock_is_ok_test() ->
+    ?assertEqual(ok, ?M:outbound_futility([verified(undefined)],
+                                          9_000_000, ?FUTILE_MS)).

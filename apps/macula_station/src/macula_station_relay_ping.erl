@@ -18,6 +18,8 @@
 -module(macula_station_relay_ping).
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([start_link/1, stop/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -50,7 +52,32 @@
     hostname         :: binary(),
     lat              :: number() | undefined,
     lng              :: number() | undefined,
-    timer_ref        :: reference() | undefined
+    timer_ref        :: reference() | undefined,
+    %% Consecutive failed pings per target hostname.
+    %%
+    %% ⚠ This probe is the ONLY true wire round-trip in the station, and
+    %% it used to publish only on SUCCESS: the failure clause was
+    %% `{error, _Reason} -> ok'. Total wire failure and "no peers
+    %% configured" therefore produced byte-identical output, which is
+    %% nothing. On station-it-milan this ran ~3,600 times across 30
+    %% hours of total outage and emitted not one fact.
+    %%
+    %% ⚠ It would have FIRED on milan, contrary to the first draft of
+    %% the plan, which assumed this probe self-suppresses because a
+    %% station that cannot dial has no links to ping over. Not so:
+    %% `macula_station_outbound_link:init/1' calls
+    %% `macula_station_peer_links:register/2' BEFORE the first dial,
+    %% `connections/0' applies no verified filter (unlike
+    %% `connected_hostnames/0', which is built on `verified_peers/0' and
+    %% WAS empty on milan), and `unregister/1' has zero call sites in
+    %% the repo. So milan held a registered, never-verified link and this
+    %% probe pinged it every 30s for 30 hours — roughly 3,600 failures,
+    %% every one discarded.
+    %%
+    %% Keyed by URL rather than by the hostname the payload carries:
+    %% `hostname_from_url/1' strips the port, so two peers on one host
+    %% would share a counter. The URL is the registry's own unique key.
+    misses = #{} :: #{binary() => non_neg_integer()}
 }).
 
 %%====================================================================
@@ -100,8 +127,8 @@ handle_call(_Msg, _From, S) ->
 handle_cast(_Msg, S) ->
     {noreply, S}.
 
-handle_info(ping_cycle, S) ->
-    do_ping_cycle(S),
+handle_info(ping_cycle, S0) ->
+    S = do_ping_cycle(S0),
     {noreply, schedule(S)};
 handle_info(_, S) ->
     {noreply, S}.
@@ -114,20 +141,60 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %% Ping cycle
 %%====================================================================
 
-do_ping_cycle(S) ->
+%% Folds rather than foreach so a miss can be REMEMBERED. The previous
+%% shape discarded the per-target outcome entirely.
+%%
+%% Rebuilds `misses' from an empty map each cycle, seeding each key from
+%% the previous one. That prunes departed peers for free — a map that
+%% only ever grew would keep counting a peer removed from the config,
+%% and would eventually alarm about a peer nobody dials any more.
+do_ping_cycle(#state{misses = Old} = S) ->
     Conns = macula_station_peer_links:connections(),
-    lists:foreach(fun(Conn) -> ping_one(S, Conn) end, Conns).
+    S#state{misses = lists:foldl(fun(Conn, Acc) -> ping_one(S, Old, Conn, Acc) end,
+                                 #{}, Conns)}.
 
-ping_one(S, {Url, LinkPid}) ->
-    Target = hostname_from_url(Url),
+ping_one(S, Old, {Url, LinkPid}, Acc) ->
     T0 = erlang:system_time(microsecond),
-    case safe_call(LinkPid, ?MESH_REALM, <<"_relay.ping">>, #{}, ?PING_TIMEOUT_MS) of
-        {ok, _} ->
-            RttUs = erlang:system_time(microsecond) - T0,
-            publish_result(S, Target, RttUs / 1000.0, cross_box);
-        {error, _Reason} ->
-            ok
-    end.
+    Result = safe_call(LinkPid, ?MESH_REALM, <<"_relay.ping">>, #{},
+                       ?PING_TIMEOUT_MS),
+    classify_ping(Result, S, Url, maps:get(Url, Old, 0), T0, Acc).
+
+classify_ping({ok, _}, S, Url, Prior, T0, Acc) ->
+    RttUs = erlang:system_time(microsecond) - T0,
+    publish_result(S, hostname_from_url(Url), RttUs / 1000.0, cross_box),
+    announce_recovery(Prior, Url),
+    Acc;
+classify_ping({error, Reason}, S, Url, Prior, _T0, Acc) ->
+    N = Prior + 1,
+    publish_miss(S, hostname_from_url(Url), N, Reason),
+    Acc#{Url => N}.
+
+announce_recovery(0, _Target) ->
+    ok;
+announce_recovery(N, Target) ->
+    ?LOG_NOTICE("[relay_ping] ~s answering again after ~B consecutive "
+                "missed pings", [Target, N]),
+    ok.
+
+%% Publishes on its OWN topic rather than folding a failure into
+%% `_mesh.relay.ping'. That topic's payload carries `rtt_ms', and a
+%% miss has no round-trip time; inventing one (0, or null) would corrupt
+%% every latency consumer already reading it.
+publish_miss(#state{pubsub_registry = Reg, identity = Kp, hostname = Self},
+             Target, N, Reason) ->
+    Payload = iolist_to_binary(json:encode(#{
+        <<"relay">>       => Self,
+        <<"target">>      => Target,
+        <<"consecutive">> => N,
+        <<"reason">>      => iolist_to_binary(io_lib:format("~p", [Reason]))
+    })),
+    publish_to(pubsub_server(Reg, Kp), <<"_mesh.relay.ping.failed">>, Payload).
+
+publish_to({ok, ServerPid}, Topic, Payload) ->
+    catch hecate_pubsub_server:publish(ServerPid, Topic, Payload),
+    ok;
+publish_to(_Other, _Topic, _Payload) ->
+    ok.
 
 safe_call(LinkPid, Realm, Proc, Payload, Timeout) ->
     try macula_station_link:call(LinkPid, Realm, Proc, Payload, Timeout)

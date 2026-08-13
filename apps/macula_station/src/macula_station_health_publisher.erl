@@ -93,7 +93,7 @@
 -export([rate/4, rate_strikes/3, mbox_strikes/3, eval_one/3, evaluate/3,
          new_strike/0]).
 -export([parse_udp6/2, port_hex/1, new_wire/0, wire_step/2, wire_verdict/1,
-         sum_dispatch/2]).
+         sum_dispatch/2, outbound_futility/3]).
 -endif.
 
 -define(TICK_MS, 10_000).
@@ -120,6 +120,11 @@
 %% exactly the process that may be wedged. A tripwire must never block on
 %% the thing it is watching.
 -define(LISTEN_ADDR_TIMEOUT_MS, 1_000).
+%% Coupled to macula_station_outbound_link's ?HANDSHAKE_TIMEOUT_MS (30s)
+%% and ?MAX_BACKOFF_MS (60s): ~90s is the worst legitimate dial cycle, so
+%% this is 3.3 cycles. Raising either without raising this manufactures a
+%% false futility verdict. Keep the three coupled.
+-define(OUTBOUND_FUTILE_MS, 300_000).
 
 %% Tripwire thresholds. Control-plane baseline is near-idle (the router
 %% post-leak-fix sits at ~34 reds/s); the leak ran ~34,000x that, so a
@@ -166,6 +171,8 @@
     strikes = #{} :: #{binary() => map()},
     %% Wire tripwire state (see new_wire/0).
     wire = new_wire() :: map(),
+    %% Outbound-futility alarm edge (I2). Reports only; never acts.
+    futile_alarmed = false :: boolean(),
     %% Listener port, resolved lazily and cached. Resolved lazily rather
     %% than at init because this module boots after the listener but a
     %% restart of either must not order-depend on the other.
@@ -229,8 +236,10 @@ handle_info({tick, Ref}, #state{timer_ref = Ref} = S0) ->
     Prev1 = maps:from_list(
               [{maps:get(label, X), {maps:get(reds, X), Now}} || X <- Samples]),
     {Port1, Wire1} = tick_wire(S0#state.port, S0#state.wire),
+    Futile1 = tick_futility(S0#state.futile_alarmed),
     {noreply, schedule_tick(S0#state{prev = Prev1, strikes = Strikes1,
-                                     port = Port1, wire = Wire1})};
+                                     port = Port1, wire = Wire1,
+                                     futile_alarmed = Futile1})};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -564,6 +573,110 @@ hex_dec(Bin) ->
 port_hex(Port) ->
     list_to_binary(string:pad(string:uppercase(integer_to_list(Port, 16)),
                               4, leading, $0)).
+
+%%====================================================================
+%% Outbound futility (I2) — reports, never acts
+%%====================================================================
+
+%% Second rule on the same tick, with DISJOINT escalation from the
+%% ingress rule above.
+%%
+%% Where I1 asks "are we failing to process what arrives", this asks
+%% "are we failing to reach anyone we are configured to reach". milan was
+%% false on both: it held one configured peer (paris),
+%% `connected_hostnames()' was `[]', and zero conns had an outbound side,
+%% for thirty hours.
+%%
+%% ⚠ This rule must NEVER act, at any escalation. Its predicate is
+%% precisely what a genuine network partition produces on every station
+%% simultaneously, so wiring it to a restart would convert a
+%% self-healing network event into a fleet-wide cold boot — seven
+%% stations at 10-20 minutes of reconvergence each. I1 gets to act
+%% because a partition cannot trigger it; this one does not.
+tick_futility(Alarmed) ->
+    Stats = outbound_snapshot(),
+    Verdict = outbound_futility(Stats, erlang:system_time(millisecond),
+                                ?OUTBOUND_FUTILE_MS),
+    futility_edge(Verdict, Alarmed, Stats).
+
+outbound_snapshot() ->
+    link_stats(whereis(macula_station_outbound_links_sup)).
+
+%% No sup at all means no configured outbound peers — a LEAF station,
+%% where having no outbound link is correct. Gate on presence, never on
+%% a count, or every leaf alarms forever.
+link_stats(undefined) ->
+    [];
+link_stats(Sup) ->
+    [link_stat(Pid) || {_Id, Pid, _Type, _Mods} <- children_of(Sup),
+                       is_pid(Pid)].
+
+children_of(Sup) ->
+    try supervisor:which_children(Sup) of
+        Children -> Children
+    catch
+        %% Deviation from let-it-crash, deliberate: a busy or dying sup
+        %% must yield "cannot judge" rather than kill the detector that
+        %% is watching it.
+        _:_ -> []
+    end.
+
+link_stat(Pid) ->
+    try macula_station_outbound_link:stats(Pid) of
+        Stats -> Stats
+    catch
+        %% Same rationale. `unknown' is a third state and never `futile':
+        %% a slow link must not be reported as an unreachable one.
+        _:_ -> unknown
+    end.
+
+%% @doc Is this station failing to reach every peer it is configured to
+%% reach? Pure, so the threshold is testable without waiting 5 minutes.
+-spec outbound_futility([map() | unknown], integer(), pos_integer()) ->
+    ok | futile | unknown.
+outbound_futility([], _Now, _Threshold) ->
+    %% Leaf, or no outbound peers configured. Nothing owed.
+    ok;
+outbound_futility(Stats, Now, Threshold) ->
+    verdict_from(any_verified(Stats), lists:member(unknown, Stats),
+                 oldest_unverified(Stats), Now, Threshold).
+
+%% One verified link is enough: the station can reach the mesh.
+verdict_from(true, _AnyUnknown, _Oldest, _Now, _Threshold) ->
+    ok;
+verdict_from(false, true, _Oldest, _Now, _Threshold) ->
+    unknown;
+verdict_from(false, false, undefined, _Now, _Threshold) ->
+    ok;
+verdict_from(false, false, Since, Now, Threshold) when Now - Since >= Threshold ->
+    futile;
+verdict_from(false, false, _Since, _Now, _Threshold) ->
+    ok.
+
+any_verified(Stats) ->
+    lists:any(fun(S) -> is_map(S) andalso maps:get(verified, S, false) end,
+              Stats).
+
+oldest_unverified(Stats) ->
+    Times = [maps:get(unverified_since, S) || S <- Stats, is_map(S),
+             maps:get(unverified_since, S, undefined) =/= undefined],
+    min_or_undefined(Times).
+
+min_or_undefined([])    -> undefined;
+min_or_undefined(Times) -> lists:min(Times).
+
+futility_edge(futile, false, Stats) ->
+    ?LOG_ERROR("station wire tripwire: OUTBOUND FUTILE — this station is "
+               "configured to dial ~B peer(s) and has verified NONE of them. "
+               "links=~p", [length(Stats), Stats]),
+    catch macula_diagnostics:event(<<"_macula.peering.outbound_futile">>,
+                                   #{configured => length(Stats)}),
+    true;
+futility_edge(ok, true, _Stats) ->
+    ?LOG_NOTICE("station wire tripwire cleared: an outbound link verified"),
+    false;
+futility_edge(_Verdict, Alarmed, _Stats) ->
+    Alarmed.
 
 %%====================================================================
 %% Timer

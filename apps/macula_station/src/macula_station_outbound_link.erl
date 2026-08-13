@@ -26,7 +26,14 @@
 -module(macula_station_outbound_link).
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([start_link/1, stop/1, peer_node_id/1, conn_pid/1, parse_url/1]).
+-export([stats/1]).
+
+-ifdef(TEST).
+-export([futility_verdict/3, unverified_from/2]).
+-endif.
 -export([subscribe/4, unsubscribe/2, publish/4, call/5, is_connected/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -72,6 +79,13 @@
 %% catches).
 -define(SILENCE_THRESHOLD_MS, 300_000).
 -define(SILENCE_CHECK_MS,      60_000).
+%% How long a link may go without EVER completing a handshake before it
+%% is called futile. Coupled to two other numbers and must stay above
+%% both: ?HANDSHAKE_TIMEOUT_MS (30s) + ?MAX_BACKOFF_MS (60s) is the ~90s
+%% worst legitimate dial cycle, so 300s is 3.3 cycles of headroom.
+%% Raising either of those without raising this manufactures a false
+%% futility verdict.
+-define(UNVERIFIED_FUTILE_MS, 300_000).
 
 %% Subscription bookkeeping mirrors macula_station_link in the SDK:
 %% one entry per (Realm, Topic, SubscriberPid) tuple, keyed by an
@@ -105,7 +119,22 @@
     %% this connection. Drives silence-based half-open detection.
     %% `undefined' means no frame received on the current connection
     %% (set on connect, updated on every inbound frame).
-    last_inbound_at :: integer() | undefined
+    last_inbound_at :: integer() | undefined,
+    %% Futility accounting. A dial that never succeeds used to cost
+    %% nothing: `handle_dial_result({error, _Reason}, S)' discarded the
+    %% reason with no log, no counter and no event, so a link that had
+    %% never once completed a handshake was indistinguishable from a
+    %% healthy idle one. station-it-milan sat exactly there for 30 hours.
+    %%
+    %% ⚠ `unverified_since' is set when the link BECOMES unverified and
+    %% is cleared ONLY by a successful handshake. A failed dial must
+    %% never restart it — milan redialled on a 60s backoff throughout, so
+    %% a clock the redial reset would have been re-zeroed forever and
+    %% could never have accumulated to a verdict.
+    dial_failures   = 0 :: non_neg_integer(),
+    last_dial_error     :: term(),
+    unverified_since    :: integer() | undefined,
+    unverified_alarmed = false :: boolean()
 }).
 
 %%====================================================================
@@ -218,7 +247,10 @@ init(#{url := Url, identity := Kp} = Opts) ->
     ok = macula_station_peer_links:register(Url, self()),
     self() ! dial,
     schedule_silence_check(),
-    {ok, State}.
+    %% The clock starts here, not on the first failure: a link that never
+    %% gets off the ground has been unverified since boot, and that is
+    %% the interval the operator needs to see.
+    {ok, State#state{unverified_since = now_ms()}}.
 
 handle_call(peer_node_id, _From, #state{peer_node_id = N} = S) ->
     {reply, N, S};
@@ -288,6 +320,13 @@ handle_call({call, Realm, Proc, Payload, Tmo}, From,
     TRef = erlang:send_after(Tmo, self(), {call_timeout, CallId}),
     {noreply, S#state{pending = P#{CallId => {From, TRef}}}};
 
+handle_call(futility_stats, _From, S) ->
+    {reply, #{url              => S#state.url,
+              peer_node_id     => S#state.peer_node_id,
+              dial_failures    => S#state.dial_failures,
+              last_dial_error  => S#state.last_dial_error,
+              unverified_since => S#state.unverified_since,
+              verified         => S#state.peer_node_id =/= undefined}, S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -319,9 +358,9 @@ handle_info({macula_peering, connected, ConnPid, NodeId},
     %% Successful handshake — reset backoff for the next disconnect
     %% and replay every active SUBSCRIBE so the peer rebuilds its
     %% interest set after the reconnect.
-    S1 = S#state{peer_node_id    = NodeId,
-                 backoff_ms      = ?INITIAL_BACKOFF_MS,
-                 last_inbound_at = now_ms()},
+    S1 = clear_futility(S#state{peer_node_id    = NodeId,
+                                backoff_ms      = ?INITIAL_BACKOFF_MS,
+                                last_inbound_at = now_ms()}),
     drain_pending_subscribes(S1),
     {noreply, S1};
 handle_info({macula_peering, disconnected, ConnPid, Reason},
@@ -342,7 +381,13 @@ handle_info({'EXIT', ConnPid, _Reason}, #state{conn_pid = ConnPid} = S) ->
     {noreply, schedule_reconnect(reset_conn(S1))};
 handle_info(silence_check, S) ->
     schedule_silence_check(),
-    {noreply, maybe_force_reconnect_on_silence(S)};
+    %% Two rules on one tick, and only the first one ACTS. The silence
+    %% rule can force a reconnect; futility only ever reports. That
+    %% asymmetry is deliberate — a futile dial is what a genuine network
+    %% partition looks like from every station at once, and a detector
+    %% that acted on it would turn a self-healing outage into a
+    %% fleet-wide reconnect storm.
+    {noreply, check_futility(maybe_force_reconnect_on_silence(S))};
 handle_info(_Msg, S) ->
     {noreply, S}.
 
@@ -607,14 +652,30 @@ maybe_verify(V, Target)         -> Target#{verify => V}.
 
 handle_dial_result({ok, ConnPid}, S) ->
     {noreply, S#state{conn_pid = ConnPid}};
-handle_dial_result({error, _Reason}, S) ->
-    {noreply, schedule_reconnect(reset_conn(S))}.
+%% Counts, and does NOT act. Both prior detectors in this module's
+%% history that acted on a negative signal caused outages: the
+%% conn-aging sweep closed healthy conns, and the silence probe
+%% false-fired under CPU starvation into a handshake storm. An
+%% observation cannot do that.
+handle_dial_result({error, Reason}, #state{dial_failures = N} = S) ->
+    S1 = S#state{dial_failures = N + 1, last_dial_error = Reason},
+    {noreply, schedule_reconnect(reset_conn(S1))}.
 
 reset_conn(#state{url = Url} = S) ->
     ok = macula_station_peer_links:clear_peer_node_id(Url),
     S#state{conn_pid = undefined,
             peer_node_id = undefined,
-            last_inbound_at = undefined}.
+            last_inbound_at = undefined,
+            unverified_since = unverified_from(S#state.unverified_since,
+                                               now_ms())}.
+
+%% Start the clock on the verified -> unverified transition, and leave a
+%% running clock alone. A redial that reset it would re-zero the interval
+%% on every backoff cycle, so a link failing forever would look
+%% permanently fresh — which is exactly how milan stayed invisible.
+-spec unverified_from(integer() | undefined, integer()) -> integer().
+unverified_from(undefined, Now) -> Now;
+unverified_from(Since, _Now)    -> Since.
 
 %% Periodic silence-detection. Half-open peering connections occur
 %% when the peer's listener-side dedup close-cast killed our inbound
@@ -633,6 +694,60 @@ reset_conn(#state{url = Url} = S) ->
 %% station_record announces, SWIM gossip, ADVERTISE, etc. Five
 %% minutes of total silence on a station-to-station link is firmly
 %% anomalous.
+%%====================================================================
+%% Futility — a dial that never succeeds must cost a counter
+%%====================================================================
+
+%% @doc Everything this link knows about its own failure to connect.
+%%
+%% Exists because nothing did. Before this, a link that had NEVER
+%% completed a handshake and one that was healthy and idle produced
+%% byte-identical output: nothing.
+-spec stats(pid()) -> #{atom() => term()}.
+stats(Pid) ->
+    gen_server:call(Pid, futility_stats, 1_000).
+
+check_futility(#state{unverified_since = Since,
+                      unverified_alarmed = Alarmed} = S) ->
+    Verdict = futility_verdict(Since, now_ms(), ?UNVERIFIED_FUTILE_MS),
+    S#state{unverified_alarmed = futility_edge(Verdict, Alarmed, S)}.
+
+clear_futility(#state{unverified_alarmed = true, url = Url} = S) ->
+    ?LOG_NOTICE("[outbound_link] ~s verified at last after ~B failed dials",
+                [Url, S#state.dial_failures]),
+    S#state{unverified_since = undefined, unverified_alarmed = false,
+            dial_failures = 0};
+clear_futility(S) ->
+    S#state{unverified_since = undefined, dial_failures = 0}.
+
+%% @doc Has this link failed to EVER verify for longer than it should?
+%% Pure, so the threshold can be tested without waiting five minutes.
+-spec futility_verdict(integer() | undefined, integer(), pos_integer()) ->
+    ok | futile.
+futility_verdict(undefined, _Now, _Threshold) ->
+    %% Verified. Nothing owed.
+    ok;
+futility_verdict(Since, Now, Threshold) when Now - Since >= Threshold ->
+    futile;
+futility_verdict(_Since, _Now, _Threshold) ->
+    ok.
+
+%% Reports. Never acts. See the silence_check handler for why.
+futility_edge(futile, false, #state{url = Url} = S) ->
+    ?LOG_ERROR("[outbound_link] ~s has NEVER completed a handshake in ~B ms "
+               "across ~B failed dials (last error: ~p). This station is "
+               "configured to dial this peer and has no link to it.",
+               [Url, now_ms() - S#state.unverified_since,
+                S#state.dial_failures, S#state.last_dial_error]),
+    catch macula_diagnostics:event(<<"_macula.peering.outbound_futile">>, #{
+        url           => Url,
+        unverified_ms => now_ms() - S#state.unverified_since,
+        dial_failures => S#state.dial_failures
+    }),
+    true;
+futility_edge(_Verdict, Alarmed, _S) ->
+    Alarmed.
+
 schedule_silence_check() ->
     erlang:send_after(?SILENCE_CHECK_MS, self(), silence_check),
     ok.
