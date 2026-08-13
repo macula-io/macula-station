@@ -1,6 +1,6 @@
 # Wire-liveness tripwire — a station that has stopped moving packets must say so
 
-**Status:** Planning
+**Status:** Planning — decisions D1-D3 settled 2026-08-13, ready to execute
 **Created:** 2026-08-13
 **Last Updated:** 2026-08-13
 **Classification:** BUILD, not CLAIM. It makes no assertion about the world; it
@@ -248,11 +248,12 @@ green is believed, and the count stated in the commit body.
 
 | # | repo | title form | scope |
 |---|---|---|---|
+| **0** | macula (SDK) | *A counter that always answers zero is worse than no counter* | `getstat/2` → `{error, not_implemented}` or deleted. One line. Promoted out of commit 5 by **D3** so nothing is built against the zeros in the meantime |
 | **1** | macula-station | *A station that cannot read its own socket must not report itself healthy* | I1 + `/wire` + HEALTHCHECK retarget + `wire_checks_ran`. `wire_stall_action` defaults to `log`. **No halt.** Delivers essentially all the value; no NIF, no cross-repo |
 | **2** | macula-station | *A dial that never succeeds must cost a counter, not silence* | `dial_failures`, `unverified_since`, `last_dial_error` + `stats/1`; `relay_ping`'s discarded `{error,_}` branch counts and publishes; I2 rule. **Observation only — no forced reconnect** |
-| **3** | macula-station | *Enable the action* | `wire_stall_action => halt`, 6 h stamp, `halt(70)` on I1 only. **Gated on 1-2 running clean on the fleet** |
-| **4** | macula-realm | *Absence is the only thing a mute station can say* | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
-| **5** | macula (SDK) | *Ask quinn what it actually sent* | `nif_connection_stats` → full `ConnectionStats`; make `getstat/2` return `{error, not_implemented}` or delete it |
+| **3** | macula-station | *Enable the action* | `wire_stall_action => halt`, 6 h stamp, `halt(70)` on I1 only. **Confirmed by D1**; still gated on 1-2 running two weeks clean on the fleet |
+| **4** | macula-realm | *Absence is the only thing a mute station can say* (**confirmed by D2**) | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
+| **5** | macula (SDK) | *Ask quinn what it actually sent* (**deferred by D3**; its `getstat/2` half is promoted to commit 0) | `nif_connection_stats` → full `ConnectionStats`; make `getstat/2` return `{error, not_implemented}` or delete it |
 
 ### Why commit 5 is cheap, and optional
 
@@ -311,19 +312,56 @@ Stated plainly so the residual is owned rather than discovered.
 
 ---
 
-## 11. Open questions for Raf
+## 11. Decisions — settled 2026-08-13 (Raf)
 
-1. **Rung 3 at all?** A station that halts itself is a station that can
-   flap. The alternative is leaving it at rung 2 and adding something that
-   restarts on unhealthy (e.g. an autoheal sidecar) in `macula-demo` — which
-   moves the decision off the station and out of this repo. My recommendation is
-   rung 3 with the 6 h stamp, because it needs no new fleet component and I1
-   provably cannot storm.
-2. **Commit 4 crosses a standing ruling.** `BRAINSTORM_CONTINUOUS_SELF_DIAGNOSIS.md`
-   §7 ruled **local-only** on 2026-07-25 — before the frankfurt (08-05) and
-   milan (08-13) incidents. Milan is new evidence that a mute station cannot
-   report its own muteness. I read that as a re-opening on evidence rather than
-   a re-litigation, but it is your call.
-3. **Commit 5 now or later?** It is the only path to a true send-side signal and
-   it is genuinely cheap, but it touches the SDK and forces a station dep bump
-   on top of the pending `~> 7.1` → `~> 8.0` move.
+All three open questions are answered. Recorded here so the reasoning survives
+the conversation.
+
+### D1 — the station DOES halt itself
+
+`erlang:halt(70)` on **I1 only**, after 30 consecutive stalled samples, at most
+one per 6 h via `<data_dir>/wire_stall_halt.stamp`. Rung 3 as specified in §5.
+
+Chosen over an autoheal sidecar because it needs **no new fleet component** —
+`unless-stopped` already restarts on exit — and because a sidecar would itself
+be a thing that can die silently, which is the failure class this whole plan
+exists to close. Chosen over alert-only because milan's logs went unread for 30
+hours, so a rung that depends on someone watching does not shorten the outage.
+
+The safety argument is structural, not tuned: I1's antecedent is a **non-empty
+kernel receive backlog on our own socket**, which a partition cannot produce.
+Accepted residual: a genuine 5-minute whole-VM scheduler pathology halts a
+station that was not serviceable either way.
+
+⚠ Still ships **`wire_stall_action = log` by default** (§8 commit 1). D1 decides
+that commit 3 happens, not that it happens early. The gate stands: two weeks on
+the fleet with zero false rising edges first.
+
+### D2 — commit 4 proceeds; the local-only ruling is re-opened on evidence
+
+`BRAINSTORM_CONTINUOUS_SELF_DIAGNOSIS.md` §7 ruled local-only on 2026-07-25.
+That ruling predates frankfurt (08-05) and milan (08-13), and milan is new
+evidence it did not consider: **a mute station cannot report its own muteness.**
+Every rung of the station-local design is readable only by something that
+reaches the box, and milan could not be reached.
+
+This is a re-opening on new evidence, not a re-litigation of the same argument.
+The §7 entry should be amended to say so rather than silently contradicted.
+
+Cheap, too: the number that would have shown milan going dark **was already
+being computed and displayed** in `bloom_convergence_live.ex:698` for the whole
+30 hours, with no threshold on it.
+
+### D3 — commit 5 deferred, but the `getstat/2` trap is disarmed NOW
+
+Full `ConnectionStats` waits until the `~> 7.1` → `~> 8.0` station bump has
+settled, rather than stacking two SDK changes at once. Commits 1-2 need no NIF
+and carry essentially all the value.
+
+**Not deferred:** `macula_quic:getstat/2` returning `{ok, [{S, 0} || S <- Stats]}`
+is a one-line fix promoted **out of commit 5 and into its own change, to land
+first.** It must return `{error, not_implemented}` or be deleted. Leaving a
+counter that always answers zero — while its own doc comment calls that
+"harmless (dist_util only uses these for liveness signals)" — is a trap laid for
+precisely the monitor this plan builds, and the plan must not walk past it on
+the way to building one.
