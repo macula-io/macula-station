@@ -1,6 +1,6 @@
 # Wire-liveness tripwire — a station that has stopped moving packets must say so
 
-**Status:** Commits 0 and 1 SHIPPED 2026-08-13. Commit 2 next.
+**Status:** Commits 0, 1 and 2 SHIPPED 2026-08-13. Commit 3 gated on two weeks clean on the fleet.
 **Created:** 2026-08-13
 **Last Updated:** 2026-08-13
 **Classification:** BUILD, not CLAIM. It makes no assertion about the world; it
@@ -250,7 +250,7 @@ green is believed, and the count stated in the commit body.
 |---|---|---|---|
 | **0** ✅ | macula (SDK) | *A counter that always answers zero is worse than no counter* (48278c7, left Unreleased) | `getstat/2` → `{error, not_implemented}` or deleted. One line. Promoted out of commit 5 by **D3** so nothing is built against the zeros in the meantime |
 | **1** ✅ | macula-station | *A station that cannot read its own socket must not report itself healthy* (0643308, 33 tests each verified RED) | I1 + `/wire` + HEALTHCHECK retarget + `wire_checks_ran`. `wire_stall_action` defaults to `log`. **No halt.** Delivers essentially all the value; no NIF, no cross-repo |
-| **2** | macula-station | *A dial that never succeeds must cost a counter, not silence* | `dial_failures`, `unverified_since`, `last_dial_error` + `stats/1`; `relay_ping`'s discarded `{error,_}` branch counts and publishes; I2 rule. **Observation only — no forced reconnect** |
+| **2** ✅ | macula-station | *A dial that never succeeds must cost a counter, not silence* (f53ae44, 15 tests each verified RED) | `dial_failures`, `unverified_since`, `last_dial_error` + `stats/1`; `relay_ping`'s discarded `{error,_}` branch counts and publishes; I2 rule. **Observation only — no forced reconnect** |
 | **3** | macula-station | *Enable the action* | `wire_stall_action => halt`, 6 h stamp, `halt(70)` on I1 only. **Confirmed by D1**; still gated on 1-2 running two weeks clean on the fleet |
 | **4** | macula-realm | *Absence is the only thing a mute station can say* (**confirmed by D2**) | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
 | **5** | macula (SDK) | *Ask quinn what it actually sent* (**deferred by D3**; its `getstat/2` half is promoted to commit 0) | `nif_connection_stats` → full `ConnectionStats`; make `getstat/2` return `{error, not_implemented}` or delete it |
@@ -309,6 +309,30 @@ Stated plainly so the residual is owned rather than discovered.
       distinguishable from a working one
 - [ ] `station-topology-audit.sh` and `macula-e2e/scripts/station-joined.sh`
       agree with `/wire` on a station deliberately wedged
+
+---
+
+## 10.5 Correction — relay_ping does NOT self-suppress
+
+§8 commit 2 originally said `macula_station_relay_ping` self-suppresses in the
+milan failure, "because a station that cannot dial has no registered links to
+ping over", and therefore could only ever corroborate. **The code refutes that**,
+checked 2026-08-13:
+
+- `macula_station_outbound_link:init/1` calls
+  `macula_station_peer_links:register/2` **before** the first dial is sent
+- `peer_links:connections/0` applies **no** verified filter — unlike
+  `connected_hostnames/0`, which is built on `verified_peers/0` and WAS empty
+  on milan. The two report on different sets
+- `peer_links:unregister/1` has **zero call sites** in the repo
+
+So milan held a registered, never-verified link, and this probe pinged it every
+30 seconds for thirty hours: roughly 3,600 failures, every one discarded by
+`{error, _Reason} -> ok`. It would have caught the outage on its own.
+
+That makes relay_ping's error branch a stronger fix than the plan credited, and
+it is the one place a *peer* confirms the failure rather than the station
+diagnosing itself.
 
 ---
 
