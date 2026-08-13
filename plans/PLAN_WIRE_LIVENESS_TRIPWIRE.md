@@ -1,6 +1,6 @@
 # Wire-liveness tripwire — a station that has stopped moving packets must say so
 
-**Status:** Commits 0, 1 and 2 SHIPPED 2026-08-13. Commit 3 gated on two weeks clean on the fleet.
+**Status:** Commits 0, 1, 2 and 4 SHIPPED 2026-08-13. Only commit 3 remains, gated on two weeks clean on the fleet.
 **Created:** 2026-08-13
 **Last Updated:** 2026-08-13
 **Classification:** BUILD, not CLAIM. It makes no assertion about the world; it
@@ -252,8 +252,21 @@ green is believed, and the count stated in the commit body.
 | **1** ✅ | macula-station | *A station that cannot read its own socket must not report itself healthy* (0643308, 33 tests each verified RED) | I1 + `/wire` + HEALTHCHECK retarget + `wire_checks_ran`. `wire_stall_action` defaults to `log`. **No halt.** Delivers essentially all the value; no NIF, no cross-repo |
 | **2** ✅ | macula-station | *A dial that never succeeds must cost a counter, not silence* (f53ae44, 15 tests each verified RED) | `dial_failures`, `unverified_since`, `last_dial_error` + `stats/1`; `relay_ping`'s discarded `{error,_}` branch counts and publishes; I2 rule. **Observation only — no forced reconnect** |
 | **3** | macula-station | *Enable the action* | `wire_stall_action => halt`, 6 h stamp, `halt(70)` on I1 only. **Confirmed by D1**; still gated on 1-2 running two weeks clean on the fleet |
-| **4** | macula-realm | *Absence is the only thing a mute station can say* (**confirmed by D2**) | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
+| **4** ✅ | macula-realm | *Absence is the only thing a mute station can say* (188c761, 17 tests; **no roster needed after all**, see below) | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
 | **5** | macula (SDK) | *Ask quinn what it actually sent* (**deferred by D3**; its `getstat/2` half is promoted to commit 0) | `nif_connection_stats` → full `ConnectionStats`; make `getstat/2` return `{error, not_implemented}` or delete it |
+
+### Commit 4 as built — no roster was needed
+
+The plan said commit 4 needed "a station roster the realm does not have
+today". It does not. `LoadMonitor` never deletes entries, so a station that
+goes dark keeps its row and the row simply ages, and milan had published
+before it wedged. Staleness works on the existing table with zero new
+configuration.
+
+A roster is only needed for the **weaker** case the plan conflated with it: a
+station that has *never* published at all has no row to age, and absence of a
+row cannot be told apart from a station nobody configured. Scoped out
+explicitly rather than faked.
 
 ### Why commit 5 is cheap, and optional
 
