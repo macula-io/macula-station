@@ -1,6 +1,6 @@
 # Wire-liveness tripwire — a station that has stopped moving packets must say so
 
-**Status:** Planning — decisions D1-D3 settled 2026-08-13, ready to execute
+**Status:** Commits 0 and 1 SHIPPED 2026-08-13. Commit 2 next.
 **Created:** 2026-08-13
 **Last Updated:** 2026-08-13
 **Classification:** BUILD, not CLAIM. It makes no assertion about the world; it
@@ -248,8 +248,8 @@ green is believed, and the count stated in the commit body.
 
 | # | repo | title form | scope |
 |---|---|---|---|
-| **0** | macula (SDK) | *A counter that always answers zero is worse than no counter* | `getstat/2` → `{error, not_implemented}` or deleted. One line. Promoted out of commit 5 by **D3** so nothing is built against the zeros in the meantime |
-| **1** | macula-station | *A station that cannot read its own socket must not report itself healthy* | I1 + `/wire` + HEALTHCHECK retarget + `wire_checks_ran`. `wire_stall_action` defaults to `log`. **No halt.** Delivers essentially all the value; no NIF, no cross-repo |
+| **0** ✅ | macula (SDK) | *A counter that always answers zero is worse than no counter* (48278c7, left Unreleased) | `getstat/2` → `{error, not_implemented}` or deleted. One line. Promoted out of commit 5 by **D3** so nothing is built against the zeros in the meantime |
+| **1** ✅ | macula-station | *A station that cannot read its own socket must not report itself healthy* (0643308, 33 tests each verified RED) | I1 + `/wire` + HEALTHCHECK retarget + `wire_checks_ran`. `wire_stall_action` defaults to `log`. **No halt.** Delivers essentially all the value; no NIF, no cross-repo |
 | **2** | macula-station | *A dial that never succeeds must cost a counter, not silence* | `dial_failures`, `unverified_since`, `last_dial_error` + `stats/1`; `relay_ping`'s discarded `{error,_}` branch counts and publishes; I2 rule. **Observation only — no forced reconnect** |
 | **3** | macula-station | *Enable the action* | `wire_stall_action => halt`, 6 h stamp, `halt(70)` on I1 only. **Confirmed by D1**; still gated on 1-2 running two weeks clean on the fleet |
 | **4** | macula-realm | *Absence is the only thing a mute station can say* (**confirmed by D2**) | one ETS fold on `updated_at_ms` against a station roster → `stale`. The number that would have shown milan going dark **was already being computed and displayed for 30 hours with no threshold on it** |
