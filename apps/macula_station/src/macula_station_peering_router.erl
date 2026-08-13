@@ -41,6 +41,9 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1, sync_now/1]).
+-ifdef(TEST).
+-export([advertise_to_send/3]).
+-endif.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -51,6 +54,16 @@
 %% subscribed station. `peer_observer' also calls `sync_now/1' on
 %% every inbound SUBSCRIBE / UNSUBSCRIBE for sub-tick latency.
 -define(TICK_MS, 2_000).
+%% Every this-many diff ticks, do a FULL advertise re-assert to every
+%% peer instead of a diff — reconciliation. 15 x 2s = 30s, matching
+%% macula_station_bloom_exchange's periodic full-filter rebuild and
+%% macula_station_dht_replicate's periodic full re-STORE. Both exist
+%% because diff-only or write-once propagation drifts and never heals;
+%% advertise propagation was the one gossip layer WITHOUT this, so a
+%% re-advertise that the sender's diff believed it already sent (but the
+%% peer had dropped + tombstoned) was lost permanently. See
+%% plans/DESIGN_ADVERTISE_PROPAGATION_RECONCILE.md.
+-define(RECONCILE_EVERY_TICKS, 15).
 
 %% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
 %% every use. A pid captured at child-spec time is dead the moment the
@@ -82,6 +95,9 @@
     %%
     %% NodeId → set of {Realm, Proc} we last sent to that NodeId.
     advertised      = #{} :: #{macula_identity:pubkey() => sets:set({realm(), binary()})},
+    %% Diff ticks since the last full reconcile. At ?RECONCILE_EVERY_TICKS
+    %% the next periodic tick re-asserts the full advertise set.
+    ticks           = 0 :: non_neg_integer(),
     timer_ref       :: reference() | undefined
 }).
 
@@ -117,7 +133,7 @@ init(Opts) ->
     {ok, State}.
 
 handle_call(sync_now, _From, S) ->
-    {reply, ok, sync(S)};
+    {reply, ok, sync(S, false)};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -135,15 +151,16 @@ handle_cast(_Msg, S) ->
 %% reducer at 1.7M reds/s, always mid-`sync`, mailbox ~42. Distinguishing the
 %% periodic `timer_tick` from kicks, and re-arming only on `timer_tick`, keeps
 %% exactly one periodic timer outstanding. Measured 2026-07-25.
-handle_info(timer_tick, S) ->
+handle_info(timer_tick, S0) ->
     ok = drain_ticks(),
-    {noreply, schedule_tick(sync(S))};
+    {S1, Reconcile} = bump_reconcile(S0),
+    {noreply, schedule_tick(sync(S1, Reconcile))};
 %% A kick: every direct ADVERTISE / SUBSCRIBE / peer change on this station sends
 %% `Pid ! tick'. Sync promptly (latency-sensitive), coalescing a burst via
 %% drain_ticks, but do NOT arm a timer — the periodic `timer_tick` already does.
 handle_info(tick, S) ->
     ok = drain_ticks(),
-    {noreply, sync(S)};
+    {noreply, sync(S, false)};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -153,6 +170,13 @@ drain_ticks() ->
     after 0 ->
         ok
     end.
+
+%% Count only the periodic tick. On the Nth, reset and signal a full
+%% reconcile; otherwise a normal diff.
+bump_reconcile(#state{ticks = T} = S) when T + 1 >= ?RECONCILE_EVERY_TICKS ->
+    {S#state{ticks = 0}, true};
+bump_reconcile(#state{ticks = T} = S) ->
+    {S#state{ticks = T + 1}, false}.
 
 terminate(_Reason, _S) -> ok.
 
@@ -165,12 +189,12 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 sync(#state{pubsub_registry = Reg,
             subs            = Subs,
             advertised      = Advertised,
-            identity        = Kp} = S) ->
+            identity        = Kp} = S, Reconcile) ->
     Pairs   = local_realm_topics(Reg),
     Peers   = macula_station_peer_links:connections(),
     Desired = desired_triples(Pairs, Peers),
     Subs1       = reconcile_subs(Desired, Subs),
-    Advertised1 = sync_advertises(Kp, Advertised),
+    Advertised1 = sync_advertises(Kp, Advertised, Reconcile),
     S#state{subs       = Subs1,
             advertised = Advertised1}.
 
@@ -280,17 +304,35 @@ safe_topics_of(_) ->
 %% works.
 %%====================================================================
 
-sync_advertises(Kp, Advertised) ->
+sync_advertises(Kp, Advertised, Reconcile) ->
     SelfId = try macula_identity:public(Kp) catch _:_ -> undefined end,
     LocalSet = local_advertised_set(SelfId),
     PeerConns = peer_observer_conns(),
     maps:fold(fun(NodeId, ConnPid, Acc) ->
         Last = maps:get(NodeId, Acc, sets:new()),
-        ToAdd  = sets:subtract(LocalSet, Last),
-        ToDrop = sets:subtract(Last, LocalSet),
+        {ToAdd, ToDrop} = advertise_to_send(Reconcile, LocalSet, Last),
         send_advertise_diff(ConnPid, SelfId, ToAdd, ToDrop),
         Acc#{NodeId => LocalSet}
     end, prune_dropped_peers(Advertised, PeerConns), PeerConns).
+
+%% What to send a peer this tick. Pure, so the reconcile invariant can be
+%% tested without a peer connection.
+%%
+%% Diff (false): send only what changed since we last synced this peer —
+%% steady state is zero frames.
+%%
+%% Reconcile (true): re-assert the FULL local set as adds, regardless of
+%% what we believe we already sent. This is the whole fix — the diff
+%% skips an entry it thinks the peer already holds, and if the peer does
+%% NOT hold it (dropped frame, tombstone race) that divergence is
+%% otherwise permanent. Drops are still the diff (Last - LocalSet):
+%% reconciling a stale entry the peer wrongly RETAINS needs the peer to
+%% compare, which is deferred (see the DESIGN doc); this heals the
+%% measured missing-add case.
+advertise_to_send(true, LocalSet, Last) ->
+    {LocalSet, sets:subtract(Last, LocalSet)};
+advertise_to_send(false, LocalSet, Last) ->
+    {sets:subtract(LocalSet, Last), sets:subtract(Last, LocalSet)}.
 
 %% NodeIds whose conns we still hold survive; entries for peers that
 %% disconnected get cleared so we don't carry phantom advertise
