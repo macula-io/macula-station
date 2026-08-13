@@ -163,6 +163,44 @@ Open questions for Raf:
 
 ---
 
+## 4.5 Live verification — reliable, but the wedge was not reproduced
+
+Deployed to the fleet 2026-08-14 (all 7 stations rolled to 2bdfd86). Then, on the
+two-hop pair helsinki<->nuremberg:
+
+- **4/4 full-duel runs**: `rpc_readvertise_restores_serving`, `rpc_deadline_is_enforced`
+  and `torture_concurrent_calls` all GREEN — the cascade that characterised the
+  pre-fix failures did not occur once.
+- **11/11 isolated heal runs** (`scripts/duel-heal.sh`, 3 pre-fix + 8 post-fix):
+  every one "healed after 2s".
+
+Fifteen clean cross-hop re-advertise cycles, zero failures, against a pre-fix
+baseline of 2/4.
+
+⚠ **This is consistent with the fix, not a controlled proof of it, and I will
+not claim more.** Two honest gaps:
+
+1. **The wedge was never reproduced post-fix.** The smoking gun I wanted — a run
+   reporting "healed after ~30s", showing a wedge that the reconcile then healed
+   — never appeared, because no run wedged. Every re-advertise worked
+   immediately. So the reconcile's healing path was never actually exercised on
+   the live fleet; only its no-op steady state was.
+2. **The pre-fix 2/4 was measured earlier in the session on a different SDK
+   (macula 7.x) and station build.** The fleet changed a great deal since (macula
+   8, the peer_observer fixes, this fix). So the improvement from 2/4 to 15/15
+   cannot be attributed to the reconcile alone; other changes confound it.
+
+The fix's correctness rests on the code, the unit tests (RED-verified), and the
+two matching precedents (`bloom_exchange`, `dht_replicate`), NOT on this live
+data. The live data says the mesh is healthy on it and re-advertise is reliable
+now; it does not isolate the reconcile as the cause.
+
+A clean proof would reproduce the wedge under full-suite churn with a >30s
+observation window and watch it heal — an experiment that needs the wedge to
+trigger on demand, which it did not here.
+
+---
+
 ## 5. What is NOT yet done
 
 - The exact wedging interleaving has not been caught in the act on the live
