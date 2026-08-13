@@ -63,18 +63,39 @@ handler_ok_returns_result_test() ->
     catch macula_handler_registry:stop(Reg).
 
 %%==================================================================
-%% Handler returns {error, Reason} → result(payload={error, Reason})
+%% Handler returns {error, Reason} → call_error(0x0F, detail=Reason)
+%%
+%% Same contract as an SDK-hosted handler. This used to be a RESULT
+%% frame carrying `{error, Reason}' as payload, so a caller saw
+%% `{ok, {error, Reason}}' — the opposite of what an SDK-hosted handler
+%% gives. See macula_station_link:safe_invoke_handler/4.
 %%==================================================================
 
-handler_error_returns_result_with_error_payload_test() ->
+handler_error_returns_call_error_with_detail_test() ->
+    Reg = fresh_registry(),
+    SelfId = <<3:256>>,
+    %% A BINARY reason crosses verbatim in `detail'.
+    ok = macula_handler_registry:advertise(Reg, ?PROC,
+            fun(_) -> {error, <<"hold_full">>} end),
+    Reply = macula_handler_dispatch:dispatch_call(
+              call_frame_for(?PROC, <<"x">>), Reg, SelfId),
+    ?assertEqual(error, macula_frame:frame_type(Reply)),
+    ?assertEqual(16#0F, maps:get(code, Reply)),
+    ?assertEqual(<<"hold_full">>, maps:get(detail, Reply)),
+    catch macula_handler_registry:stop(Reg).
+
+%% A non-binary reason is printed and carried, so the caller still gets
+%% a reason rather than the old {ok,{error,_}} shape.
+handler_error_atom_reason_is_carried_as_detail_test() ->
     Reg = fresh_registry(),
     SelfId = <<3:256>>,
     ok = macula_handler_registry:advertise(Reg, ?PROC,
             fun(_) -> {error, bad_signature} end),
     Reply = macula_handler_dispatch:dispatch_call(
               call_frame_for(?PROC, <<"x">>), Reg, SelfId),
-    ?assertEqual(result, macula_frame:frame_type(Reply)),
-    ?assertEqual({error, bad_signature}, maps:get(payload, Reply)),
+    ?assertEqual(error, macula_frame:frame_type(Reply)),
+    ?assertEqual(16#0F, maps:get(code, Reply)),
+    ?assertEqual(<<"bad_signature">>, maps:get(detail, Reply)),
     catch macula_handler_registry:stop(Reg).
 
 %%==================================================================
