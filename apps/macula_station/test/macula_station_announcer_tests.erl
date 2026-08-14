@@ -204,9 +204,62 @@ survives_wedged_dht_test_() ->
         exit(Pid, kill)
     end)}.
 
+%% The announce must ALSO be pushed as a pubsub EVENT over every dialed link,
+%% mirroring the health beacon. `macula_dht:put_record' fans out nothing over
+%% the network (local ETS write only), so a consumer we dial but that is not a
+%% DHT custodian for our key — e.g. the realm — only learns of us via this link
+%% broadcast. Payload is the encoded signed node_record, identical to what
+%% `macula_station_record_fanout' publishes locally.
+announce_broadcast_over_links_test_() ->
+    {setup, fun setup_bcast/0, fun cleanup_bcast/1, fun(Ctx) ->
+        ?_test(begin
+            #{dht := Dht, kp := Kp} = Ctx,
+            Self = self(),
+            meck:expect(macula_station_peer_links, connections,
+                        fun() -> [{<<"quic://peer.example:4433">>, Self}] end),
+            meck:expect(macula_station_link, publish,
+                        fun(_LinkPid, Realm, Topic, Payload) ->
+                            Self ! {published, Realm, Topic, Payload},
+                            ok
+                        end),
+
+            {ok, Pid} = macula_station_announcer:start_link(#{
+                dht      => Dht,
+                identity => Kp,
+                ttl_ms   => 600_000
+            }),
+            unlink(Pid),
+            Pub = macula_identity:public(Kp),
+
+            {Realm, Topic, Payload} =
+                receive {published, R, T, P} -> {R, T, P}
+                after 1_000 -> erlang:error(no_link_broadcast)
+                end,
+
+            ?assertEqual(<<0:256>>, Realm),
+            ?assertEqual(<<"_mesh.station.announced_v1">>, Topic),
+            {ok, Record} = macula_record:decode(Payload),
+            ?assertEqual(Pub, macula_record:key(Record)),
+            ?assertEqual(?TYPE_NODE, macula_record:type(Record)),
+
+            catch macula_station_announcer:stop(Pid)
+        end)
+    end}.
+
 %%%===================================================================
 %%% Helpers
 %%%===================================================================
+
+setup_bcast() ->
+    Base = setup(),
+    meck:new(macula_station_peer_links, [no_link, passthrough]),
+    meck:new(macula_station_link, [no_link, passthrough]),
+    Base.
+
+cleanup_bcast(Ctx) ->
+    catch meck:unload(macula_station_link),
+    catch meck:unload(macula_station_peer_links),
+    cleanup(Ctx).
 
 wait_dead(P) ->
     Ref = erlang:monitor(process, P),

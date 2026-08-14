@@ -72,6 +72,17 @@
 %% not the record.
 -define(PUBLISH_RETRY_MS, 30_000).            %% 30 s
 
+%% The DHT put reaches only nodes k-closest to our key by XOR distance. A
+%% consumer we DIAL but that is not a custodian (e.g. the realm) never receives
+%% our node_record that way. So we also push the announce as a pubsub EVENT out
+%% over every dialed link, exactly like the health beacon — the announce then
+%% follows the LINK graph, the same path that already delivers `_mesh.health.v1'.
+%% Fast enough that a freshly-connected consumer learns us within seconds and
+%% new links self-heal, without the 7.5-min DHT refresh cadence.
+-define(MESH_REALM, <<0:256>>).
+-define(ANNOUNCE_TOPIC, <<"_mesh.station.announced_v1">>).
+-define(ANNOUNCE_BROADCAST_MS, 30_000).       %% 30 s
+
 -record(state, {
     dht          :: pid(),
     identity     :: macula_identity:key_pair(),
@@ -81,6 +92,9 @@
     ttl_ms       :: pos_integer(),
     refresh_ms   :: pos_integer(),
     timer_ref    :: reference() | undefined,
+    %% Last signed node_record, re-broadcast over links between DHT refreshes.
+    last_signed  :: macula_record:record() | undefined,
+    bcast_ref    :: reference() | undefined,
     %% Station's peer observer pid. `undefined' for unit tests that
     %% don't bring up a real observer.
     peer_observer :: pid() | undefined
@@ -108,8 +122,9 @@ init(Opts) ->
     %% Publish on init — re-runs on every restart cycle. Best-effort: a wedged
     %% DHT must not crash init (which would restart and re-wedge). On failure the
     %% short retry re-arms.
-    Result = publish_node_record(State),
-    {ok, schedule_refresh(Result, State)}.
+    {Result, Signed} = publish_node_record(State),
+    State1 = State#state{last_signed = Signed},
+    {ok, schedule_broadcast(schedule_refresh(Result, State1))}.
 
 build_state(#{dht := Dht, identity := Kp} = Opts) ->
     Ttl       = maps:get(ttl_ms, Opts, ?DEFAULT_TTL_MS),
@@ -154,8 +169,12 @@ handle_call(_Msg, _From, S) -> {reply, {error, unknown_call}, S}.
 handle_cast(_Msg, S)        -> {noreply, S}.
 
 handle_info({refresh, Ref}, #state{timer_ref = Ref} = S) ->
-    Result = publish_node_record(S),
-    {noreply, schedule_refresh(Result, S)};
+    {Result, Signed} = publish_node_record(S),
+    S1 = S#state{last_signed = Signed},
+    {noreply, schedule_refresh(Result, S1)};
+handle_info({announce_broadcast, Ref}, #state{bcast_ref = Ref} = S) ->
+    broadcast_announce(S#state.last_signed),
+    {noreply, schedule_broadcast(S)};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -184,7 +203,11 @@ publish_node_record(#state{dht = Dht, identity = Kp,
     %% panel (version / OTP / RAM / CPU cores / bind addr / etc).
     Unsigned  = inject_identity_metadata(Unsigned0, OptsWithPeers),
     Signed    = macula_record:sign(Unsigned, Kp),
-    put_node_record(Dht, Signed).
+    Result    = put_node_record(Dht, Signed),
+    %% Push the announce over dialed links too, so it reaches consumers that
+    %% are not DHT custodians for our key (see the ?MESH_REALM comment above).
+    broadcast_announce(Signed),
+    {Result, Signed}.
 
 %% Peer enrichment is best-effort. `with_current_peers' makes up to 2P
 %% synchronous DHT lookups (find_local_record per peer, twice); against a wedged
@@ -528,3 +551,35 @@ schedule_refresh_after(Ms, S) ->
     Ref = make_ref(),
     erlang:send_after(Ms, self(), {refresh, Ref}),
     S#state{timer_ref = Ref}.
+
+%%====================================================================
+%% Link broadcast — announce over the link graph, like the health beacon
+%%====================================================================
+
+%% Push the current signed node_record as a pubsub EVENT on
+%% `_mesh.station.announced_v1' over every outbound link, exactly as
+%% `macula_station_health_publisher:broadcast/1' pushes the health beacon.
+%% The payload is `macula_record:encode/1' — the same bytes
+%% `macula_station_record_fanout' publishes locally, so a remote subscriber
+%% (e.g. the realm's directory) decodes it identically. Best-effort per link;
+%% `connections/0' is guarded so a station with no peer-links process (unit
+%% tests) is a no-op rather than a crash.
+broadcast_announce(undefined) ->
+    ok;
+broadcast_announce(Signed) ->
+    Payload = macula_record:encode(Signed),
+    Conns   = try macula_station_peer_links:connections()
+              catch _:_ -> []
+              end,
+    lists:foreach(
+      fun({_Url, LinkPid}) ->
+              catch macula_station_link:publish(LinkPid, ?MESH_REALM,
+                                                ?ANNOUNCE_TOPIC, Payload)
+      end,
+      Conns),
+    ok.
+
+schedule_broadcast(S) ->
+    Ref = make_ref(),
+    erlang:send_after(?ANNOUNCE_BROADCAST_MS, self(), {announce_broadcast, Ref}),
+    S#state{bcast_ref = Ref}.
