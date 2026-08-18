@@ -365,6 +365,52 @@ key already trusted, delegated in advance rather than enforced live. That is wha
 lets dual-trust coexist with fully-open discovery without putting an authority
 back in the path. The sub-decisions it opens are Q7–Q9 (§11).
 
+### 6.4 Origin: same binary, different shops
+
+An announcement carries origin at three levels, so two providers running the same
+service binary but belonging to different "shops" are distinguishable:
+
+1. **In the procedure name.** A `procedure_uri` is namespaced, not bare: Part 3's
+   example is `realm42/org/app/weather/get_forecast_v1`, and service principals
+   bind to `mri:app:io.macula/<org>/...`. So the URI is `realm / org / app / proc`.
+   Two shops on the same binary have DIFFERENT procedure_uris (the `org` segment
+   differs) → different `SHA-256(procedure_uri)` → separate DHT records. Same code
+   does not mean same address.
+2. **In the record.** `procedure_advertisement_payload` carries `advertiser_node`
+   (the provider's pubkey) alongside `procedure_uri` and `serving_station`, and the
+   envelope is signed by that key. The multi-value bag store keeps one per signer,
+   so even two providers of the identical URI stay distinct by signature.
+3. **In the realm tag.** Everything is realm-scoped; the station registry is keyed
+   `{realm, procedure}`, so different realms never collide even on one station.
+
+**Where origin flattens today:** the live gossip path enforces
+single-provider-per-station keyed `{realm, procedure}`, and `call/5` takes only
+`(realm, procedure)`. So if two providers ever advertise the *exact same*
+fully-qualified URI, one survives on a station and the caller cannot select
+between them. This is a property of the gossip path, not of the data.
+
+**What a "shop" maps to (decision):**
+
+- **Shop = org (or realm).** Different procedure_uris already, separate records,
+  no collision, no change needed. This is the intended use of the namespace.
+- **Shop = bare instance** (same realm+org+procedure, different keypair). Then by
+  the addressing model these are *replicas of one capability*, not different shops;
+  origin still exists (`advertiser_node`) but the call path treats them as
+  interchangeable.
+
+**Direct-dial is better at this than the gossip it replaces.** A resolve returns
+the whole SET of advertisements, each with its `advertiser_node` and
+`serving_station`, so the consumer SEES the shops as distinct signed entries. To
+call a specific one on a shared station: the CALL frame already has an optional
+`target` node field (the SDK just does not expose it), and the station keys routing
+by `{realm, procedure, advertiser}` instead of `{realm, procedure}`. A small,
+well-defined relaxation, not a redesign.
+
+**This is Q8 in disguise.** "Which shop is this" and "is this the legitimate
+provider" are the same question: the org key that owns the namespace prefix is
+exactly what a consumer verifies to know both that the record is not a squat AND
+which shop it belongs to. Answering Q8 answers how shops are told apart.
+
 ---
 
 ## 7. Pubsub does NOT fold into direct-dial
