@@ -298,6 +298,73 @@ existing per-station link machinery. No Kademlia, no crypto-puzzle, no source
 routing. The public-realm version (DHT-resolved, self-signed) follows on the same
 data plane.
 
+### 6.3 Public realm and dual-trust
+
+The public realm is the general case and the one that must reach 100k+ stations
+(no central directory, discovery is O(log N) DHT lookups). Two requirements shape
+it:
+
+- **Fully open is required in any case.** Anyone may advertise, anyone may find.
+  The discovery layer stays permissionless.
+- **Dual-trust is also required.** Trust is bidirectional, not the one-directional
+  server-authenticates-client of classic RPC:
+  - **consumer → provider** — is this the legitimate server of the procedure, not
+    a squatter who wrote a `procedure_advertisement` next to the real one?
+  - **provider → consumer** — should I serve *this* caller at all? Serving costs
+    resources and may expose a sensitive operation. Direct-dial makes every
+    station a public front door, so the provider must decide who it answers.
+
+Direct-dial makes this cleaner, not harder: it collapses the path to ONE QUIC/TLS
+session between exactly two sovereign identities, which is the natural place for a
+mutual handshake.
+
+**Feasibility (checked 2026-08-18): the primitive and wire slot exist; only
+enforcement is missing.**
+
+- `macula_ucan_nif:verify/2` (token + pubkey → payload or typed error:
+  `invalid_token` / `invalid_signature` / `expired` / `not_yet_valid`), Rust NIF
+  with an Erlang fallback. Offline, delegatable, attenuable capability
+  verification is present. `macula_did_nif` sits beside it.
+- `macula_protocol_types.erl` already carries an optional `ucan_token => binary()`
+  on call / cast / publish / subscribe frames, plus `default_ucan` for
+  session-wide grants. A capability can already travel on a CALL.
+- Nothing on the inbound CALL path reads it (`macula_handler_dispatch` just looks
+  up and invokes; `hecate_om_identity` notes the mesh does not yet verify realm
+  membership at connect/publish). So dual-trust is decision logic at the two
+  endpoints, NOT new crypto and NOT a wire change.
+
+**The model: openness and trust are per-endpoint policy, not a global mode.** The
+discovery layer stays open; each endpoint independently chooses what it checks.
+Four valid combinations, negotiated per connection:
+
+| | Open | Strict |
+|---|---|---|
+| **Provider** | serves any caller (no `ucan_token` required) | requires a valid UCAN granting the right to call |
+| **Consumer** | dials any advertised provider | requires the advertisement to chain to a trusted root, or a pinned pubkey |
+
+**Fully open is not anonymous.** Every connection is Ed25519 peer-bound at QUIC,
+so the provider ALWAYS knows the caller's identity, even in open mode. "Open"
+means "I serve any *identified* caller," so a provider can always rate-limit or
+blocklist by identity. Dual-trust adds *positive* authorization (a capability
+allowlist) on top of an identity that is always present. Identity is the
+sovereignty layer; the UCAN is the authorization layer above it. This matches
+[[feedback_no_anonymity_only_sovereignty]].
+
+**Both directions use the same primitive, verified offline:**
+
+- provider → consumer: the CALL's `ucan_token` is verified against the chain the
+  provider recognizes; absent/invalid where required → refuse (needs a BOLT#4
+  `unauthorized` code, see Q9). The root key delegated the capability to the
+  caller ahead of time; the provider checks it offline, no live authority.
+- consumer → provider: the signed `procedure_advertisement` is verified to chain
+  (via UCAN delegation) from the key owning the procedure namespace, or to match a
+  pinned pubkey. Squatter records fail the chain.
+
+Same shape both ways: signed, attenuable, offline-verifiable tokens rooted in a
+key already trusted, delegated in advance rather than enforced live. That is what
+lets dual-trust coexist with fully-open discovery without putting an authority
+back in the path. The sub-decisions it opens are Q7–Q9 (§11).
+
 ---
 
 ## 7. Pubsub does NOT fold into direct-dial
@@ -426,6 +493,20 @@ that outlived its remit.
 - **Q6** Realm-service home: stays in `macula-realm`, or migrates to the reserved
   (currently empty) `hecate-social/hecate-realm`? Decides which repo the
   managed-realm slice targets (§6.1). Design-neutral; blocks only the wiring.
+
+Dual-trust in the public realm (§6.3):
+
+- **Q7** Default posture: open-by-default (a bare advertisement means "anyone may
+  call," gating is opt-in) or gated-by-default (no capability, no service)?
+  Open-by-default matches "fully open in any case"; gated-by-default is safer but
+  noisier.
+- **Q8** Root of trust for a procedure namespace: a `procedure_uri` like
+  `realm/org/app/proc` needs a key at some prefix that owns it, so the consumer
+  knows what the advertisement must chain to. Realm key (the 32-byte tag), an org
+  key beneath it, or the app/resource-owner key?
+- **Q9** Add an `unauthorized` code to the BOLT#4 taxonomy so a gated provider
+  refuses legibly instead of timing out, and a consumer can tell "not allowed"
+  from "not reachable."
 
 ---
 
