@@ -237,6 +237,67 @@ set, already keyed, already admin-signed, and needs the least new design. The
 realm service becomes a discovery authority (replicate it so it is not a single
 point of failure), consistent with the authority it already holds for identity.
 
+### 6.1 What a managed realm already is (macula-realm)
+
+**DECIDED 2026-08-18: managed-realm-first is the entry slice.**
+
+A managed realm is a running service, the `macula-realm` app ("Macula Portal"),
+not a config flag. A public realm has none of this: a realm is a 32-byte tag,
+stations are realm-agnostic, trust is self-sovereign (each advertiser signs its
+own records, discovery is a DHT lookup, you verify signatures yourself). The
+managed realm adds a front desk.
+
+**⚠ Three realm-named things; only one has code. Do not build against the wrong
+repo.**
+
+| Thing | Location | State |
+|---|---|---|
+| `macula-realm` | `macula-io/macula-realm` | The real managed-realm service. All of §6.1 below. |
+| `hecate-realm` | `hecate-social/hecate-realm` | Empty placeholder repo (`.gitignore` + `LICENSE`, one commit 2026-02-01, no code). |
+| `hecate_realm` | `macula-station/apps/hecate_realm` | Empty station sub-app (`.app.src` only, no modules). |
+
+The station README says its transitional `hecate_realm` / `hecate_overlay`
+sub-apps keep the `hecate_` prefix "until they migrate to the realm-service
+repository," and the empty `hecate-social/hecate-realm` looks like the reserved
+destination. **OPEN OWNERSHIP QUESTION (Q6, for Raf): does realm-service code
+stay in `macula-realm`, or migrate to `hecate-realm`?** This changes only which
+repo the managed-realm slice targets, not the design. Resolve before wiring the
+slice, so it is not built into a repo about to be emptied.
+
+In running code, `macula-realm` already:
+
+1. **Is the realm CA.** `MaculaRealm.Identity.Certificate` runs Realm CA → Org CA
+   → per-service leaf certs; services are provisioned at
+   `POST /api/v1/services/provision` (`ServicePrincipalIssuanceController`) and
+   the cert is what `hecate_om_identity` loads. The realm decides membership
+   cryptographically.
+2. **Runs the admission gate** (join tokens / join sessions / provisional +
+   refresh issuance).
+3. **Keeps a live station directory.** `MaculaRealm.Topology.Directory` holds a
+   pubkey-keyed stations graph from mesh presence (`_mesh.station.*`) + DHT
+   node-record snapshots, with `hostname_for/1` (pubkey → address) and
+   `Topology.StationLinks.client_for_pubkey/1` (a direct link to one chosen
+   station).
+4. **Reads records-as-state** (`Dht.RecordSubscriber`, 30s poll, per the in-repo
+   `PLAN_DHT_FIRST.md` — same "facts as state" philosophy as this thesis).
+
+### 6.2 Why this is the smallest first slice
+
+The three things the data plane needs are dormant/missing on the public path but
+already built and running in the managed realm:
+
+| Need | Public path | Managed realm today |
+|---|---|---|
+| Sign a `realm_stations` set | no authority | owns the Realm CA + curates the directory |
+| Station pubkey → dial address (§8.2 gap) | records carry pubkey only; `station_endpoint` dormant | `hostname_for/1` already resolves it |
+| Dial one specific station (Q2 gap) | pool fixed to seed set | `StationLinks.client_for_pubkey/1`; proper fix `subscribe_on_station` on macula `BACKLOG.md` |
+
+First slice: have the realm service publish and serve the station set it already
+knows, and let a consumer resolve it and dial one station directly, reusing the
+existing per-station link machinery. No Kademlia, no crypto-puzzle, no source
+routing. The public-realm version (DHT-resolved, self-signed) follows on the same
+data plane.
+
 ---
 
 ## 7. Pubsub does NOT fold into direct-dial
@@ -362,6 +423,9 @@ that outlived its remit.
   load-adaptive?
 - **Q5** Migration: can direct-dial run alongside the gossip path per realm during
   cutover, or is it a hard switch?
+- **Q6** Realm-service home: stays in `macula-realm`, or migrates to the reserved
+  (currently empty) `hecate-social/hecate-realm`? Decides which repo the
+  managed-realm slice targets (§6.1). Design-neutral; blocks only the wiring.
 
 ---
 
@@ -375,8 +439,11 @@ science gate. The decisions owed to Raf before code:
 1. ~~Confirm the topology consequence in §4 is intended: universal station
    reachability, tiers no longer relaying the data path.~~ **Confirmed
    2026-08-18** (see §4, §4.1).
-2. Pick the managed-realm-first path (§6) as the smallest starting slice, or
-   another entry point.
+2. ~~Pick the managed-realm-first path (§6) as the smallest starting slice, or
+   another entry point.~~ **Decided 2026-08-18: managed-realm-first** (§6.1,
+   §6.2). The realm service already holds the CA, the station directory
+   (`hostname_for/1`), and per-station dialing (`client_for_pubkey/1`), so the
+   three data-plane gaps are already solved in that context.
 3. ~~Answer Q1 and Q2 (§11), the two feasibility questions that gate the data
    plane.~~ **Done 2026-08-18.** Q1: store is already multi-value, un-narrow the
    read (§8.1). Q2: bounded new pool work + a dialable endpoint in the
