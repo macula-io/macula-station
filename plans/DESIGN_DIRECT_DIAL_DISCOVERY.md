@@ -226,18 +226,40 @@ Direct-dial is scoped to RPC and other point-to-point capabilities.
 
 These are the load-bearing unknowns. None is obviously blocking; all need a look.
 
-1. **Multi-value get.** `macula:find_record/2` returns a single record today
-   (`classify_find` in `macula.erl`), but Part 3 §10.3 intends `FIND_VALUE` to
-   return a `record_list`. Either the `procedure_advertisement` payload grows from
-   one `ServingStation` to a station set (one signed record per provider, whole
-   set inside), or the DHT get becomes genuinely multi-value so many providers'
-   records coexist under one procedure key. `realm_stations` sidesteps this by
-   putting the whole set in one admin-signed record.
-2. **Dialing a station outside the seed list.** The SDK pool is one link per seed
-   (`macula:connect/2`, `macula:links/1`). Direct-dial requires the consumer pool
-   to open a fresh link to an arbitrary advertised station it did not seed to.
-   Confirm the pool supports (or can support) on-demand link creation, connection
-   reuse per station, and a fan-out cap.
+1. **Multi-value get — ANSWERED 2026-08-18: the store is already multi-value.**
+   The DHT local store is an ETS **`bag`** (`macula_dht_server.erl:343`).
+   `store_put/2` dedupes by envelope key (the signer) and keeps every other
+   signer's record under the same storage key; `store_lookup/2` /
+   `find_local_record/2` return the full `[record()]`; the wire `FIND_VALUE`
+   reply already carries the list. So N providers advertising one procedure
+   already produce N coexisting records under `SHA-256(procedure_uri)`. Keep
+   `procedure_advertisement` one-station-per-record; the set is the collection
+   under the key (Part 3 §5.3, "1..20 advertisement records"). The ONLY defect is
+   the read path narrowing to one: `macula_station_dht_handlers.erl`
+   `on_local_hit([Record | _], ...) -> {ok, Record}` drops the tail, and the SDK
+   `macula:find_record/2` classifies a single record. Fix is additive: a
+   list-returning read (`_dht.find_records` + `macula:find_records/2`) returning
+   `store_lookup` whole. No storage change, no `FIND_VALUE` wire change. **Do NOT
+   grow the payload and do NOT build multi-value storage — both already exist.**
+2. **Dialing a station outside the seed list — ANSWERED 2026-08-18: yes, new work,
+   bounded, plus a second gap.** The pool is fixed to its seed set:
+   `macula_client:connect/2` spawns one `macula_station_link` per seed
+   (`start_link_for_seed/2` over `Seeds`), `links = #{seed() => link_state}`,
+   respawn is per-existing-seed, and there is no exported add-link / dial API. Two
+   pieces of work: **(a) runtime dial + reuse** — the seam exists
+   (`start_link_for_seed/2` already spawns a link for an ad-hoc seed under an
+   arbitrary `links` key), so this is exposing a dial-then-call API with one link
+   per station reused across capabilities and a fan-out cap, not a rewrite;
+   **(b) address resolution** — a NodeId is not dialable and NO discovery record
+   carries a dial endpoint (`realm_stations` entries are `#{station_id, roles}`;
+   `procedure_advertisement` `ServingStation` is a pubkey; the routing layer zeroes
+   addresses: `macula_dht_store` outcome note, `entry_to_station_ref` publishes
+   `addresses => []`). The purpose-built `station_endpoint(StationPubkey, QuicPort)`
+   record (type `0x12`) exists but is DORMANT (unwired in the station). So
+   direct-dial needs the target's host:port carried in the advertisement, or
+   resolvable via an activated `station_endpoint` record. This is the concrete form
+   of constraint 2: "stations are publicly reachable" must become "stations publish
+   a dialable endpoint."
 3. **Staleness / liveness.** The advertised set is a snapshot. The fleet has a
    documented failure where "a station whose transport is dead reports HEALTHY
    forever," so a consumer will dial a dead-but-listed station. The advertised
@@ -290,10 +312,15 @@ that outlived its remit.
 
 ## 11. Open questions
 
-- **Q1** Public-realm record shape: grow `procedure_advertisement` to carry a
-  station set, or make the DHT get multi-value and keep one record per provider?
-- **Q2** Does the SDK pool support dialing a station outside the seed list today,
-  or is that new pool work? (Blocks the data-plane half.)
+- **Q1 — ANSWERED 2026-08-18 (§8.1).** Neither: the DHT store is already an ETS
+  `bag`, multi-value and signer-deduped. Keep `procedure_advertisement`
+  one-station-per-record; only un-narrow the read path (add a list-returning
+  `find_records`). No storage or wire change.
+- **Q2 — ANSWERED 2026-08-18 (§8.2).** New work, but bounded and additive: (a) a
+  runtime dial+reuse API on the pool, built on the existing `start_link_for_seed`
+  seam; (b) a dialable endpoint in the advertisement, by activating the dormant
+  `station_endpoint` record or adding host:port to the advertised record. The
+  latter is the data-level form of the universal-reachability constraint.
 - **Q3** Managed-realm resolution: realm service answers resolution queries
   directly, or publishes `realm_stations` into the DHT and consumers read it
   there? (Affects the SPOF / replication story.)
@@ -315,5 +342,9 @@ science gate. The decisions owed to Raf before code:
    reachability, tiers no longer relaying the data path.
 2. Pick the managed-realm-first path (§6) as the smallest starting slice, or
    another entry point.
-3. Answer Q1 and Q2 (§11), the two feasibility questions that gate the data
-   plane.
+3. ~~Answer Q1 and Q2 (§11), the two feasibility questions that gate the data
+   plane.~~ **Done 2026-08-18.** Q1: store is already multi-value, un-narrow the
+   read (§8.1). Q2: bounded new pool work + a dialable endpoint in the
+   advertisement via the dormant `station_endpoint` record (§8.2). Neither gates
+   the build; both are additive on existing seams. The remaining decision is §4
+   (confirm the topology consequence) and §6 (managed-realm-first entry point).
