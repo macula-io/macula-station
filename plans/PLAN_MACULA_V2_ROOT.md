@@ -171,6 +171,7 @@ they capture what we do <em>with</em> the shipped design.
 | [PLAN_STATION_RUNBOOK.md](PLAN_STATION_RUNBOOK.md) | Operating + troubleshooting guide; fleet-as-test-harness scenarios on beam00–03 + relays + laptops | 2026-04-15 |
 | [PLAN_DEFERRED_WORK.md](PLAN_DEFERRED_WORK.md) | Single source of truth for everything intentionally not shipped yet — each item with blocker, owner, trigger | 2026-04-15 |
 | [DESIGN_DIRECT_DIAL_DISCOVERY.md](DESIGN_DIRECT_DIAL_DISCOVERY.md) | Proposal: reclaim Part 3 discovery (activate dormant signed records), replace Part 3 §6 source routing with direct-dial to the serving station, on the strength of universal station reachability. Splits exactly on the §5.3 discovery/routing seam. Pending decision. | 2026-08-18 |
+| [PLAN_DIRECT_DIAL_DISCOVERY.md](PLAN_DIRECT_DIAL_DISCOVERY.md) | Lean slice-by-slice build plan for the direct-dial design. Slices 1–5 (un-narrow read, activate procedure_advertisement + station_endpoint, pool dynamic dial, wire end-to-end) are ungated foundation; 6–8 (managed registry, dual-trust, retire gossip) gated on Q5–Q9. Each slice has a DONE-WHEN. | 2026-08-18 |
 | [THREAT_MODEL_MACULA.md](THREAT_MODEL_MACULA.md) | Security threat model referenced from Part 1 | 2026-04-14 |
 
 ---
