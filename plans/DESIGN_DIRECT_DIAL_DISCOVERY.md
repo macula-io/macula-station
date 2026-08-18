@@ -151,6 +151,8 @@ source routing is a pure module waiting for an I/O wrapper. The gossip stopgap
 
 ## 4. What licenses the deletion: universal reachability
 
+**Confirmed 2026-08-18: tiers are set aside for the data path.**
+
 The thesis rests on one topology constraint, stated by Raf:
 
 > Stations are always intended to be publicly reachable.
@@ -163,6 +165,38 @@ may survive for capacity, replica diversity, and trust weighting, but
 "you must be relayed through a gateway tier to be reached" is exactly the premise
 being removed. The doc records that consequence openly so it is a choice, not a
 side effect.
+
+### 4.1 ELI5 — what "tiers set aside for the data path" means
+
+A **station is a hub**, like a telephone exchange. The homes plugged into it are
+the services and daemons; they have no front door of their own (daemons are
+outbound-only, they dial out and never accept incoming calls). So the homes are
+not the reachable things. The **stations** are.
+
+The old design ranked the exchanges into **tiers**: small local exchanges at the
+bottom, regional above, national at the top. A request had to climb up the ranks
+and back down — from your local exchange, up through regional and national ones,
+across, then down the far side to the exchange your target is plugged into. It
+worked that way because it assumed you could not place a line straight to a
+far-off exchange.
+
+The reachability rule changes exactly that: **every exchange has a public,
+dial-anytime number** (the exchanges, not the homes). So instead of climbing the
+hierarchy, a consumer opens a direct line to the specific station its target is
+plugged into, and reaches it there. One direct connection to the right hub.
+
+So "tiers set aside for the data path" does NOT mean removing stations — they are
+the hubs, homes cannot reach the mesh without them. It means dropping the
+**ranking among stations as a relay chain**. The provider helps by plugging into
+several stations (its K) and advertising them, so a directly-dialable station is
+always one short step from the provider. Tiers may still rank stations for trust,
+capacity, or discovery diversity; they just stop being a ladder that a request
+climbs.
+
+This is also why §8.2's `station_endpoint` gap matters: the reachability promise
+lands on the **station**, and today the records name a station but do not carry
+its dial number. "Any station is dialable" is a promise the data cannot keep
+until the station's endpoint is published.
 
 ---
 
@@ -338,8 +372,9 @@ checkpoint, not a commit-and-go. It is a BUILD (wiring dormant infrastructure to
 the wire), not a CLAIM about the world, so it does not need an adversarial
 science gate. The decisions owed to Raf before code:
 
-1. Confirm the topology consequence in §4 is intended: universal station
-   reachability, tiers no longer relaying the data path.
+1. ~~Confirm the topology consequence in §4 is intended: universal station
+   reachability, tiers no longer relaying the data path.~~ **Confirmed
+   2026-08-18** (see §4, §4.1).
 2. Pick the managed-realm-first path (§6) as the smallest starting slice, or
    another entry point.
 3. ~~Answer Q1 and Q2 (§11), the two feasibility questions that gate the data
