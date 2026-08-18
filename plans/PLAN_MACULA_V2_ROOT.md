@@ -170,6 +170,7 @@ they capture what we do <em>with</em> the shipped design.
 | [PLAN_STATION_INTEGRATION.md](PLAN_STATION_INTEGRATION.md) | Session-by-session sprint to wire the running station (identity + QUIC + bootstrap + DHT + SWIM + overlay + admin API); precedes Phase 7 | 2026-04-15 |
 | [PLAN_STATION_RUNBOOK.md](PLAN_STATION_RUNBOOK.md) | Operating + troubleshooting guide; fleet-as-test-harness scenarios on beam00–03 + relays + laptops | 2026-04-15 |
 | [PLAN_DEFERRED_WORK.md](PLAN_DEFERRED_WORK.md) | Single source of truth for everything intentionally not shipped yet — each item with blocker, owner, trigger | 2026-04-15 |
+| [DESIGN_DIRECT_DIAL_DISCOVERY.md](DESIGN_DIRECT_DIAL_DISCOVERY.md) | Proposal: reclaim Part 3 discovery (activate dormant signed records), replace Part 3 §6 source routing with direct-dial to the serving station, on the strength of universal station reachability. Splits exactly on the §5.3 discovery/routing seam. Pending decision. | 2026-08-18 |
 | [THREAT_MODEL_MACULA.md](THREAT_MODEL_MACULA.md) | Security threat model referenced from Part 1 | 2026-04-14 |
 
 ---
