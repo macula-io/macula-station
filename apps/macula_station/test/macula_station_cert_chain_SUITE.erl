@@ -1,11 +1,15 @@
-%% @doc CT suite — Slice 7c Direction B end-to-end over a real station.
-%% A provider advertises a capability with its X.509 service-cert chain
-%% embedded in the `procedure_advertisement'; a verifying consumer resolves
-%% that record over the DHT (so the chain arrives wire-decoded, the shape
-%% that broke earlier readers), verifies it to the realm CA it trusts, then
-%% resolves the serving station's endpoint, dials it, and calls the raw
-%% capability. A squatter whose chain roots in a different realm CA is
-%% rejected by the same check and is never dialed.
+%% @doc CT suite — Slice 7c Direction B end-to-end across TWO stations.
+%% A producer publishes its advertisement on station B, with its X.509
+%% service-cert chain embedded in the `procedure_advertisement'. A consumer
+%% connected to station A resolves that record cross-station over the DHT
+%% (so the chain arrives wire-decoded, the shape that broke earlier
+%% readers), verifies it to the realm CA it trusts, then resolves B's
+%% station endpoint, dials B directly, and calls the raw capability. A
+%% squatter whose chain roots in a different realm CA is rejected by the
+%% same check and is never dialed.
+%%
+%% Topology matches macula_station_procedure_advertisement_SUITE: A is the
+%% consumer, B is the producer/serving station, A dials B.
 %%
 %% The realm's real CAs sign with P-256 (secp256r1); the leaf binds the
 %% service's Ed25519 key (= the advertiser key that signs the record), so
@@ -42,13 +46,15 @@ init_per_testcase(_Name, Config) ->
     [{cluster_opts, #{base_dir => ?config(priv_dir, Config)}} | Config].
 end_per_testcase(_Name, _Config) -> ok.
 
-%% The full Direction B data plane: a real realm-issued provider is
-%% resolved, its embedded chain verifies to the realm CA, and the
-%% capability call succeeds — all over the wire.
+%% The full Direction B data plane across two stations: a producer's
+%% advertisement lives on B; the consumer on A resolves it cross-station,
+%% its embedded chain verifies to the realm CA, and the capability call
+%% to B succeeds — all over the wire.
 verified_provider_resolves_dials_and_calls(Config) ->
-    with_station(Config, fun(Pool, BPub) ->
-        Cap = <<"_dht.find_record">>,   %% a capability B actually serves
-        Uri = disc_uri(?DHT_REALM, ?ORG, Cap),
+    with_pair(Config, fun(PoolA, B) ->
+        BPub = macula_station_test_cluster:pubkey(B),
+        Cap  = <<"_dht.find_record">>,   %% a capability B actually serves
+        Uri  = disc_uri(?DHT_REALM, ?ORG, Cap),
         Kp     = macula_identity:generate(),
         AdvPub = macula_identity:public(Kp),
         #{realm_ca := RealmCa, chain := Chain} = issue_chain(AdvPub, ?ORG),
@@ -56,12 +62,11 @@ verified_provider_resolves_dials_and_calls(Config) ->
         Ad = macula_record:sign(
                macula_record:procedure_advertisement(
                  AdvPub, Uri, BPub, #{cert_chain => Chain}), Kp),
-        ok = macula:put_record(Pool, Ad),
-        timer:sleep(300),  %% let the put + B's station_endpoint settle
+        ok = put_on(B, Ad),
 
-        %% RESOLVE (wire-decoded) and VERIFY the chain to the realm CA
-        {ok, [AdRec]} = macula:find_records(
-                          Pool, macula_record:procedure_key(Uri)),
+        %% consumer A RESOLVES B's advertisement cross-station (wire-decoded)
+        %% and VERIFIES the chain to the realm CA it trusts
+        {ok, [AdRec]} = resolve(PoolA, macula_record:procedure_key(Uri)),
         ?assertEqual(ok,
                      macula_record:verify_advertisement_cert_chain(
                        RealmCa, AdRec, ?ORG)),
@@ -69,24 +74,25 @@ verified_provider_resolves_dials_and_calls(Config) ->
             macula_record:read_procedure_advertisement(AdRec),
         ?assertEqual(BPub, SS),
 
-        %% RESOLVE the serving endpoint -> DIAL -> CALL the raw capability
-        {ok, EpRec} = macula:find_record(
-                        Pool, macula_record:station_endpoint_key(SS)),
+        %% RESOLVE B's endpoint -> DIAL B -> CALL the raw capability
+        {ok, EpRec} = resolve_one(PoolA, macula_record:station_endpoint_key(SS)),
         #{quic_port := EPort, host_advertised := [EHost | _]} =
             macula_record:read_station_endpoint(EpRec),
         DialUrl = build_url(EHost, EPort),
         ?assertMatch({ok, _},
-                     macula:call_station(Pool, DialUrl, ?DHT_REALM, Cap,
+                     macula:call_station(PoolA, DialUrl, ?DHT_REALM, Cap,
                                          #{key => <<0:256>>}, 5_000))
     end).
 
 %% A squatter embeds a full, well-formed chain — but rooted in its OWN
-%% realm CA, not the one the consumer trusts. The same verify call
-%% rejects it, so a `verify => true' consumer drops it and never dials.
+%% realm CA, not the one the consumer trusts. The consumer on A resolves it
+%% cross-station and the same verify call rejects it, so a `verify => true'
+%% consumer drops it and never dials.
 squatter_wrong_realm_ca_dropped(Config) ->
-    with_station(Config, fun(Pool, BPub) ->
-        Cap = <<"_dht.find_record">>,
-        Uri = disc_uri(?DHT_REALM, ?ORG, Cap),
+    with_pair(Config, fun(PoolA, B) ->
+        BPub  = macula_station_test_cluster:pubkey(B),
+        Cap   = <<"_dht.find_record">>,
+        Uri   = disc_uri(?DHT_REALM, ?ORG, Cap),
         Kp    = macula_identity:generate(),
         Squat = macula_identity:public(Kp),
         %% squatter's chain roots in a realm CA the consumer does NOT trust
@@ -98,33 +104,59 @@ squatter_wrong_realm_ca_dropped(Config) ->
         Ad = macula_record:sign(
                macula_record:procedure_advertisement(
                  Squat, Uri, BPub, #{cert_chain => SquatChain}), Kp),
-        ok = macula:put_record(Pool, Ad),
-        timer:sleep(300),
+        ok = put_on(B, Ad),
 
-        {ok, [AdRec]} = macula:find_records(
-                          Pool, macula_record:procedure_key(Uri)),
+        {ok, [AdRec]} = resolve(PoolA, macula_record:procedure_key(Uri)),
         ?assertMatch({error, _},
                      macula_record:verify_advertisement_cert_chain(
                        TrustedRealmCa, AdRec, ?ORG))
     end).
 
 %%------------------------------------------------------------------
-%% Cluster helper
+%% Cluster helper — A (consumer) dials B (producer/serving station)
 %%------------------------------------------------------------------
 
-with_station(Config, Fun) ->
-    Opts       = ?config(cluster_opts, Config),
-    [B]        = macula_station_test_cluster:spawn_cluster(1, Opts),
-    BPub       = macula_station_test_cluster:pubkey(B),
-    Url        = station_url(macula_station_test_cluster:listen_addr(B)),
-    {ok, Pool} = macula:connect([Url], #{verify => none}),
+with_pair(Config, Fun) ->
+    Opts    = ?config(cluster_opts, Config),
+    Handles = macula_station_test_cluster:spawn_cluster(2, Opts),
+    [A, B]  = Handles,
+    ok = macula_station_test_cluster:dial(A, B),
+    ok = macula_station_test_cluster:wait_for_handshakes(A, 1, 10_000),
+    UrlA = station_url(macula_station_test_cluster:listen_addr(A)),
+    {ok, PoolA} = macula:connect([UrlA], #{verify => none}),
     try
-        ok = wait_healthy(Pool),
-        Fun(Pool, BPub)
+        ok = wait_healthy(PoolA),
+        Fun(PoolA, B)
     after
-        catch macula:close(Pool),
-        macula_station_test_cluster:stop_cluster([B])
+        catch macula:close(PoolA),
+        macula_station_test_cluster:stop_cluster(Handles)
     end.
+
+%% Producer publishes on its own station B.
+put_on(Station, Record) ->
+    macula_station_test_cluster:rpc(
+      Station, macula_dht, put_record, [macula_dht, Record]).
+
+%% Consumer resolves via its SDK pool, retrying while the DHT settles.
+resolve(Pool, Key) -> resolve(Pool, Key, 50).
+resolve(_Pool, _Key, 0) -> {ok, []};
+resolve(Pool, Key, N) ->
+    resolve_retry(catch macula:find_records(Pool, Key), Pool, Key, N).
+
+resolve_retry({ok, [_ | _] = Recs}, _Pool, _Key, _N) -> {ok, Recs};
+resolve_retry(_Other, Pool, Key, N) ->
+    timer:sleep(100),
+    resolve(Pool, Key, N - 1).
+
+resolve_one(Pool, Key) -> resolve_one(Pool, Key, 50).
+resolve_one(_Pool, _Key, 0) -> {error, not_found};
+resolve_one(Pool, Key, N) ->
+    resolve_one_retry(catch macula:find_record(Pool, Key), Pool, Key, N).
+
+resolve_one_retry({ok, Rec}, _Pool, _Key, _N) -> {ok, Rec};
+resolve_one_retry(_Other, Pool, Key, N) ->
+    timer:sleep(100),
+    resolve_one(Pool, Key, N - 1).
 
 wait_healthy(Pool) -> wait_healthy(Pool, 100).
 wait_healthy(_Pool, 0) -> {error, no_healthy_link};
