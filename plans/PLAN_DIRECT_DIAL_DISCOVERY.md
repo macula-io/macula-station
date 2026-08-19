@@ -28,7 +28,7 @@ rough size. Cheap to veto.
 | # | Slice | Depends on | Gated? |
 |---|-------|-----------|--------|
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
-| 2 | Activate `procedure_advertisement` | 1 | no |
+| 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19** |
 | 3 | Activate `station_endpoint` | — | no |
 | 4 | Pool dynamic dial | — | no |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
@@ -76,7 +76,25 @@ narrows (§8.1 of the design).
   ride the next macula release; no need for one release per slice.
 - **Not run:** dialyzer (WIP-slice; specs are straightforward thin wrappers).
 
-### Slice 2 — Activate `procedure_advertisement` — IN PROGRESS
+### Slice 2 — Activate `procedure_advertisement` — DONE 2026-08-19
+
+**Shipped:** macula 8.2.0 (`read_procedure_advertisement/1`, `procedure_key/1`,
+published + resolvable) and hecate-om `f822191` (keypair retention in
+`hecate_om_identity`; `hecate_om_capabilities` rewritten from pubsub to DHT
+records: writes a signed `procedure_advertisement` per capability on register + a
+30s republish tick, resolves via `find_records/2` + `read_procedure_advertisement`
+with per-record signature verification; pubsub `_mesh.cap.announce` deleted).
+Pure helpers unit-tested 4/0 (RED-verified), elvis + dialyzer clean.
+
+**Honest verification gap:** the live cross-node mesh e2e (provider on one node,
+consumer on another, resolve over real stations) is NOT run — hecate-om has no
+in-process station harness. It is covered by composition (Slice 1
+`_dht.find_records` handler test + macula record tests + these pure-logic tests),
+but a fleet check is owed before calling the end-to-end path proven.
+
+Original notes retained below.
+
+
 
 **For:** so a provider's capability location lives in the DHT as a signed record,
 and a consumer can resolve it cold. WIRED into the real capability lifecycle (not a
