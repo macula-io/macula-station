@@ -36,6 +36,8 @@ handlers_test_() ->
         fun put_record_round_trip/1,
         fun put_record_rejects_bad_signature/1,
         fun find_record_returns_not_found_for_unknown_key/1,
+        fun find_records_returns_all_advertisers_for_one_procedure/1,
+        fun find_records_returns_empty_for_unknown_key/1,
         fun find_records_by_type_filters_to_type/1,
         fun find_records_by_type_returns_empty_when_none/1
      ]}.
@@ -49,6 +51,7 @@ put_record_advertised(#{registry := Reg}) ->
         Procs = lists:sort(macula_handler_registry:list(Reg)),
         ?assertEqual(lists:sort([<<"_dht.put_record">>,
                                  <<"_dht.find_record">>,
+                                 <<"_dht.find_records">>,
                                  <<"_dht.find_records_by_type">>]),
                      Procs)
     end).
@@ -84,6 +87,45 @@ find_record_returns_not_found_for_unknown_key(#{registry := Reg}) ->
                               Reg, <<"_dht.find_record">>),
         ?assertEqual({ok, not_found},
                      FindHandler(#{key => <<0:256>>}))
+    end).
+
+%% The Slice 1 behaviour: two providers advertise the SAME procedure
+%% (same procedure_uri => same storage key) with different signing
+%% keys. `_dht.find_records' returns BOTH; `_dht.find_record' still
+%% narrows to one. This is what lets a consumer see every provider.
+find_records_returns_all_advertisers_for_one_procedure(#{registry := Reg}) ->
+    ?_test(begin
+        Uri     = <<"realm/org/app/checkout_v1">>,
+        Station = <<7:256>>,
+        R1 = signed_proc_ad(Uri, Station),
+        R2 = signed_proc_ad(Uri, Station),
+
+        Key = macula_record:storage_key(R1),
+        ?assertEqual(Key, macula_record:storage_key(R2)),
+
+        {ok, PutHandler} = macula_handler_registry:lookup(
+                             Reg, <<"_dht.put_record">>),
+        {ok, ok} = PutHandler(R1),
+        {ok, ok} = PutHandler(R2),
+
+        {ok, FindRecords} = macula_handler_registry:lookup(
+                              Reg, <<"_dht.find_records">>),
+        {ok, All} = FindRecords(#{key => Key}),
+        ?assertEqual(2, length(All)),
+        ?assertEqual(lists:sort([R1, R2]), lists:sort(All)),
+
+        %% find_record still returns just one of the two.
+        {ok, FindOne} = macula_handler_registry:lookup(
+                          Reg, <<"_dht.find_record">>),
+        {ok, One} = FindOne(#{key => Key}),
+        ?assert(One =:= R1 orelse One =:= R2)
+    end).
+
+find_records_returns_empty_for_unknown_key(#{registry := Reg}) ->
+    ?_test(begin
+        {ok, FindRecords} = macula_handler_registry:lookup(
+                              Reg, <<"_dht.find_records">>),
+        ?assertEqual({ok, []}, FindRecords(#{key => <<0:256>>}))
     end).
 
 find_records_by_type_filters_to_type(#{kp := Kp, registry := Reg}) ->
@@ -122,4 +164,13 @@ find_records_by_type_returns_empty_when_none(#{registry := Reg}) ->
 signed_node_record(Pub, Kp) ->
     Unsigned = macula_record:node_record(Pub, _Realms = [], _Caps = 0,
                                           #{display_name => <<"test">>}),
+    macula_record:sign(Unsigned, Kp).
+
+%% A fresh-keyed procedure_advertisement for `Uri' served at
+%% `Station'. Each call uses a new advertiser keypair, so two ads for
+%% the same Uri differ only by signer — the multi-provider case.
+signed_proc_ad(Uri, Station) ->
+    Kp  = macula_identity:generate(),
+    Pub = macula_identity:public(Kp),
+    Unsigned = macula_record:procedure_advertisement(Pub, Uri, Station),
     macula_record:sign(Unsigned, Kp).

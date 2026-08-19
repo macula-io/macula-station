@@ -10,6 +10,12 @@
 %%   <li>`_dht.find_record' — fetch by `macula_record:storage_key/1'
 %%       output. Maps to `macula_dht:find_local_record/2' (returns
 %%       the first record at that key, `not_found' if empty).</li>
+%%   <li>`_dht.find_records' — fetch EVERY record at
+%%       `macula_record:storage_key/1' (the full multi-value set,
+%%       e.g. every provider that advertised one procedure_uri).
+%%       Maps to the same `macula_dht:find_local_record/2', which
+%%       already returns the whole list; `_dht.find_record' just
+%%       takes its head. A miss is `{ok, []}', not `not_found'.</li>
 %%   <li>`_dht.find_records_by_type' — list every locally-known record
 %%       of a given type tag. Filters `macula_dht:list_records/1' by
 %%       `macula_record:type/1'. Coverage is the relay's local view
@@ -22,7 +28,7 @@
 %% Started under the station's supervision tree AFTER both
 %% `macula_handler_registry' and `macula_dht' are up. On any
 %% one_for_all restart the registry + DHT come back fresh and this
-%% gen_server's `init/1' re-advertises the three procedures against
+%% gen_server's `init/1' re-advertises the four procedures against
 %% the new registry pid — no manual re-wiring required.
 %%
 %% No state beyond the references; the gen_server is otherwise idle.
@@ -82,6 +88,9 @@ advertise_all(Registry, Dht) ->
     ok = macula_handler_registry:advertise(
            Registry, <<"_dht.find_record">>,
            fun(Args) -> handle_find_record(Dht, Args) end),
+    ok = macula_handler_registry:advertise(
+           Registry, <<"_dht.find_records">>,
+           fun(Args) -> handle_find_records(Dht, Args) end),
     ok = macula_handler_registry:advertise(
            Registry, <<"_dht.find_records_by_type">>,
            fun(Args) -> handle_find_records_by_type(Dht, Args) end),
@@ -169,11 +178,16 @@ on_remote_lookup(not_found)    -> {ok, not_found}.
 -define(REMOTE_FIND_PER_PEER_MS, 1_500).
 
 remote_find_value(Dht, Key) ->
+    fanout_find_value(Dht, Key, peer_ids(Dht, Key)).
+
+%% The k-closest peers to Key, excluding self. Shared by the
+%% single-record (`_dht.find_record') and multi-record
+%% (`_dht.find_records') remote one-hop fallbacks.
+peer_ids(Dht, Key) ->
     Entries = macula_dht:k_closest(Dht, Key, 20),
     SelfId  = macula_dht:self_id(Dht),
-    PeerIds = [Id || E <- Entries,
-                     (Id = macula_dht_entry:node_id(E)) =/= SelfId],
-    fanout_find_value(Dht, Key, PeerIds).
+    [Id || E <- Entries,
+           (Id = macula_dht_entry:node_id(E)) =/= SelfId].
 
 fanout_find_value(_Dht, _Key, []) ->
     not_found;
@@ -200,6 +214,55 @@ collect_first_value(Tag, Remaining, DeadlineMs) ->
                                 max(0, DeadlineMs - Elapsed))
     after DeadlineMs ->
         not_found
+    end.
+
+%% Multi-value sibling of `handle_find_record'. Returns EVERY record
+%% stored at the key (the full `bag'), not just the first — e.g.
+%% every provider that advertised one procedure_uri. Same
+%% local-hit-then-one-hop-remote shape; a miss is `{ok, []}', not
+%% `{ok, not_found}', because the reply is a list.
+handle_find_records(Dht, #{key := Key})
+  when is_binary(Key), byte_size(Key) =:= 32 ->
+    on_local_records(macula_dht:find_local_record(Dht, Key), Dht, Key);
+handle_find_records(_Dht, _Other) ->
+    {error, bad_request}.
+
+on_local_records([_ | _] = Records, _Dht, _Key) ->
+    {ok, Records};
+on_local_records([], Dht, Key) ->
+    {ok, remote_find_records(Dht, Key)}.
+
+remote_find_records(Dht, Key) ->
+    fanout_find_records(Dht, Key, peer_ids(Dht, Key)).
+
+fanout_find_records(_Dht, _Key, []) ->
+    [];
+fanout_find_records(Dht, Key, PeerIds) ->
+    Tag    = make_ref(),
+    Parent = self(),
+    [spawn(fun() ->
+        Parent ! {Tag, macula_dht:find_value(Dht, Key, Pid,
+                                             ?REMOTE_FIND_PER_PEER_MS)}
+     end) || Pid <- PeerIds],
+    collect_first_values(Tag, length(PeerIds),
+                         ?REMOTE_FIND_PER_PEER_MS + 200).
+
+%% First peer that returns a non-empty value list wins the WHOLE
+%% list (mirrors collect_first_value/3, but keeps every record, not
+%% just the head).
+collect_first_values(_Tag, 0, _DeadlineMs) ->
+    [];
+collect_first_values(Tag, Remaining, DeadlineMs) ->
+    Start = erlang:monotonic_time(millisecond),
+    receive
+        {Tag, {value, [_ | _] = Records}} ->
+            Records;
+        {Tag, _Other} ->
+            Elapsed = erlang:monotonic_time(millisecond) - Start,
+            collect_first_values(Tag, Remaining - 1,
+                                 max(0, DeadlineMs - Elapsed))
+    after DeadlineMs ->
+        []
     end.
 
 handle_find_records_by_type(Dht, #{type := Type})

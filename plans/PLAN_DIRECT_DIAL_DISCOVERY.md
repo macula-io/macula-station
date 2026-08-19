@@ -27,7 +27,7 @@ rough size. Cheap to veto.
 
 | # | Slice | Depends on | Gated? |
 |---|-------|-----------|--------|
-| 1 | Un-narrow the DHT read | — | no |
+| 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
 | 2 | Activate `procedure_advertisement` | 1 | no |
 | 3 | Activate `station_endpoint` | — | no |
 | 4 | Pool dynamic dial | — | no |
@@ -44,20 +44,25 @@ longer blocked, only ordered after the foundation.
 
 ## Shared foundation (ungated)
 
-### Slice 1 — Un-narrow the DHT read
+### Slice 1 — Un-narrow the DHT read — DONE 2026-08-19
 
 **For:** so a resolve returns EVERY provider of a procedure, not just one.
 The store is already multi-value (ETS `bag`, signer-deduped); only the read
 narrows (§8.1 of the design).
 
-- **Build:** add `_dht.find_records` returning the full `store_lookup` list;
-  expose `macula:find_records/2 -> {ok, [record()]}`. Leave `find_record/2`
-  untouched (never delete features).
-- **Files:** `macula_station_dht_handlers.erl` (new handler, stop taking the
-  list head), `macula_handler_registry` (advertise the proc), `macula/src/macula.erl`
-  (facade `find_records/2` + list classify).
-- **DONE-WHEN:** two providers advertise one procedure; a single `find_records`
-  returns both records. Unit test RED-verified before the fix.
+- **Built:** added `_dht.find_records` returning the full `find_local_record`
+  list (local hit, else one-hop remote returning the whole value list, miss =
+  `{ok, []}`); exposed `macula:find_records/2 -> {ok, [record()]}`. `find_record/2`
+  left untouched.
+- **Files:** `macula_station_dht_handlers.erl` (new `_dht.find_records` handler +
+  advertise + `peer_ids/2` extraction), `macula-station .../test/macula_station_dht_handlers_tests.erl`
+  (multi-advertiser + empty-key tests), `macula/src/macula.erl`
+  (facade `find_records/2` + `classify_find_list`).
+- **DONE-WHEN met:** `find_records_returns_all_advertisers_for_one_procedure` —
+  two providers advertise one procedure_uri (different signers, same station), a
+  single `find_records` returns both; `find_record` still returns one. RED-verified
+  (3 failures with the handler stashed), then GREEN 8/0. SDK facade compiles clean.
+- **Not run:** dialyzer (WIP-slice; specs are straightforward thin wrappers).
 
 ### Slice 2 — Activate `procedure_advertisement`
 
