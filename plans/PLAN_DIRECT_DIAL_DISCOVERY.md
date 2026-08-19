@@ -29,7 +29,7 @@ rough size. Cheap to veto.
 |---|-------|-----------|--------|
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
 | 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
-| 3 | Activate `station_endpoint` | — | no |
+| 3 | Activate `station_endpoint` | — | **DONE 2026-08-19 (e2e verified)** |
 | 4 | Pool dynamic dial | — | no |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
@@ -139,17 +139,26 @@ via the DHT on lookup.
   with Slice 7 trust (realm-scoped for now); multi-station-per-provider is Q10 /
   Slice 5 (one serving station now, store dedups by signer).
 
-### Slice 3 — Activate `station_endpoint`
+### Slice 3 — Activate `station_endpoint` — DONE 2026-08-19
 
 **For:** so a station pubkey resolves to a dialable host:port. Direct-dial cannot
-proceed without it; the record type exists (`0x12`) but is dormant (§8.2).
+proceed without it; the record type exists (`0x12`) but was dormant (§8.2).
 
-- **Build:** stations publish a signed `station_endpoint(pubkey, quic_port)` on
-  boot + periodic refresh; a resolver maps station pubkey -> endpoint.
-- **Files:** `macula_station_announcer.erl` (publish), `macula` resolve helper
-  (`macula_record:station_endpoint/2` exists).
-- **DONE-WHEN:** given only a 32-byte station pubkey, the consumer obtains a
-  host:port it can dial.
+- **Built:** the station announcer publishes a signed
+  `station_endpoint(own_pubkey, quic_port, #{host_advertised => [host]})` on boot
+  and every refresh cycle, alongside its `node_record`. Port + host threaded from
+  `station_cfg` via `announcer_child`. No SDK change/release — the constructor is
+  already in macula 8.2.0.
+- **Files:** `macula_station_announcer.erl` (`publish_station_endpoint`, state
+  `host`/`port`), `macula_station_app.erl` (`announcer_child` passes `port`),
+  `macula_station_endpoint_SUITE.erl` (e2e).
+- **DONE-WHEN met (e2e):** `macula_station_endpoint_SUITE` (real 2-station QUIC
+  cluster) — B publishes its endpoint on boot, A resolves B's pubkey to B's real
+  listen port + a non-empty advertised host. RED-verified (`{nodes, ...}` badmatch
+  without the publish); GREEN 1/1. Elvis clean.
+- **Deferred to Slice 4 (genuine sequencing):** the SDK reader helpers
+  (`station_endpoint_key/1`, `read_station_endpoint/1`) so the consumer resolves
+  without parsing payload internals — batched into the Slice 4 macula release.
 
 ### Slice 4 — Pool dynamic dial
 

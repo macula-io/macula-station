@@ -645,7 +645,7 @@ listener_child(#station_cfg{bind = Bind, port = Port,
     }.
 
 announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
-                             bind = Bind, hostname = Host,
+                             bind = Bind, port = Port, hostname = Host,
                              city = City, country = Country,
                              lat = Lat, lng = Lng,
                              power_m = PowerM} = _Cfg,
@@ -657,7 +657,10 @@ announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
         capabilities  => Caps,
         peer_observer => ObserverPid,
         hostname      => hostname_or_default(Host),
-        bind          => bind_to_binary(Bind)
+        bind          => bind_to_binary(Bind),
+        %% Own QUIC port, published in the station_endpoint record so a
+        %% resolver can dial us (direct-dial discovery, Slice 3).
+        port          => Port
     },
     Opts = add_optional_geo(Base, #{city    => City,
                                     country => Country,

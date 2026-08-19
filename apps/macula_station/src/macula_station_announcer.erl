@@ -97,7 +97,13 @@
     bcast_ref    :: reference() | undefined,
     %% Station's peer observer pid. `undefined' for unit tests that
     %% don't bring up a real observer.
-    peer_observer :: pid() | undefined
+    peer_observer :: pid() | undefined,
+    %% Own dialable QUIC endpoint, published as a signed `station_endpoint'
+    %% record (pubkey -> host:port) so a resolver can reach us after a DHT
+    %% lookup. `undefined' port skips the endpoint publish (unit tests /
+    %% stations with no configured port). Direct-dial discovery, Slice 3.
+    host         :: binary() | undefined,
+    port         :: inet:port_number() | undefined
 }).
 
 %%====================================================================
@@ -123,6 +129,7 @@ init(Opts) ->
     %% DHT must not crash init (which would restart and re-wedge). On failure the
     %% short retry re-arms.
     {Result, Signed} = publish_node_record(State),
+    _ = publish_station_endpoint(State),
     State1 = State#state{last_signed = Signed},
     {ok, schedule_broadcast(schedule_refresh(Result, State1))}.
 
@@ -139,7 +146,9 @@ build_state(#{dht := Dht, identity := Kp} = Opts) ->
         ttl_ms         = Ttl,
         refresh_ms     = RefreshMs,
         timer_ref      = undefined,
-        peer_observer  = maps:get(peer_observer, Opts, undefined)
+        peer_observer  = maps:get(peer_observer, Opts, undefined),
+        host           = maps:get(bind, Opts, undefined),
+        port           = maps:get(port, Opts, undefined)
     }.
 
 node_record_opts(Opts) ->
@@ -170,6 +179,7 @@ handle_cast(_Msg, S)        -> {noreply, S}.
 
 handle_info({refresh, Ref}, #state{timer_ref = Ref} = S) ->
     {Result, Signed} = publish_node_record(S),
+    _ = publish_station_endpoint(S),
     S1 = S#state{last_signed = Signed},
     {noreply, schedule_refresh(Result, S1)};
 handle_info({announce_broadcast, Ref}, #state{bcast_ref = Ref} = S) ->
@@ -208,6 +218,28 @@ publish_node_record(#state{dht = Dht, identity = Kp,
     %% are not DHT custodians for our key (see the ?MESH_REALM comment above).
     broadcast_announce(Signed),
     {Result, Signed}.
+
+%% Publish this station's dialable QUIC endpoint as a signed
+%% `station_endpoint' record (storage key SHA-256("station_endpoint" ||
+%% pubkey)), so a resolver that looked up a serving_station pubkey can
+%% reach it. Best-effort and skipped when no port is configured (unit
+%% tests). Direct-dial discovery, Slice 3.
+publish_station_endpoint(#state{port = undefined}) ->
+    ok;
+publish_station_endpoint(#state{dht = Dht, identity = Kp,
+                                host = Host, port = Port}) ->
+    Pub    = macula_identity:public(Kp),
+    Signed = macula_record:sign(
+               macula_record:station_endpoint(Pub, Port, host_opt(Host)), Kp),
+    try macula_dht:put_record(Dht, Signed)
+    catch Class:Reason ->
+        macula_diagnostics:event(<<"_macula.announce.endpoint_publish_failed">>,
+                                 #{class => Class, reason => Reason}),
+        ok
+    end.
+
+host_opt(undefined)            -> #{};
+host_opt(Host) when is_binary(Host) -> #{host_advertised => [Host]}.
 
 %% Peer enrichment is best-effort. `with_current_peers' makes up to 2P
 %% synchronous DHT lookups (find_local_record per peer, twice); against a wedged
