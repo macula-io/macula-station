@@ -76,19 +76,36 @@ narrows (§8.1 of the design).
   ride the next macula release; no need for one release per slice.
 - **Not run:** dialyzer (WIP-slice; specs are straightforward thin wrappers).
 
-### Slice 2 — Activate `procedure_advertisement`
+### Slice 2 — Activate `procedure_advertisement` — IN PROGRESS
 
 **For:** so a provider's capability location lives in the DHT as a signed record,
-and a consumer can resolve it cold.
+and a consumer can resolve it cold. WIRED into the real capability lifecycle (not a
+side helper) and REPLACING the pubsub `_mesh.cap.announce` discovery — greenfield,
+no coexistence (see [[project_direct_dial_discovery_track]]).
 
-- **Build:** on advertise, the provider also builds + signs a
-  `procedure_advertisement` (advertiser_node, procedure_uri, serving_station) and
-  `put_record`s it. A resolve helper maps `procedure_uri -> [{advertiser, station}]`
-  via Slice 1.
-- **Files:** `hecate-om` advertise path (also put_record), a small resolve helper
-  in `macula` (`macula_record:procedure_advertisement/3` already exists).
-- **DONE-WHEN:** a fresh consumer, given only a `procedure_uri`, finds a provider
-  it was never handed.
+**Scope correction (2026-08-19):** hecate-om has NO RPC advertise hook; capabilities
+are `#{name, version}` maps announced over pubsub, the service keypair is not
+retained, and cap names are not namespaced URIs. So this slice: retains the keypair,
+writes a signed `procedure_advertisement` per capability on register, and resolves
+via the DHT on lookup.
+
+- **macula 8.2.0 (DONE, pending publish):** `macula_record:read_procedure_advertisement/1`
+  (record → typed fields, robust to canonical + wire key shapes) and
+  `macula_record:procedure_key/1` (uri → storage key). Commit `0228ad2`, tag
+  `v8.2.0`. eunit 70/0 (RED-checked), dialyzer + ex_doc clean.
+- **hecate-om (NEXT, needs 8.2.0 published + dep bump):** retain keypair in
+  `hecate_om_identity` (+ `keypair/0`); in `hecate_om_capabilities` register, write
+  one signed `procedure_advertisement` per capability (advertiser = service key,
+  serving_station = a connected station via `macula:links/1`, procedure_uri =
+  realm-namespaced cap name); make lookup resolve via `macula:find_records/2` +
+  `read_procedure_advertisement/1`; delete the pubsub-announce discovery.
+- **DONE-WHEN:** a service boots, and a separate consumer given only a capability
+  resolves that provider from the DHT with no pubsub and no prior hand-off.
+- **Constraint:** signing needs a stable `identity_key_path`; ephemeral services
+  are (correctly) invisible to DHT discovery — degrade to no-op + log.
+- **Deferred as genuine sequencing (not caution):** org segment of the URI rides
+  with Slice 7 trust (realm-scoped for now); multi-station-per-provider is Q10 /
+  Slice 5 (one serving station now, store dedups by signer).
 
 ### Slice 3 — Activate `station_endpoint`
 

@@ -534,11 +534,15 @@ that outlived its remit.
   there? (Affects the SPOF / replication story.)
 - **Q4** K (provider multi-homing degree): fixed, per-service configurable, or
   load-adaptive?
-- **Q5 — ANSWERED 2026-08-19: flip realm-by-realm, then delete.** New and old
-  coexist only during switchover; move realms to direct-dial one at a time, watch
-  each, then delete the gossip path entirely. Honors "no backward compatibility"
-  (the old path is fully removed at the end, not kept as a fallback) without
-  betting the whole fleet on one cutover.
+- **Q5 — ANSWERED 2026-08-19, REVISED same day.** Original answer: flip
+  realm-by-realm. **Revised per Raf's track framing: this is a greenfield rebirth,
+  NOT a live-prod migration.** ALL services get updated and redeployed at cutover;
+  stations get new (additive) handlers earlier. So there is no live mixed state to
+  protect and no per-realm flip machinery to build — Slice 8 just deletes the
+  gossip path and the fleet is redeployed. See
+  [[project_direct_dial_discovery_track]]. General rule for the track: build each
+  slice as the real clean mechanism, delete the superseded path, do NOT hedge for
+  backward-compat; the only discipline kept is "don't build code nothing calls".
 - **Q6 — ANSWERED 2026-08-19: stay in `macula-realm`.** Build the managed registry
   where the realm service already runs; revisit the `hecate-realm` migration as its
   own decision later. Gated Slice 6 now targets `macula-realm`.
