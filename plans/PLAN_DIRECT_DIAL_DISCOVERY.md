@@ -266,10 +266,16 @@ Slice 7 is three distinct things, not one:
   forged). **Also fixed a real bug (8.6.0):** `storage_key/1` for payload-keyed
   types crashed on SDK `put_record` (wire-decoded atom keys) — this silently broke
   `procedure_advertisement` publishing from hecate-om (Slice 2); found by this e2e.
-  **Consumer wiring remaining (follow-on):** thread the `org` segment into the
-  hecate-om `procedure_uri` + `call_capability` addressing, and run
-  `verify_delegation_chain` during resolution to drop squats. Needs a hecate-om
-  release on macula `~> 8.6` (which also picks up the put fix).
+  **Consumer wiring DONE (hecate-om 0.13.0):** org-namespaced addressing
+  (`procedure_uri/3`, `hecate_om_identity:org/0`) + `call_capability(Org, CapName,
+  Payload, Timeout, Opts)` with `verify => true` running `verify_delegation_chain`
+  to drop squats (opt-in; default open) and `ucan_token` for gated providers (7b).
+  Requires macula `~> 8.6` (also ships the put fix that had broken Slice 2
+  publishing). eunit 11/0, elvis + dialyzer clean.
+  **Remaining for a live `verify => true`: the PUBLISHING side** — the realm admin
+  publishes `org_directory`, the org publishes `procedure_delegation`. That is
+  realm/org infrastructure (macula-realm + org tooling), its own package; until it
+  exists, consumers run in the default open mode.
 
 Original notes below.
 
