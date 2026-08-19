@@ -28,7 +28,7 @@ rough size. Cheap to veto.
 | # | Slice | Depends on | Gated? |
 |---|-------|-----------|--------|
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
-| 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19** |
+| 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
 | 3 | Activate `station_endpoint` | — | no |
 | 4 | Pool dynamic dial | — | no |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
@@ -86,11 +86,18 @@ records: writes a signed `procedure_advertisement` per capability on register + 
 with per-record signature verification; pubsub `_mesh.cap.announce` deleted).
 Pure helpers unit-tested 4/0 (RED-verified), elvis + dialyzer clean.
 
-**Honest verification gap:** the live cross-node mesh e2e (provider on one node,
-consumer on another, resolve over real stations) is NOT run — hecate-om has no
-in-process station harness. It is covered by composition (Slice 1
-`_dht.find_records` handler test + macula record tests + these pure-logic tests),
-but a fleet check is owed before calling the end-to-end path proven.
+**E2E VERIFIED (gap closed):** `macula_station_procedure_advertisement_SUITE`
+(CT, real 2-station QUIC cluster via `macula_station_test_cluster`) proves the
+DONE-WHEN over the wire: a `procedure_advertisement` put on the provider station
+is resolved from the consumer station and decodes to the right provider
+(`advertisement_resolves_cross_station`), and two providers of one procedure both
+come back (`two_providers_both_resolve_cross_station`). This is the only test that
+exercises `read_procedure_advertisement/1` against a real CBOR round-trip, not a
+hand-built payload. Both pass. (Scope: the suite drives the DHT wire + reader
+directly via `find_value`; the `_dht.find_records` handler wrapper and the SDK
+facade are unit-tested in Slice 1 + macula.) Earlier concern that only hecate-om
+lacked a harness was right about hecate-om but wrong to conclude e2e was
+un-runnable — the station repo has the cluster harness.
 
 Original notes retained below.
 
