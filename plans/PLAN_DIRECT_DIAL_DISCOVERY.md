@@ -62,15 +62,18 @@ narrows (§8.1 of the design).
   — two providers advertise one procedure_uri (different signers, same station), a
   single `find_records` returns both; `find_record` still returns one. RED-verified
   (3 failures with the handler stashed), then GREEN 8/0.
-- **⚠ SDK half is prepped, NOT live.** `macula-station` pins `{macula, "~> 8.0"}`
-  (hex) and builds against macula 8.0.0; there is no `_checkouts` override. So
-  `macula:find_records/2` (macula `main` `53836cb`) is committed but does NOT reach
-  the station or hecate-om until macula is released to hex (Raf fires the release)
-  AND consumers bump the dep. It is verified only by standalone `rebar3 compile` in
-  the macula repo, not against any consumer build.
-- **SDK release batching:** Slices 3 and 4 also touch the macula facade. Batch the
-  SDK surface for Slices 1/3/4 into ONE macula release rather than one per slice;
-  each slice's SDK part stays "prepped, pending that release."
+- **SDK half RELEASED in macula 8.1.0** (2026-08-19; commit `fcb57aa`, tag
+  `v8.1.0`). Verified resolvable: the resolver registry `repo.hex.pm/packages/macula`
+  lists 8.1.0 and the tarball is live (not a repeat of the 8.0.1 list-but-not-
+  resolvable saga). `macula:find_records/2` is now on hex.
+- **Consumer lock bump deferred (deliberate).** `macula-station` and `hecate-om`
+  pin `{macula, "~> 8.0"}`, so 8.1.0 is eligible, but their locks still sit at
+  8.0.0. No current code CALLS `find_records/2` yet (the station handler is native;
+  the first caller is hecate-om in Slice 2 / the wiring in Slice 5). So the
+  `rebar3 upgrade macula` lands as ONE deliberate bump when Slice 2 consumes it,
+  not a premature no-op now.
+- **SDK release cadence:** Slices 3 and 4 also touch the macula facade. They can
+  ride the next macula release; no need for one release per slice.
 - **Not run:** dialyzer (WIP-slice; specs are straightforward thin wrappers).
 
 ### Slice 2 — Activate `procedure_advertisement`
