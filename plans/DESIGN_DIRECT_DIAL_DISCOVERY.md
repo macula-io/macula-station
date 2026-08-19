@@ -325,9 +325,12 @@ enforcement is missing.**
   `invalid_token` / `invalid_signature` / `expired` / `not_yet_valid`), Rust NIF
   with an Erlang fallback. Offline, delegatable, attenuable capability
   verification is present. `macula_did_nif` sits beside it.
-- `macula_protocol_types.erl` already carries an optional `ucan_token => binary()`
-  on call / cast / publish / subscribe frames, plus `default_ucan` for
-  session-wide grants. A capability can already travel on a CALL.
+- ~~`macula_protocol_types.erl` already carries an optional `ucan_token`.~~
+  **CORRECTED (Slice 7b, 2026-08-19): that is a LEGACY type module.** The V2 CALL
+  frame (`macula_frame`) had NO `ucan_token`; Slice 7b added it — a small,
+  non-breaking wire change (the codec is generic, so a field on the frame map
+  rides `to_wire`/`from_wire` automatically). Feasibility was wrong on the frame
+  slot, right on the primitive; adding the slot was cheap.
 - Nothing on the inbound CALL path reads it (`macula_handler_dispatch` just looks
   up and invokes; `hecate_om_identity` notes the mesh does not yet verify realm
   membership at connect/publish). So dual-trust is decision logic at the two

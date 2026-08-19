@@ -33,7 +33,7 @@ rough size. Cheap to veto.
 | 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e green on hex 8.4.0)** |
 | 5 | Wire the data plane end-to-end | 1–4 | **DONE 2026-08-19 (e2e; caught + fixed a reader bug)** |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
-| 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
+| 7 | Dual-trust enforcement | 5 | **7b DONE (macula 8.5.0); 7a parked; 7c needs design** |
 | 8 | Retire the gossip routing | 5, 7 | decided: flip realm-by-realm then delete (Q5) |
 
 Slices 1–4 have no dependency on each other except where noted and can proceed in
@@ -241,7 +241,31 @@ per-station dialing (`client_for_pubkey/1`) — §6.1/§6.2.
   `StationLinks`) is demo-grade today; this slice promotes it to a supported
   discovery path, it does not build it from scratch.
 
-### Slice 7 — Dual-trust enforcement — open-default + org-root + `unauthorized`
+### Slice 7 — Dual-trust enforcement — THREE parts (7b done)
+
+Slice 7 is three distinct things, not one:
+
+- **7b — provider→consumer UCAN authz — DONE (macula 8.5.0).** `advertise/5` takes
+  an `auth` policy (`open` default | `{ucan_required, Issuer}`); a gated procedure
+  verifies the CALL's `ucan_token` and refuses with BOLT#4 `unauthorized`;
+  `call_station/7` presents a token. E2e (`macula_station_gated_call_SUITE`): no
+  token → unauthorized, valid token → served, open serves anyone. Needed a small
+  CALL-frame wire change (the design's "slot exists" was a legacy module; §6.3
+  corrected). Verified via `_checkouts` before release.
+- **7a — consumer→station TLS pinning — PARKED.** Pin the serving_station's Ed25519
+  identity via `expected_node_id` (the 8.4.0 forwarding already carries it). NOT
+  testable in the harness: test stations share a self-signed cert whose SPKI is not
+  the station pubkey, so pinning fails by construction. Needs identity-bound station
+  certs (SPKI = pubkey) or harness cert surgery before it can be proven.
+- **7c — consumer→provider advertisement-chain verification — NEEDS DESIGN.** The
+  consumer verifies the `procedure_advertisement` chains to the org key (Q8 set the
+  root, not the delegation mechanism). No delegation-record format exists yet;
+  building blind is the rabbit hole to avoid. Design the org→server delegation, then
+  build.
+
+Original notes below.
+
+### Slice 7 (original) — Dual-trust enforcement — open-default + org-root + `unauthorized`
 
 **For:** so provider→consumer and consumer→provider trust are both checked, on the
 already-mutual QUIC session, without a live authority (§6.3). Primitive
