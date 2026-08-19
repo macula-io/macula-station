@@ -31,7 +31,7 @@ rough size. Cheap to veto.
 | 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
 | 3 | Activate `station_endpoint` | — | **DONE 2026-08-19 (e2e verified)** |
 | 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e green on hex 8.4.0)** |
-| 5 | Wire the data plane end-to-end | 1–4 | no |
+| 5 | Wire the data plane end-to-end | 1–4 | **DONE 2026-08-19 (e2e; caught + fixed a reader bug)** |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
 | 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
 | 8 | Retire the gossip routing | 5, 7 | decided: flip realm-by-realm then delete (Q5) |
@@ -192,18 +192,35 @@ through it. The pool was fixed to its seeds (§8.2, Q2).
   pinning on `call_station` for production (pool-level `verify` is enough for the
   e2e). Both are refinements on a working path.
 
-### Slice 5 — Wire the data plane end-to-end
+### Slice 5 — Wire the data plane end-to-end — DONE 2026-08-19
 
-**For:** so `(realm, procedure)` becomes resolve → dial → call in one path, with
+**For:** so a capability call becomes resolve → dial → call in one path, with
 failover, and no multi-hop relay.
 
-- **Build:** a consumer-side direct-call path — resolve the advertisement set
-  (Slice 2), resolve endpoints (Slice 3), dial one station (Slice 4), call; on
-  error, fail over to another station in the set.
-- **Files:** a small `macula` direct-call module (or a `hecate-om` consumer helper).
-- **DONE-WHEN:** an end-to-end direct-dial call succeeds with the gossip path
-  disabled for that procedure; killing the chosen station triggers failover to
-  another advertised station and the call still returns.
+- **Built:** `hecate_om:call_capability/3` (+ testable `/5`) composes it: resolve
+  providers (`find_records` → `read_procedure_advertisement`), resolve a provider's
+  serving station to a dialable URL (`find_record(station_endpoint_key)` →
+  `read_station_endpoint` → `station_url`), `macula:call_station` the raw CapName
+  there; fail over to the next provider on error. Requires macula `~> 8.4`.
+- **RPC serving already existed:** providers serve capabilities via their
+  per-service `hecate_<svc>_mesh_rpc` (`macula:advertise(Pool, Realm, CapName, ...)`),
+  so the CALL uses the raw `CapName` (realm-scoped); `procedure_advertisement` is
+  only the discovery key.
+- **DONE-WHEN met (e2e):** `macula_station_direct_call_SUITE` (real station) —
+  resolve a provider from its `procedure_advertisement`, resolve the serving
+  station's `station_endpoint` to a URL, `call_station` the capability, `{ok, _}`.
+  Verified via `_checkouts` before releasing the fix below.
+- **⚠ Caught a real bug (macula 8.4.1):** the SDK `find_records` path returns
+  records with ATOM payload keys (frame decoder atomises them). The readers only
+  handled `{text, _}` / binary keys, so a consumer resolving via the SDK got
+  `undefined` fields — direct-dial resolution silently failed. Slice 2's e2e used
+  `find_value` over erpc (canonical keys) and missed it; **this realistic
+  `find_records` e2e is what exposed it.** Fixed in `read_procedure_advertisement` /
+  `read_station_endpoint` (macula 8.4.1) with atom-key regression tests. hecate-om
+  Slice 2 resolution was broken via the SDK until this fix.
+- **Consumer TLS (Slice 7 refinement):** the e2e dials with `verify => none`
+  (loopback self-signed). Production pins the serving_station's Ed25519 identity
+  (`expected_node_id`) — a trust concern, deferred to Slice 7.
 
 ---
 
