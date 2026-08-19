@@ -344,15 +344,19 @@ deleted — never-delete-features; the mechanism e2e stays green).
   (`org_ca_cert_path` / `realm_ca_cert_path`) and exposes `cert_chain/0` + `realm_ca/0`.
   The 8.6.0 delegation-record verify (`chain_verifies`) is removed from the consumer
   path (SDK records retained). 13 eunit (2 new, RED-verified), dialyzer + elvis clean.
-- **e2e — REMAINING (the formal DONE-WHEN).** A `macula_station_*_SUITE` over the real
-  2-station QUIC cluster: a provider advertises with a real embedded cert chain, a
-  `verify => true` consumer on the other station resolves it, validates to the realm
-  CA, and calls it; a squatter (self-signed / wrong-org) is dropped and never dialed.
-  This is where earlier slices caught real over-the-wire bugs (e.g. the atom-key
-  reader bug in Slice 5), so it is worth running before declaring 7c closed.
-- **DONE-WHEN:** a real realm-issued service advertises; a `verify => true` consumer
-  validates the chain to the realm CA and calls it; a squatter (self-signed, or
-  wrong-org / wrong-realm cert) is dropped and never dialed.
+- **e2e — DONE (`068af02`).** `macula_station_cert_chain_SUITE` (real station):
+  `verified_provider_resolves_dials_and_calls` — a provider advertises with an
+  embedded P-256-CA → Ed25519-leaf chain, the consumer resolves it over the DHT
+  (wire-decoded), `verify_advertisement_cert_chain` returns ok, then resolves the
+  endpoint, dials, and calls → `{ok, _}`; `squatter_wrong_realm_ca_dropped` — a
+  squatter rooted in a different realm CA is rejected. 2/2. Proves the ~2KB chain
+  survives the put→find round-trip over QUIC.
+- **DONE-WHEN — MET.** A realm-issued service advertises; a `verify => true` consumer
+  validates the chain to the realm CA and calls it; a squatter (wrong-realm cert) is
+  dropped and never dialed. **Slice 7c Direction B is CLOSED.** Remaining Slice 7
+  pieces: 7a (TLS pinning, parked on the harness cert limitation); 7c live
+  deployment = provision org-CA + realm-CA PEMs beside each service's leaf and set
+  `org` per service (ops, not code).
 
 Original notes below.
 
