@@ -257,11 +257,12 @@ Slice 7 is three distinct things, not one:
   testable in the harness: test stations share a self-signed cert whose SPKI is not
   the station pubkey, so pinning fails by construction. Needs identity-bound station
   certs (SPKI = pubkey) or harness cert surgery before it can be proven.
-- **7c — consumer→provider advertisement-chain verification — NEEDS DESIGN.** The
-  consumer verifies the `procedure_advertisement` chains to the org key (Q8 set the
-  root, not the delegation mechanism). No delegation-record format exists yet;
-  building blind is the rabbit hole to avoid. Design the org→server delegation, then
-  build.
+- **7c — consumer→provider advertisement-chain verification — DESIGNED
+  2026-08-19, ready to build.** Trust chain realm → org → server rooted in the
+  realm tag. Q10 = friendly-name + directory lookup; Q11 = separate shared
+  delegation record. Two new records (`org_directory`, `procedure_delegation`) +
+  consumer verification + e2e. Full design in `DESIGN_DIRECT_DIAL_DISCOVERY` §6.4b.
+  A sizeable build; its own work package.
 
 Original notes below.
 

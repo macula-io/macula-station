@@ -368,6 +368,50 @@ key already trusted, delegated in advance rather than enforced live. That is wha
 lets dual-trust coexist with fully-open discovery without putting an authority
 back in the path. The sub-decisions it opens are Q7–Q9 (§11).
 
+### 6.4b Slice 7c design — advertisement-chain verification (DESIGNED 2026-08-19)
+
+The consumer→provider trust direction: verify a `procedure_advertisement` was
+legitimately authorized, not a squatter. Q8 set the root (org key); Q10/Q11 fix
+the mechanism:
+
+- **Q10 = friendly name + directory lookup.** `<org>` in the `procedure_uri` is a
+  name; the consumer resolves name → org key via a directory record.
+- **Q11 = separate shared delegation record.** The org→server grant lives once in
+  the DHT, referenced by (org, advertiser), not stapled to each advertisement.
+
+**Trust chain = realm → org → server**, rooted in the realm tag (a key the consumer
+inherently knows because it is in that realm):
+
+| Record | Maps / states | Signed by | New? |
+|---|---|---|---|
+| `org_directory` | `(realm, org-name) → org-key` | realm admin (realm key) | NEW |
+| `procedure_delegation` | "server A may serve org's procedures" (audience = A) | org key | NEW |
+| `procedure_advertisement` | A serves `procedure_uri` at `serving_station` | server A | exists |
+
+**Consumer verification** (offline, for a resolved advertisement `realm/org/app/proc`
+from advertiser A):
+1. advertisement signed by A (already done in `decode_resolved`);
+2. resolve `org_directory(realm, org)` → org-key; verify signed by the realm key;
+3. resolve `procedure_delegation(org-key, A)` → verify signed by org-key, audience = A;
+4. all pass → legitimate; any fail → drop as a squat.
+
+Delegations are UCANs (same primitive as 7b). Managed realms MAY short-circuit
+step 3 via the existing service-cert chain (Org CA → service cert), an
+optimisation, not required.
+
+**Build outline (its own work package, sizeable):**
+- macula_record: `org_directory/*` + `procedure_delegation/*` constructors + keys +
+  readers (mirror `realm_member_endorsement`); one macula release.
+- Publishers: realm admin publishes `org_directory`; a provider (or its org)
+  publishes `procedure_delegation` for its advertiser key.
+- Consumer: extend `hecate_om_capabilities` resolution to run steps 2-4 and drop
+  advertisements that fail the chain.
+- E2e: a legit advertisement (full chain) resolves; a squat advertisement (no
+  delegation, or delegation from the wrong org) is dropped.
+
+**Deferred refinements (not caution):** per-app / per-procedure delegation grammar
+(coarse whole-org grant first); org_directory name-collision / rotation handling.
+
 ### 6.4 Origin: same binary, different shops
 
 An announcement carries origin at three levels, so two providers running the same
