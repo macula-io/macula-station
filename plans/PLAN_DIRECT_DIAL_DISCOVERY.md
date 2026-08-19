@@ -58,10 +58,19 @@ narrows (§8.1 of the design).
   advertise + `peer_ids/2` extraction), `macula-station .../test/macula_station_dht_handlers_tests.erl`
   (multi-advertiser + empty-key tests), `macula/src/macula.erl`
   (facade `find_records/2` + `classify_find_list`).
-- **DONE-WHEN met:** `find_records_returns_all_advertisers_for_one_procedure` —
-  two providers advertise one procedure_uri (different signers, same station), a
+- **DONE-WHEN met (station half):** `find_records_returns_all_advertisers_for_one_procedure`
+  — two providers advertise one procedure_uri (different signers, same station), a
   single `find_records` returns both; `find_record` still returns one. RED-verified
-  (3 failures with the handler stashed), then GREEN 8/0. SDK facade compiles clean.
+  (3 failures with the handler stashed), then GREEN 8/0.
+- **⚠ SDK half is prepped, NOT live.** `macula-station` pins `{macula, "~> 8.0"}`
+  (hex) and builds against macula 8.0.0; there is no `_checkouts` override. So
+  `macula:find_records/2` (macula `main` `53836cb`) is committed but does NOT reach
+  the station or hecate-om until macula is released to hex (Raf fires the release)
+  AND consumers bump the dep. It is verified only by standalone `rebar3 compile` in
+  the macula repo, not against any consumer build.
+- **SDK release batching:** Slices 3 and 4 also touch the macula facade. Batch the
+  SDK surface for Slices 1/3/4 into ONE macula release rather than one per slice;
+  each slice's SDK part stays "prepped, pending that release."
 - **Not run:** dialyzer (WIP-slice; specs are straightforward thin wrappers).
 
 ### Slice 2 — Activate `procedure_advertisement`
