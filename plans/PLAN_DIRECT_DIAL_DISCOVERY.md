@@ -30,7 +30,7 @@ rough size. Cheap to veto.
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
 | 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
 | 3 | Activate `station_endpoint` | — | **DONE 2026-08-19 (e2e verified)** |
-| 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e verified; needs 8.4.0 published for CI)** |
+| 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e green on hex 8.4.0)** |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
 | 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
