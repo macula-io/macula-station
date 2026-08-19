@@ -78,13 +78,20 @@ narrows (§8.1 of the design).
 
 ### Slice 2 — Activate `procedure_advertisement` — DONE 2026-08-19
 
-**Shipped:** macula 8.2.0 (`read_procedure_advertisement/1`, `procedure_key/1`,
-published + resolvable) and hecate-om `f822191` (keypair retention in
-`hecate_om_identity`; `hecate_om_capabilities` rewritten from pubsub to DHT
-records: writes a signed `procedure_advertisement` per capability on register + a
-30s republish tick, resolves via `find_records/2` + `read_procedure_advertisement`
-with per-record signature verification; pubsub `_mesh.cap.announce` deleted).
-Pure helpers unit-tested 4/0 (RED-verified), elvis + dialyzer clean.
+**Shipped + PUBLISHED:** macula **8.2.0** (`read_procedure_advertisement/1`,
+`procedure_key/1`) and hecate-om **0.11.0** (keypair retention in
+`hecate_om_identity` + `keypair/0`; `hecate_om_capabilities` rewritten from pubsub
+to DHT records: writes a signed `procedure_advertisement` per capability on
+register + a 30s republish tick, resolves via `find_records/2` +
+`read_procedure_advertisement` with per-record signature verification; pubsub
+`_mesh.cap.announce` + `peers/0` deleted; macula floor tightened to `~> 8.2`).
+Both on hex and resolver-registry-verified. Tests: 9/0 eunit (pure helpers +
+gen_server graceful-degradation, RED-verified), elvis + dialyzer clean; cover 53%
+capabilities (remainder = live-pool glue, proven by the cross-station SUITE).
+
+**Consumers still owed:** the services that use hecate-om (hecate-rag, …) get DHT
+discovery only after moving to `hecate_om ~> 0.11` and redeploying — the
+coordinated cutover, not a live migration.
 
 **E2E VERIFIED (gap closed):** `macula_station_procedure_advertisement_SUITE`
 (CT, real 2-station QUIC cluster via `macula_station_test_cluster`) proves the
