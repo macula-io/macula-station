@@ -344,13 +344,15 @@ deleted — never-delete-features; the mechanism e2e stays green).
   (`org_ca_cert_path` / `realm_ca_cert_path`) and exposes `cert_chain/0` + `realm_ca/0`.
   The 8.6.0 delegation-record verify (`chain_verifies`) is removed from the consumer
   path (SDK records retained). 13 eunit (2 new, RED-verified), dialyzer + elvis clean.
-- **e2e — DONE (`068af02`).** `macula_station_cert_chain_SUITE` (real station):
-  `verified_provider_resolves_dials_and_calls` — a provider advertises with an
-  embedded P-256-CA → Ed25519-leaf chain, the consumer resolves it over the DHT
-  (wire-decoded), `verify_advertisement_cert_chain` returns ok, then resolves the
-  endpoint, dials, and calls → `{ok, _}`; `squatter_wrong_realm_ca_dropped` — a
-  squatter rooted in a different realm CA is rejected. 2/2. Proves the ~2KB chain
-  survives the put→find round-trip over QUIC.
+- **e2e — DONE (`9d2c8f2`).** `macula_station_cert_chain_SUITE`, a true TWO-station
+  topology (consumer on A, producer/serving station B, A dials B — mirrors
+  `procedure_advertisement_SUITE`): `verified_provider_resolves_dials_and_calls` —
+  the producer publishes on B with an embedded P-256-CA → Ed25519-leaf chain; the
+  SDK consumer pool on A resolves it CROSS-STATION over the DHT (wire-decoded),
+  `verify_advertisement_cert_chain` returns ok, then resolves B's endpoint, dials B,
+  and calls → `{ok, _}`; `squatter_wrong_realm_ca_dropped` — a squatter rooted in a
+  different realm CA is rejected. 2/2. Proves the ~2KB chain survives the cross-station
+  put→find round-trip over QUIC.
 - **DONE-WHEN — MET.** A realm-issued service advertises; a `verify => true` consumer
   validates the chain to the realm CA and calls it; a squatter (wrong-realm cert) is
   dropped and never dialed. **Slice 7c Direction B is CLOSED.** Remaining Slice 7
