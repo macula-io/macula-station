@@ -30,7 +30,7 @@ rough size. Cheap to veto.
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
 | 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
 | 3 | Activate `station_endpoint` | — | **DONE 2026-08-19 (e2e verified)** |
-| 4 | Pool dynamic dial | — | no |
+| 4 | Pool dynamic dial | — | **SDK DONE (8.3.0); e2e post-publish** |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
 | 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
@@ -160,17 +160,28 @@ proceed without it; the record type exists (`0x12`) but was dormant (§8.2).
   (`station_endpoint_key/1`, `read_station_endpoint/1`) so the consumer resolves
   without parsing payload internals — batched into the Slice 4 macula release.
 
-### Slice 4 — Pool dynamic dial
+### Slice 4 — Pool dynamic dial — SDK DONE (macula 8.3.0), e2e post-publish
 
 **For:** so a consumer can open a link to a station OUTSIDE its seed set and call
-through it. Today the pool is fixed to its seeds (§8.2, Q2).
+through it. The pool was fixed to its seeds (§8.2, Q2).
 
-- **Build:** expose a pool API to ensure a link to an ad-hoc endpoint (built on the
-  existing `start_link_for_seed/2` seam), reuse one link per station, cap fan-out.
-- **Files:** `macula/src/client/macula_client.erl` (ensure_link / call-at API),
-  `macula/src/macula.erl` (facade).
-- **DONE-WHEN:** a one-hop call to a station the consumer never seeded to returns
-  a result; a second call to the same station reuses the link.
+- **Built (macula 8.3.0, pending publish):** `macula:call_station/6` — ensure
+  (reuse or dial+monitor) a link to a specific station URL on the existing
+  `start_link_for_seed` seam, await the handshake within the deadline, call there;
+  `{error, not_connected}` on timeout. Plus `station_endpoint_key/1` +
+  `read_station_endpoint/1` (Slice 3's consumer readers, batched here).
+- **Files:** `macula_client.erl` (`call_station/6` + `ensure_link` +
+  `call_when_connected`), `macula.erl` (facade), `macula_record.erl` (readers).
+- **Tested:** unreachable-dial degradation unit-tested (`call_station` → clean
+  `{error, not_connected}`, pool survives; RED-verified); record readers 72/0
+  (RED-verified); dialyzer + ex_doc clean.
+- **DONE-WHEN (owed, post-publish):** e2e in macula-station — a pool with NO seed
+  to station B dials B by its resolved endpoint and a CALL returns; a second call
+  reuses the link. Needs 8.3.0 published + macula-station bumped (same propagation
+  step as Slices 1-2).
+- **Deferred (hardening, not caution):** a fan-out cap / LRU eviction of
+  dynamically-dialed links. Reuse-if-present is in; unbounded growth bounding is a
+  later pass.
 
 ### Slice 5 — Wire the data plane end-to-end
 
