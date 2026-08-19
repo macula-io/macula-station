@@ -33,7 +33,7 @@ rough size. Cheap to veto.
 | 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e green on hex 8.4.0)** |
 | 5 | Wire the data plane end-to-end | 1–4 | **DONE 2026-08-19 (e2e; caught + fixed a reader bug)** |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
-| 7 | Dual-trust enforcement | 5 | **7b DONE (macula 8.5.0); 7a parked; 7c needs design** |
+| 7 | Dual-trust enforcement | 5 | **7b + 7c-mechanism DONE (8.5/8.6); 7a parked; 7c consumer-wiring follows** |
 | 8 | Retire the gossip routing | 5, 7 | decided: flip realm-by-realm then delete (Q5) |
 
 Slices 1–4 have no dependency on each other except where noted and can proceed in
@@ -257,12 +257,19 @@ Slice 7 is three distinct things, not one:
   testable in the harness: test stations share a self-signed cert whose SPKI is not
   the station pubkey, so pinning fails by construction. Needs identity-bound station
   certs (SPKI = pubkey) or harness cert surgery before it can be proven.
-- **7c — consumer→provider advertisement-chain verification — DESIGNED
-  2026-08-19, ready to build.** Trust chain realm → org → server rooted in the
-  realm tag. Q10 = friendly-name + directory lookup; Q11 = separate shared
-  delegation record. Two new records (`org_directory`, `procedure_delegation`) +
-  consumer verification + e2e. Full design in `DESIGN_DIRECT_DIAL_DISCOVERY` §6.4b.
-  A sizeable build; its own work package.
+- **7c — consumer→provider chain verification — MECHANISM DONE (macula 8.6.0);
+  consumer wiring follows.** Built: `org_directory` (realm-signed name→org-key),
+  `procedure_delegation` (org-signed server grant), key/reader helpers, and
+  `verify_delegation_chain/4`. E2e (`macula_station_delegation_SUITE`, real
+  station): the chain resolves + verifies on wire-decoded records; a squatter with
+  no delegation is rejected. Record tests 80/0 (valid / wrong-realm / squatter /
+  forged). **Also fixed a real bug (8.6.0):** `storage_key/1` for payload-keyed
+  types crashed on SDK `put_record` (wire-decoded atom keys) — this silently broke
+  `procedure_advertisement` publishing from hecate-om (Slice 2); found by this e2e.
+  **Consumer wiring remaining (follow-on):** thread the `org` segment into the
+  hecate-om `procedure_uri` + `call_capability` addressing, and run
+  `verify_delegation_chain` during resolution to drop squats. Needs a hecate-om
+  release on macula `~> 8.6` (which also picks up the put fix).
 
 Original notes below.
 
