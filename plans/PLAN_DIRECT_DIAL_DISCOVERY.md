@@ -277,6 +277,83 @@ Slice 7 is three distinct things, not one:
   realm/org infrastructure (macula-realm + org tooling), its own package; until it
   exists, consumers run in the default open mode.
 
+#### 7c publishing — PIVOT to Direction B (X.509 cert chain), 2026-08-19
+
+**The 8.6.0 Ed25519 delegation-record mechanism cannot go live as designed.** Two
+findings, verified against the running realm:
+
+1. **The realm tag is keyless.** `macula_realm:id/1` is `crypto:hash(sha256,
+   RealmName)` — a name-hash, not a keypair. `verify_delegation_chain/4` requires
+   the `org_directory` to be *signed by* `RealmId`; no one can sign for
+   `SHA-256("io.macula")`. The design's "rooted in the realm tag (a key the
+   consumer inherently knows)" premise (§6.4b) is wrong: the tag is a label.
+2. **The realm holds no stable Ed25519 signing key.** Its mesh pool uses ephemeral
+   per-link identities (`:macula.connect(seeds, #{})`), it never calls
+   `macula_identity:generate/save`, and `MACULA_REALM_SERVER_DID` is an opaque
+   config string, not a held keypair. Its only persistent authority is the realm
+   **CA** (X.509, P-256/RSA), the wrong key type for `macula_record:verify`
+   (Ed25519-only).
+
+**Decision (Raf, 2026-08-19): Direction B — root trust in the realm CA via the
+X.509 service-cert chain. Managed realms only; `io.macula` is the free community
+managed realm (it has a CA like any other).** This is the only path that is fully
+automatable: the trust anchor already exists and is already delivered to every
+member at issuance.
+
+**The chain already exists as X.509:** realm CA → org CA (`mri:org:io.macula/<org>`,
+`O = <org>`) → leaf/app cert. The leaf binds the service's **own Ed25519 key** —
+the same key that signs advertisements (service-principal issuance takes a 32-byte
+Ed25519 pubkey and returns `service_cert_pem` + org-CA `chain` + realm `ca_chain_pem`).
+
+**Mechanism (no new publishers — that is the point):**
+- The advertiser **embeds its cert chain** (leaf + org CA, PEM) in its own
+  `procedure_advertisement` (decision: embed, not a side record or dial-time fetch).
+- A consumer with `verify => true`, holding the realm CA it received at its own
+  issuance, checks a resolved advertisement for `realm/org/app/proc` signed by K:
+  (1) advertisement signature valid for K (already done); (2) leaf subject key = K;
+  (3) leaf → org CA → realm CA validates (`public_key:pkix_path_validation`, OTP
+  handles Ed25519-subject leaves); (4) leaf `O` RDN = the URI's `<org>`; all pass →
+  legit, any fail → drop as a squat.
+
+**Supersedes for managed realms:** the 8.6.0 `org_directory` / `procedure_delegation`
+records and `verify_delegation_chain/4` go unused on the live path (kept, not
+deleted — never-delete-features; the mechanism e2e stays green).
+
+**Build (BUILD, not CLAIM; small steps, RED-verified):**
+- **macula SDK — DONE (macula 8.7.0, release-prepped, not yet published).**
+  `cert_chain` opt on `procedure_advertisement` (payload + `read_procedure_advertisement`)
+  and `macula_record:verify_advertisement_cert_chain(RealmCaPem, Adv, ExpectedOrg)`:
+  advertisement sig valid, leaf binds the advertiser Ed25519 key, leaf → org CA →
+  realm CA validates (`public_key:pkix_path_validation`), leaf `O` RDN = `<org>`.
+  `test/macula_record_cert_chain_tests.erl` mints a real in-process chain (OTP
+  `public_key`) and covers valid / wrong-org / self-signed / key-mismatch /
+  missing-chain / tampered / wire-roundtrip (7/0, RED-verified by breaking the
+  org/path/key defenses). dialyzer clean, ex_doc no new warnings.
+  **macula 8.7.0 PUBLISHED to hex** (resolver-verified) + tagged `v8.7.0`. A P-256
+  CA regression test (`valid_p256_ca_chain_verifies_test`) proves the verifier
+  handles the realm's real cert shape (P-256 CAs → Ed25519 leaf), not just the
+  all-Ed25519 test chain.
+- **macula-realm — DONE (pushed `a3a6730`).** The service-principal issuance HTTP
+  response now returns `org_ca_pem` (the org-CA intermediate a verifier needs),
+  reloading the org after `ensure_app_cert` so a just-generated org CA is surfaced.
+- **hecate-om — DONE (0.14.0, pushed `6a1b593`).** Advertise: `build_advertisement/6`
+  embeds the service cert chain (leaf ++ org CA) from `hecate_om_identity:cert_chain/0`.
+  Verify: under `verify => true`, keep only providers whose embedded chain verifies
+  to the realm CA (`verify_advertisement_cert_chain`, org-scoped); no realm CA
+  provisioned → drop all. `hecate_om_identity` loads org CA + realm CA from disk
+  (`org_ca_cert_path` / `realm_ca_cert_path`) and exposes `cert_chain/0` + `realm_ca/0`.
+  The 8.6.0 delegation-record verify (`chain_verifies`) is removed from the consumer
+  path (SDK records retained). 13 eunit (2 new, RED-verified), dialyzer + elvis clean.
+- **e2e — REMAINING (the formal DONE-WHEN).** A `macula_station_*_SUITE` over the real
+  2-station QUIC cluster: a provider advertises with a real embedded cert chain, a
+  `verify => true` consumer on the other station resolves it, validates to the realm
+  CA, and calls it; a squatter (self-signed / wrong-org) is dropped and never dialed.
+  This is where earlier slices caught real over-the-wire bugs (e.g. the atom-key
+  reader bug in Slice 5), so it is worth running before declaring 7c closed.
+- **DONE-WHEN:** a real realm-issued service advertises; a `verify => true` consumer
+  validates the chain to the realm CA and calls it; a squatter (self-signed, or
+  wrong-org / wrong-realm cert) is dropped and never dialed.
+
 Original notes below.
 
 ### Slice 7 (original) — Dual-trust enforcement — open-default + org-root + `unauthorized`
