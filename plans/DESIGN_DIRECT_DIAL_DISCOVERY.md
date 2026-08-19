@@ -534,25 +534,29 @@ that outlived its remit.
   there? (Affects the SPOF / replication story.)
 - **Q4** K (provider multi-homing degree): fixed, per-service configurable, or
   load-adaptive?
-- **Q5** Migration: can direct-dial run alongside the gossip path per realm during
-  cutover, or is it a hard switch?
-- **Q6** Realm-service home: stays in `macula-realm`, or migrates to the reserved
-  (currently empty) `hecate-social/hecate-realm`? Decides which repo the
-  managed-realm slice targets (§6.1). Design-neutral; blocks only the wiring.
+- **Q5 — ANSWERED 2026-08-19: flip realm-by-realm, then delete.** New and old
+  coexist only during switchover; move realms to direct-dial one at a time, watch
+  each, then delete the gossip path entirely. Honors "no backward compatibility"
+  (the old path is fully removed at the end, not kept as a fallback) without
+  betting the whole fleet on one cutover.
+- **Q6 — ANSWERED 2026-08-19: stay in `macula-realm`.** Build the managed registry
+  where the realm service already runs; revisit the `hecate-realm` migration as its
+  own decision later. Gated Slice 6 now targets `macula-realm`.
 
 Dual-trust in the public realm (§6.3):
 
-- **Q7** Default posture: open-by-default (a bare advertisement means "anyone may
-  call," gating is opt-in) or gated-by-default (no capability, no service)?
-  Open-by-default matches "fully open in any case"; gated-by-default is safer but
-  noisier.
-- **Q8** Root of trust for a procedure namespace: a `procedure_uri` like
-  `realm/org/app/proc` needs a key at some prefix that owns it, so the consumer
-  knows what the advertisement must chain to. Realm key (the 32-byte tag), an org
-  key beneath it, or the app/resource-owner key?
-- **Q9** Add an `unauthorized` code to the BOLT#4 taxonomy so a gated provider
-  refuses legibly instead of timing out, and a consumer can tell "not allowed"
-  from "not reachable."
+- **Q7 — ANSWERED 2026-08-19: open by default.** A bare advertisement serves any
+  identified caller; gating (UCAN required) is opt-in per procedure. Matches "fully
+  open in any case"; identity is always present so rate-limit/blocklist stays
+  available even when open.
+- **Q8 — ANSWERED 2026-08-19: the org (shop) key.** Trust chains realm → org →
+  server: the realm vouches an org is a genuine tenant, the org vouches a server
+  speaks for it. Matches `mri:app:io.macula/<org>/...` and answers "which shop"
+  (§6.4). A consumer verifies an advertisement chains to the org key that owns the
+  `<org>` segment of the `procedure_uri`.
+- **Q9 — ANSWERED 2026-08-19: yes, add `unauthorized`.** A gated provider refuses
+  with a distinct BOLT#4 code so a consumer tells "not allowed" from "not
+  reachable" and does not retry pointlessly.
 
 ---
 

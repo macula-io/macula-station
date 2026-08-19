@@ -1,6 +1,7 @@
 # PLAN — Direct-dial discovery (lean, slice-by-slice)
 
-**Status:** Planning — foundation slices ready; trust + cutover gated on decisions.
+**Status:** Planning — all gating decisions made 2026-08-19 (Q5–Q9); every slice
+is now ungated. Foundation slices 1–5 ready to build; 6–8 defined.
 **Created:** 2026-08-18
 **Design:** `DESIGN_DIRECT_DIAL_DISCOVERY.md` (this plan builds it).
 **One line:** so a consumer reaches a capability in ONE hop by dialing a station
@@ -31,12 +32,13 @@ rough size. Cheap to veto.
 | 3 | Activate `station_endpoint` | — | no |
 | 4 | Pool dynamic dial | — | no |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
-| 6 | Managed-realm registry | 5 | **Q6** (repo home) |
-| 7 | Dual-trust enforcement | 5 | **Q7–Q9** (posture, root, code) |
-| 8 | Retire the gossip routing | 5, 7 | **Q5** (migration cadence) |
+| 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
+| 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
+| 8 | Retire the gossip routing | 5, 7 | decided: flip realm-by-realm then delete (Q5) |
 
 Slices 1–4 have no dependency on each other except where noted and can proceed in
-parallel; 5 joins them.
+parallel; 5 joins them. All gating decisions were made 2026-08-19; 6–8 are no
+longer blocked, only ordered after the foundation.
 
 ---
 
@@ -110,41 +112,54 @@ failover, and no multi-hop relay.
 
 ---
 
-## Gated (deferred behind decisions)
+## Later slices (decided; ordered after the foundation)
 
-### Slice 6 — Managed-realm registry — GATED on Q6
+### Slice 6 — Managed-realm registry — targets `macula-realm` (Q6)
 
 **For:** so a managed realm's realm service is the authority for the station set.
 The service already holds the CA, the station directory (`hostname_for/1`), and
 per-station dialing (`client_for_pubkey/1`) — §6.1/§6.2.
 
-- **Build:** realm service publishes + serves the `realm_stations` set it curates;
-  consumers in that realm resolve from it instead of the DHT.
-- **Blocked by:** Q6 — does realm-service code stay in `macula-realm` or migrate
-  to the empty `hecate-social/hecate-realm`? Do not wire into a repo about to move.
+- **Build:** in `macula-realm` (Q6 decided), the realm service publishes + serves
+  the `realm_stations` set it curates; consumers in that realm resolve from it
+  instead of the DHT.
+- **DONE-WHEN:** a consumer in a managed realm resolves a capability's stations
+  from the realm service (no DHT walk) and dials one directly.
+- **Note:** the `macula-realm` directory machinery (`Topology.Directory`,
+  `StationLinks`) is demo-grade today; this slice promotes it to a supported
+  discovery path, it does not build it from scratch.
 
-### Slice 7 — Dual-trust enforcement — GATED on Q7–Q9
+### Slice 7 — Dual-trust enforcement — open-default + org-root + `unauthorized`
 
 **For:** so provider→consumer and consumer→provider trust are both checked, on the
 already-mutual QUIC session, without a live authority (§6.3). Primitive
 (`macula_ucan_nif:verify/2`) and wire slot (`ucan_token`) exist; enforcement does not.
 
-- **Build:** provider verifies the CALL's `ucan_token` where its policy requires;
-  consumer verifies the advertisement chains to a trusted namespace root or a pinned
-  pubkey; add a BOLT#4 `unauthorized` code.
-- **Blocked by:** Q7 (open- vs gated-by-default), Q8 (namespace root of trust — also
-  answers how shops are told apart, §6.4), Q9 (the `unauthorized` code).
+- **Build (Q7 open-by-default):** a bare advertisement serves any identified
+  caller; a provider opts into "UCAN required" per procedure.
+- **Build (Q8 org-key root):** a consumer verifies the advertisement chains to the
+  org key owning the `<org>` segment of the `procedure_uri` (or a pinned pubkey);
+  a gated provider verifies the CALL's `ucan_token` against the chain it recognizes.
+- **Build (Q9):** add an `unauthorized` code to the BOLT#4 taxonomy.
+- **DONE-WHEN:** an open provider serves any identified caller; a gated provider
+  serves a caller with a valid org-rooted UCAN and refuses one without it with
+  `unauthorized` (not a timeout); a squatter advertisement fails the consumer's
+  chain check.
 
-### Slice 8 — Retire the gossip routing — GATED on Q5
+### Slice 8 — Retire the gossip routing — flip realm-by-realm, then delete (Q5)
 
 **For:** so the fragile distance-vector advertise propagation
 (`macula_station_peering_router.erl`) is removed once direct-dial is proven.
 
-- **Build:** delete the advertise-gossip RPC routing substrate and its
-  tombstone/reconcile machinery; source-route primitives may stay for a
+- **Build:** move realms to direct-dial one at a time, watching each; once every
+  realm is across, delete the advertise-gossip RPC routing substrate and its
+  tombstone/reconcile machinery. Source-route primitives may stay for a
   privacy-only path (Part 3 §6.7), not as the default.
-- **Blocked by:** Q5 — hard switch, or per-realm coexistence during cutover?
-  Retire only after Slice 7, so nothing loses authorization when the old path goes.
+- **DONE-WHEN:** every realm resolves + dials directly, the gossip advertise path
+  is deleted, and the suite is green with it gone (RED-verified: the old path is
+  actually removed, not dormant).
+- **Order:** only after Slice 7, so nothing loses authorization when the old path
+  goes.
 
 ---
 
@@ -160,12 +175,17 @@ already-mutual QUIC session, without a live authority (§6.3). Primitive
 
 ---
 
-## Open questions (mirror of design §11, the ones that gate slices)
+## Gating decisions — ALL MADE 2026-08-19
 
-- **Q5** migration cadence → gates Slice 8.
-- **Q6** realm-service repo home → gates Slice 6.
-- **Q7** default trust posture → gates Slice 7.
-- **Q8** namespace root of trust (also = how shops are told apart) → gates Slice 7.
-- **Q9** BOLT#4 `unauthorized` code → gates Slice 7.
+- **Q5** cutover → **flip realm-by-realm, then delete** (Slice 8).
+- **Q6** realm-service repo home → **stay in `macula-realm`** (Slice 6).
+- **Q7** default trust posture → **open by default**, gating opt-in (Slice 7).
+- **Q8** namespace root → **org (shop) key**; realm → org → server chain; also
+  answers how shops are told apart (Slice 7, §6.4).
+- **Q9** BOLT#4 `unauthorized` code → **yes, add it** (Slice 7).
 
-Slices 1–5 need none of these. Start there.
+Nothing is blocked. Slices 1–5 are the ungated foundation; 6–8 are decided and
+ordered after it. Non-gating design questions Q3 (managed resolution shape) and Q4
+(multi-homing degree K) remain open but do not block any slice.
+
+Start at Slice 1.
