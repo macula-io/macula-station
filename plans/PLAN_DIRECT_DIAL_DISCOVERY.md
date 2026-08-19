@@ -30,7 +30,7 @@ rough size. Cheap to veto.
 | 1 | Un-narrow the DHT read | — | **DONE 2026-08-19** |
 | 2 | Activate `procedure_advertisement` | 1 | **DONE 2026-08-19 (e2e verified)** |
 | 3 | Activate `station_endpoint` | — | **DONE 2026-08-19 (e2e verified)** |
-| 4 | Pool dynamic dial | — | **SDK DONE (8.3.0); e2e post-publish** |
+| 4 | Pool dynamic dial | — | **DONE 2026-08-19 (e2e verified; needs 8.4.0 published for CI)** |
 | 5 | Wire the data plane end-to-end | 1–4 | no |
 | 6 | Managed-realm registry | 5 | decided: `macula-realm` (Q6) |
 | 7 | Dual-trust enforcement | 5 | decided: open-default + org-root + `unauthorized` (Q7–Q9) |
@@ -175,13 +175,22 @@ through it. The pool was fixed to its seeds (§8.2, Q2).
 - **Tested:** unreachable-dial degradation unit-tested (`call_station` → clean
   `{error, not_connected}`, pool survives; RED-verified); record readers 72/0
   (RED-verified); dialyzer + ex_doc clean.
-- **DONE-WHEN (owed, post-publish):** e2e in macula-station — a pool with NO seed
-  to station B dials B by its resolved endpoint and a CALL returns; a second call
-  reuses the link. Needs 8.3.0 published + macula-station bumped (same propagation
-  step as Slices 1-2).
+- **Also needed (surfaced by the e2e): TLS-policy forwarding, macula 8.4.0.** The
+  SDK pool always verified `webpki`, so it could not dial the harness's self-signed
+  stations. `macula:connect/2` now forwards `verify` / `expected_node_id` to its
+  links (8.4.0). A real direct-dial gap, not test-only: a consumer dialing a
+  resolved serving_station must control TLS (pin the station's Ed25519 identity via
+  `expected_node_id`, or `verify => none` on loopback).
+- **DONE-WHEN met (e2e verified):** `macula_station_call_station_SUITE` — a pool
+  seeded to NOTHING dials station B by URL (outside the seed set) with
+  `verify => none`, a CALL to `_dht.find_record` returns `{ok, _}`, and a second
+  call reuses the link. Proven LOCALLY via `_checkouts` (macula-station → local
+  macula) BEFORE releasing 8.4.0; passes in CI once 8.4.0 is published (station
+  resolves `~> 8.x`).
 - **Deferred (hardening, not caution):** a fan-out cap / LRU eviction of
-  dynamically-dialed links. Reuse-if-present is in; unbounded growth bounding is a
-  later pass.
+  dynamically-dialed links (reuse-if-present is in); and per-call `expected_node_id`
+  pinning on `call_station` for production (pool-level `verify` is enough for the
+  e2e). Both are refinements on a working path.
 
 ### Slice 5 — Wire the data plane end-to-end
 
