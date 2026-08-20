@@ -1357,11 +1357,11 @@ on_advertise_frame(R, advertise, Frame, ConnPid, NodeId, Source) ->
     Adv       = maps:get(advertiser, Frame),
     %% Reject mismatched advertiser to keep the per-conn invariant.
     on_advertise_match(Adv =:= NodeId, R, Realm, Procedure, Adv, ConnPid, Source);
-on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId, _Source) ->
+on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId, Source) ->
     Realm     = maps:get(realm,      Frame),
     Procedure = maps:get(procedure,  Frame),
     Adv       = maps:get(advertiser, Frame),
-    on_unadvertise_match(Adv =:= NodeId, R, Realm, Procedure).
+    on_unadvertise_match(Adv =:= NodeId, R, Realm, Procedure, Source).
 
 on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid, _Source) ->
     ok;
@@ -1408,9 +1408,48 @@ on_advertise_gate({ok, _Existing}, gossip, _R, _Realm, _Proc, _Adv, _ConnPid) ->
     %% Gossip never overwrites a live entry; first-write-wins.
     ok.
 
-on_unadvertise_match(false, _R, _Realm, _Proc) ->
+on_unadvertise_match(false, _R, _Realm, _Proc, _Source) ->
     ok;
-on_unadvertise_match(true, R, Realm, Proc) ->
+on_unadvertise_match(true, R, Realm, Proc, Source) ->
+    %% Same direct-vs-gossip gate `on_advertise_gate/7' applies to ADD —
+    %% previously missing here entirely, which was a real bug: gossip is
+    %% distance-vector (`macula_station_peering_router:sync_advertises/3'
+    %% re-attributes every relayed frame to the relaying station's own
+    %% SelfId), so a peer that ever briefly lost its OWN gossip-learned
+    %% copy of an entry — for any transient reason on ITS side — would
+    %% compute an honest UNADVERTISE diff and echo it back to US over
+    %% the very connection that carries our DIRECT daemon's own
+    %% registration. `Adv =:= NodeId' passes on that echo exactly like
+    %% it does on a real direct unadvertise (the relaying station's
+    %% frame legitimately claims itself, having rewritten `advertiser'
+    %% to its own SelfId), so with no gate a transient gossip hiccup one
+    %% hop away could permanently erase a daemon that never once asked
+    %% to stop serving. Direct still trumps anything, matching ADD:
+    %% only a gossip-sourced unadvertise needs the existing entry to
+    %% ALSO be gossip-sourced (or absent) before it is honoured.
+    on_unadvertise_gate(Source, macula_remote_advertise_registry:lookup(R, Realm, Proc),
+                        R, Realm, Proc).
+
+on_unadvertise_gate(direct, _Existing, R, Realm, Proc) ->
+    do_unregister(R, Realm, Proc);
+on_unadvertise_gate(gossip, {error, not_found}, _R, _Realm, _Proc) ->
+    ok;
+on_unadvertise_gate(gossip, {ok, Entry}, R, Realm, Proc) ->
+    %% `source' defaults to `direct' when absent (matches
+    %% macula_remote_advertise_registry's own moduledoc: "legacy
+    %% callers that don't pass source default to direct so legacy
+    %% registrations stay routable") — an entry of unknown provenance
+    %% is treated as protected, not as fair game for a gossip echo.
+    on_unadvertise_source_gate(maps:get(source, Entry, direct), R, Realm, Proc).
+
+on_unadvertise_source_gate(direct, _R, _Realm, _Proc) ->
+    %% A gossip echo trying to retract a live direct entry — refused,
+    %% same as a gossip ADVERTISE never overwriting one.
+    ok;
+on_unadvertise_source_gate(gossip, R, Realm, Proc) ->
+    do_unregister(R, Realm, Proc).
+
+do_unregister(R, Realm, Proc) ->
     macula_remote_advertise_registry:unregister(R, Realm, Proc),
     %% Propagate the removal promptly too (see on_advertise_match/6).
     notify_router_change().

@@ -632,6 +632,96 @@ gossip_does_not_replace_direct_entry_test_() ->
         end
      end}.
 
+gossip_unadvertise_does_not_remove_direct_entry_test_() ->
+    %% The unadvertise-side counterpart of gossip_does_not_replace_
+    %% direct_entry_test_ above. A station-flagged peer's UNADVERTISE
+    %% for a key we hold as a DIRECT (daemon-owned) entry must NOT
+    %% remove it -- exactly the same protection ADVERTISE already had.
+    %% Real scenario this guards: macula_station_peering_router's
+    %% distance-vector gossip re-attributes every relayed frame to the
+    %% relaying station's own SelfId, so a peer that transiently loses
+    %% its OWN gossip-learned copy of an entry computes an honest
+    %% UNADVERTISE diff and sends it back over the connection that
+    %% ALSO carries our direct daemon's registration. Before this fix
+    %% that echo passed `Adv =:= NodeId' exactly like a real direct
+    %% unadvertise would and erased the daemon's entry outright.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            StationKp = macula_identity:generate(),
+            StationId = macula_identity:public(StationKp),
+            DaemonId  = macula_identity:public(AdvKp),
+            DaemonConn  = spawn_dummy(),
+            StationConn = spawn_dummy(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p.gossip_unadvertise_vs_direct">>,
+            Obs ! {macula_peering, connected, DaemonConn, DaemonId},
+            wait_for_peers(Obs, 1, 500),
+            advertise(Obs, DaemonConn, AdvKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{conn_pid := DaemonConn, source := direct}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            Obs ! {macula_peering, connected, StationConn, StationId},
+            wait_for_peers(Obs, 2, 500),
+            sys:replace_state(Obs, fun(S) ->
+                IsStMap = element(?IS_STATION_INDEX, S),
+                setelement(?IS_STATION_INDEX, S, IsStMap#{StationId => true})
+            end),
+            %% Station "echoes" an UNADVERTISE claiming itself -- the
+            %% same shape a real distance-vector gossip drop takes.
+            unadvertise(Obs, StationConn, StationKp, Realm, Procedure),
+            timer:sleep(100),
+            {ok, Entry} = macula_remote_advertise_registry:lookup(
+                            Ra, Realm, Procedure),
+            ?assertEqual(DaemonConn, maps:get(conn_pid, Entry)),
+            ?assertEqual(direct,     maps:get(source, Entry))
+        end
+     end}.
+
+gossip_unadvertise_removes_gossip_entry_test_() ->
+    %% The gate must not become a one-way valve: a gossip-sourced entry
+    %% still needs to be retractable by a gossip UNADVERTISE from the
+    %% SAME relaying station, or a legitimate upstream removal would
+    %% never propagate.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra} = Ctx,
+            StationKp = macula_identity:generate(),
+            StationId = macula_identity:public(StationKp),
+            StationConn = spawn_dummy(),
+            Realm     = <<7:256>>,
+            Procedure = <<"_p.gossip_unadvertise_removes_gossip">>,
+            Obs ! {macula_peering, connected, StationConn, StationId},
+            wait_for_peers(Obs, 1, 500),
+            sys:replace_state(Obs, fun(S) ->
+                IsStMap = element(?IS_STATION_INDEX, S),
+                setelement(?IS_STATION_INDEX, S, IsStMap#{StationId => true})
+            end),
+            advertise(Obs, StationConn, StationKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {ok, #{source := gossip}} -> true;
+                    _ -> false
+                end
+            end, 500),
+            unadvertise(Obs, StationConn, StationKp, Realm, Procedure),
+            wait_for(fun() ->
+                case macula_remote_advertise_registry:lookup(
+                       Ra, Realm, Procedure) of
+                    {error, not_found} -> true;
+                    _ -> false
+                end
+            end, 500)
+        end
+     end}.
+
 reconnect_same_nodeid_purges_stale_advertise_test_() ->
     %% Same-NodeId reconnect with a different ConnPid must evict the
     %% old pid's remote-advertise entries synchronously, so a CALL
@@ -938,6 +1028,15 @@ advertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->
               macula_frame:advertise(#{realm      => Realm,
                                        procedure  => Procedure,
                                        advertiser => AdvId}),
+              AdvKp),
+    Obs ! {macula_peering, frame, AdvConn, Frame}.
+
+unadvertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->
+    AdvId = macula_identity:public(AdvKp),
+    Frame = macula_frame:sign(
+              macula_frame:unadvertise(#{realm      => Realm,
+                                         procedure  => Procedure,
+                                         advertiser => AdvId}),
               AdvKp),
     Obs ! {macula_peering, frame, AdvConn, Frame}.
 
