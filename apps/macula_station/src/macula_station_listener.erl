@@ -72,9 +72,13 @@
 -export_type([opts/0, listen_addr/0, stats/0, cert_source/0]).
 
 -ifdef(TEST).
-%% Exports for unit tests — pure opts composition.
+%% Exports for unit tests — pure opts composition, and the puzzle
+%% enforcement decision (pure, no process state or I/O).
 -export([peering_opts/1]).
+-export([puzzle_decision/2]).
 -endif.
+
+-type mode() :: off | log_only | enforce.
 
 -type cert_source() ::
         {pem, CertFile :: file:name_all(), KeyFile :: file:name_all()}
@@ -384,16 +388,77 @@ on_peering_accept({error, _}, _Conn, HS, CW) ->
     {HS, CW}.
 
 %% Worker emitted `{macula_peering, handshake_complete, ConnPid,
-%% PeerNodeId}' — move it from `handshaking' to `connected' and
-%% reconcile the `peers' index. If a prior worker exists for the
+%% PeerNodeId}'. First gated on the S/Kademlia identity puzzle
+%% (`macula_identity:puzzle_valid/1' — SHA-256(PeerNodeId) has the
+%% configured number of leading zero bits): a valid or unchecked peer
+%% moves from `handshaking' to `connected' and reconciles the `peers'
+%% index; an invalid one under `enforce' mode is closed and dropped
+%% before ever reaching `connected'. If a prior worker exists for the
 %% same `PeerNodeId', send it `{close, replaced_by_newer_handshake}'
 %% (graceful drain via the SDK's draining state) and let the DOWN
 %% reaper free its `connected' slot. Idempotent on unknown pid.
 on_handshake_complete(Pid, PeerNodeId,
                        #state{handshaking = HS, connected = C,
                               peers = P} = S) ->
-    promote_to_connected(find_ref_by_pid(Pid, HS), Pid, PeerNodeId,
-                         HS, C, P, S).
+    Mode = puzzle_enforcement_mode(),
+    Valid = Mode =:= off orelse macula_identity:puzzle_valid(PeerNodeId),
+    Ref = find_ref_by_pid(Pid, HS),
+    handle_puzzle_decision(puzzle_decision(Mode, Valid), Mode, Valid,
+                           PeerNodeId, Ref, Pid, HS, C, P, S).
+
+%% The whole point of enforcement: pure function of (configured mode,
+%% whether the peer's identity satisfies the puzzle) to an outcome.
+%% No process state, no I/O — exhaustively unit-testable on its own.
+-spec puzzle_decision(mode(), boolean()) -> accept | reject.
+puzzle_decision(off, _Valid)      -> accept;
+puzzle_decision(_Mode, true)      -> accept;
+puzzle_decision(log_only, false)  -> accept;
+puzzle_decision(enforce, false)   -> reject.
+
+handle_puzzle_decision(accept, Mode, Valid, PeerNodeId, Ref, Pid, HS, C, P, S) ->
+    maybe_emit_puzzle_invalid(Mode, Valid, PeerNodeId),
+    promote_to_connected(Ref, Pid, PeerNodeId, HS, C, P, S);
+handle_puzzle_decision(reject, Mode, Valid, PeerNodeId, Ref, Pid, HS, _C, _P, S) ->
+    maybe_emit_puzzle_invalid(Mode, Valid, PeerNodeId),
+    reject_handshake(Ref, Pid, HS, S).
+
+%% `log_only' reaching `accept' and `enforce' reaching `reject' both
+%% mean the puzzle failed; `off' and a valid puzzle never emit. Lets
+%% an operator see, via the diagnostic event stream, how many
+%% currently-connecting identities would be rejected before flipping
+%% `log_only' to `enforce'.
+maybe_emit_puzzle_invalid(off, _Valid, _PeerNodeId) -> ok;
+maybe_emit_puzzle_invalid(_Mode, true, _PeerNodeId) -> ok;
+maybe_emit_puzzle_invalid(Mode, false, PeerNodeId) ->
+    macula_diagnostics:event(<<"_macula.peering.puzzle_invalid">>, #{
+        peer_node_id_prefix =>
+            binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId))),
+        mode => Mode
+    }).
+
+%% Close via the same graceful mechanism used for a superseded
+%% handshake (`macula_peering:close/2') and drop the worker's
+%% `handshaking' slot without ever promoting it to `connected'.
+reject_handshake(error, _Pid, _HS, S) -> S;
+reject_handshake(Ref, Pid, HS, #state{handshaking = HS} = S) ->
+    macula_peering:close(Pid, puzzle_invalid),
+    S#state{handshaking = maps:remove(Ref, HS)}.
+
+%% `off' (default: today's behaviour, unchanged) | `log_only'
+%% (compute + diagnostic event, still accept) | `enforce' (reject).
+%% Read once per handshake completion, not cached, so an operator can
+%% flip it at runtime via `application:set_env/3' without a restart.
+%%
+%% Defaults to `off'. `puzzle_valid/1' is a property of the peer's
+%% public key alone (SHA-256(pubkey) has N leading zero bits) --
+%% flipping straight to `enforce' would reject any identity that
+%% predates this check, which today is the entire live fleet's own
+%% inter-station identities. Run `log_only' first, confirm the fleet
+%% (and any daemons expected to keep connecting) already carry
+%% puzzle-hardened identities, then flip to `enforce' deliberately.
+-spec puzzle_enforcement_mode() -> mode().
+puzzle_enforcement_mode() ->
+    application:get_env(macula_station, puzzle_enforcement, off).
 
 promote_to_connected(error, _Pid, _PeerNodeId, _HS, _C, _P, S) ->
     S;
