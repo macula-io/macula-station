@@ -200,11 +200,11 @@ parse_url(<<"quic://", Rest/binary>>)  -> parse_host_port(Rest);
 parse_url(<<"https://", Rest/binary>>) -> parse_host_port(Rest);
 parse_url(B) when is_binary(B)         -> parse_host_port(B).
 
-%% Bracketed IPv6 (`[::1]:36422` or bare `[::1]`) MUST be matched
+%% Bracketed IPv6 (`[::1]:36422' or bare `[::1]') MUST be matched
 %% before the plain-host path: an IPv6 address contains colons of its
 %% own, so splitting on the first `:' in `[::1]:36422' without
 %% recognising the brackets first cuts inside the address
-%% (`binary:split/2' on `":"` yields `["[", ":1]:36422"]'), and
+%% (`binary:split/2' on `":"' yields `["[", ":1]:36422"]'), and
 %% `binary_to_integer/1' on the port half then crashes this
 %% gen_server — every real caller re-derives the URL fresh next
 %% register, so the entry is merely delayed, but the whole registry

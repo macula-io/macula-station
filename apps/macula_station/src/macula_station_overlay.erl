@@ -2,7 +2,7 @@
 %%%
 %%% Computes the peer set for a station identity given the geographic
 %%% distribution of all known stations. Ported from V1 `macula_relay'
-%%% (`macula_relay_overlay.erl`) — the migration to V2 macula-station
+%%% (`macula_relay_overlay.erl') — the migration to V2 macula-station
 %%% dropped this module, so the realm topology view had no edges to
 %%% draw between station identities.
 %%%

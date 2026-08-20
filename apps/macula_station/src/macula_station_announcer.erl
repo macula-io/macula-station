@@ -19,7 +19,7 @@
 %% re-publishes the node_record on init — peers see a fresh record
 %% with a new UUIDv7 version.
 %%
-%% == Why not "heartbeat" pubsub? ==
+%% == Why not a heartbeat pubsub? ==
 %%
 %% Spec records are state, not events. A signed `node_record'
 %% with `expires_at' tells subscribers "I'm here for the next N

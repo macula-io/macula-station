@@ -142,14 +142,14 @@ handle_cast(_Msg, S) ->
 
 %% The periodic safety-net sync. Re-arm the timer HERE and ONLY here.
 %%
-%% The old code armed a fresh `send_after(?TICK_MS, tick)` on every handled
+%% The old code armed a fresh `send_after(?TICK_MS, tick)' on every handled
 %% message — periodic tick AND every external kick — and threw away the timer ref
-%% (it stored an unrelated `make_ref()` in `timer_ref`, which was then never read
+%% (it stored an unrelated `make_ref()' in `timer_ref', which was then never read
 %% or cancelled). So every kick that landed in its own mailbox pass PERMANENTLY
 %% added another 2s timer. The outstanding-timer count ratcheted up until the
 %% station ran back-to-back syncs forever: a live station's router was the top
-%% reducer at 1.7M reds/s, always mid-`sync`, mailbox ~42. Distinguishing the
-%% periodic `timer_tick` from kicks, and re-arming only on `timer_tick`, keeps
+%% reducer at 1.7M reds/s, always mid-`sync', mailbox ~42. Distinguishing the
+%% periodic `timer_tick' from kicks, and re-arming only on `timer_tick', keeps
 %% exactly one periodic timer outstanding. Measured 2026-07-25.
 handle_info(timer_tick, S0) ->
     ok = drain_ticks(),
@@ -157,7 +157,7 @@ handle_info(timer_tick, S0) ->
     {noreply, schedule_tick(sync(S1, Reconcile))};
 %% A kick: every direct ADVERTISE / SUBSCRIBE / peer change on this station sends
 %% `Pid ! tick'. Sync promptly (latency-sensitive), coalescing a burst via
-%% drain_ticks, but do NOT arm a timer — the periodic `timer_tick` already does.
+%% drain_ticks, but do NOT arm a timer — the periodic `timer_tick' already does.
 handle_info(tick, S) ->
     ok = drain_ticks(),
     {noreply, sync(S, false)};

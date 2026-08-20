@@ -192,7 +192,7 @@
 %% Hard upper bound on how long a forwarded CALL entry may live on
 %% the relay. Above any reasonable per-call deadline (the longest
 %% caller-side timeout in the fleet today is 10 s on
-%% `_realm.membership.join_with_token_v1`). Defensive — purges
+%% `_realm.membership.join_with_token_v1'). Defensive — purges
 %% stragglers even when a buggy peer never sends RESULT/ERROR.
 -define(FORWARDED_TTL_MS, 60_000).
 
@@ -268,12 +268,6 @@ peers(Pid) -> gen_server:call(Pid, peers).
 station_view(Pid) ->
     gen_server:call(Pid, station_view).
 
-%% @doc SWIM verdict tally. `confirmed_live_conn' is the interesting one: it
-%% counts verdicts of `confirmed_failed' for a peer we STILL hold a live
-%% connection to, which is a contradiction and therefore a suspected false
-%% positive. `confirmed_no_conn' is the corroborated case. The ratio is the
-%% measurement that decides whether any failure-reactive mechanism can be
-%% trusted here.
 %% @doc The full per-NodeId conns view: `NodeId => #{inbound, outbound}'.
 %%
 %% `peers/1' flattens to a NodeId list and `conn_for/2' answers for ONE
@@ -285,6 +279,12 @@ station_view(Pid) ->
 conns(Pid) ->
     gen_server:call(Pid, conns).
 
+%% @doc SWIM verdict tally. `confirmed_live_conn' is the interesting one: it
+%% counts verdicts of `confirmed_failed' for a peer we STILL hold a live
+%% connection to, which is a contradiction and therefore a suspected false
+%% positive. `confirmed_no_conn' is the corroborated case. The ratio is the
+%% measurement that decides whether any failure-reactive mechanism can be
+%% trusted here.
 -spec swim_verdicts(pid()) -> #{atom() => non_neg_integer()}.
 swim_verdicts(Pid) ->
     gen_server:call(Pid, swim_verdicts).
@@ -593,7 +593,7 @@ run_conn_sweep(#state{last_frame_at = LF, peers = P} = S) ->
 
 %% TTL fired with no reply ever arriving. The origin's station_link
 %% has already given up at the SDK level (its own deadline timer
-%% surfaced `{error, timeout}` to the caller), so we simply clear
+%% surfaced `{error, timeout}' to the caller), so we simply clear
 %% our entry. Logged at info so a flood of timeouts surfaces in
 %% operations dashboards before it becomes a memory leak.
 on_forwarded_timeout(error, S) ->
@@ -821,7 +821,7 @@ delete_conn_table(NodeId) ->
     ets:delete(?CONNS_TABLE, NodeId).
 
 %% Tolerant of missing table: tests that swap in a stub observer
-%% via `macula_station_peer_observer` API expect the gen_server:call
+%% via `macula_station_peer_observer' API expect the gen_server:call
 %% fallback path. Fall through to that when the named ETS table
 %% isn't present in this BEAM.
 ets_find_conns(NodeId) ->
@@ -1342,7 +1342,7 @@ deliver_advertise({ok, Frame}, _OrigFrame, ConnPid, NodeId,
 %% Classify an inbound ADVERTISE by whether the connection carrying
 %% it is a relay station (gossip) or a daemon (direct). Stations OR
 %% `?CAP_STATION' into their CONNECT capabilities; daemons leave it
-%% unset. Pre-4.5.0 SDKs read as `daemon` (legacy behaviour).
+%% unset. Pre-4.5.0 SDKs read as `daemon' (legacy behaviour).
 advertise_source(NodeId, IsSt) ->
     case maps:get(NodeId, IsSt, false) of
         true  -> gossip;

@@ -60,7 +60,7 @@
     verify          => term()
 }.
 
-%% Must stay >= 2: schedule_reconnect jitters the delay with `Backoff div 2`, and
+%% Must stay >= 2: schedule_reconnect jitters the delay with `Backoff div 2', and
 %% rand:uniform(0) is a badarg. The floor is 1_000, so this is only a compile-time
 %% coupling for a future editor, not a runtime guard.
 -define(INITIAL_BACKOFF_MS,  1_000).
@@ -72,7 +72,7 @@
 %% bloom_exchange periodic rebuild cadence). If we go this long
 %% without ANY inbound frame, the peering connection is half-open —
 %% QUIC keep_alive PINGs ACK at the transport layer (so we don't see
-%% `disconnected`) but the peer's application-level peering_conn
+%% `disconnected') but the peer's application-level peering_conn
 %% worker is dead (e.g., killed by the handshake-complete dedup
 %% close-cast on the peer side, where the close didn't propagate
 %% back to us). Force-close + reconnect.
@@ -514,7 +514,7 @@ on_inbound_frame(Frame, Msg, #state{peer_node_id = PeerNodeId,
 %% go to the dedicated dispatcher (mirrors macula_peering_conn's
 %% pubsub_recipient route — see SDK 4.4.4); everything else still flows
 %% to peer_observer so its SWIM / DHT / advertise-registry / logging
-%% view stays complete. The local-subscriber delivery in `deliver_event`
+%% view stays complete. The local-subscriber delivery in `deliver_event'
 %% above already handled SDK-side fan-out for THIS link's subscribers
 %% (e.g. peering_router subscribing for cross-station mesh gossip);
 %% dispatcher additionally handles per-station pubsub_server fan-out
@@ -846,7 +846,7 @@ unverified_from(Since, _Now)    -> Since.
 %%   * conn_pid alive
 %%   * last_inbound_at older than ?SILENCE_THRESHOLD_MS
 %%
-%% Even an entirely-idle peer should emit `_mesh.bloom` at the
+%% Even an entirely-idle peer should emit `_mesh.bloom' at the
 %% bloom_exchange rebuild cadence (30s by default) plus inbound
 %% station_record announces, SWIM gossip, ADVERTISE, etc. Five
 %% minutes of total silence on a station-to-station link is firmly

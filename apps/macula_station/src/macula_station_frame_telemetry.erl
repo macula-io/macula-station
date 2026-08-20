@@ -4,8 +4,8 @@
 %%% Three phases per frame:
 %%%
 %%%   recv_to_dispatch
-%%%     Mailbox wait — time from `peering_conn:notify_frame/2`
-%%%     stamping `RecvAtUs` to the receiver's `handle_info/2` actually
+%%%     Mailbox wait — time from `peering_conn:notify_frame/2'
+%%%     stamping `RecvAtUs' to the receiver's `handle_info/2' actually
 %%%     running. Requires the source peering_conn to have
 %%%     `timing_enabled = true' (macula >= 4.4.7). Without the stamp
 %%%     this phase is not recorded.
@@ -17,18 +17,18 @@
 %%%   forward_send
 %%%     Time spent emitting the relayed outbound frame (CALL → advertiser
 %%%     conn, RESULT → caller origin, stream chunk relay, etc.) up to
-%%%     the point `macula_peering:send_frame/2` returns. Captures the
+%%%     the point `macula_peering:send_frame/2' returns. Captures the
 %%%     QUIC stream write latency.
 %%%
-%%% Storage is a single public ETS table with `write_concurrency` so
+%%% Storage is a single public ETS table with `write_concurrency' so
 %%% updates from many peering_conns / dispatchers don't serialise. Each
-%%% update is a lock-free `update_counter/4` with auto-init — ~500ns.
+%%% update is a lock-free `update_counter/4' with auto-init — ~500ns.
 %%% At 1000 frames/sec across 3 phases the total telemetry overhead is
 %%% ~1.5ms/sec of CPU. Bounded memory: one row per
-%%% `(FrameType, Phase, Bucket)`, so ~17 buckets × 3 phases × ~15 frame
+%%% `(FrameType, Phase, Bucket)', so ~17 buckets × 3 phases × ~15 frame
 %%% types ≈ 800 rows.
 %%%
-%%% Read out via `snapshot/0` (gen_server-free; just `ets:tab2list/1`).
+%%% Read out via `snapshot/0' (gen_server-free; just `ets:tab2list/1').
 %%%-------------------------------------------------------------------
 -module(macula_station_frame_telemetry).
 
@@ -94,7 +94,7 @@ record(FrameType, Phase, DurationUs)
     %% update_counter/4 with default tuple does auto-init on first hit.
     %% Position 2 is the counter slot in the {Key, Counter} row.
     %%
-    %% The table is created lazily by peer_observer's `init/1`, but
+    %% The table is created lazily by peer_observer's `init/1', but
     %% pubsub_dispatcher workers spawn EARLIER in the boot chain
     %% (see macula_station_app:boot — pubsub_dispatcher at step ~145,
     %% peer_observer at step ~254). A worker that receives its first
@@ -137,7 +137,7 @@ snapshot() ->
 
 %% @doc Drop every counter back to 0. Used by the readout endpoint when
 %% the caller wants a window-since-reset view. Costs a single
-%% `ets:delete_all_objects/1`; bounded by row count.
+%% `ets:delete_all_objects/1'; bounded by row count.
 -spec reset() -> ok.
 reset() ->
     ets:delete_all_objects(?TABLE),

@@ -4,7 +4,7 @@
 %%
 %% MCID format (34 bytes):
 %% <pre>
-%%   <<Version:8, Codec:8, Hash:32/binary>>
+%%   &lt;&lt;Version:8, Codec:8, Hash:32/binary&gt;&gt;
 %% </pre>
 %% Codec is `?CODEC_RAW' (16#55) for chunk MCIDs and `?CODEC_MANIFEST'
 %% (16#56) for manifest MCIDs.

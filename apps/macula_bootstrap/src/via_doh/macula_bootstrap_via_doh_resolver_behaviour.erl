@@ -35,7 +35,7 @@
         {ok, RecordBytes :: binary()}
       | {error, term()}.
 
-%% @doc Resolve the foundation seed-list record for `FoundationKey'
+%% Resolve the foundation seed-list record for `FoundationKey'
 %% from the resolver's `Url'. Return raw record bytes for the
 %% orchestrator to decode and verify, or an `{error, Reason}'.
 -callback resolve(url(), macula_identity:pubkey(), resolve_opts()) ->

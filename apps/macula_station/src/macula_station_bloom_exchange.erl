@@ -317,7 +317,7 @@ handle_info({debounced_rebuild, _Stale}, S) ->
 %% station_link) deliver events as
 %% `{macula_event, SubRef, Topic, Payload, Meta}'.
 %%
-%% Key the cache by `Meta.publisher` (the originator's pubkey), NOT
+%% Key the cache by `Meta.publisher' (the originator's pubkey), NOT
 %% by SubRef→Host. EVENTs traverse fan-out chains through intermediate
 %% stations: a PUBLISH from B sent on B's outbound to A will fan out
 %% on A's pubsub_server to every subscriber on A's server (including

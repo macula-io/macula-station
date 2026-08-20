@@ -328,7 +328,7 @@ merge_fresh(State, PathId, Refs) ->
 %% ADDRESS-LESS and the specs built below always carry `endpoints => []'.
 %% `macula_station_dht_transport:send_frame/2' resolves a node only
 %% through `peer_observer:conn_for/2' — an existing connection — and
-%% never dials. So a learned entry raises `dht:size/1` but is not
+%% never dials. So a learned entry raises `dht:size/1' but is not
 %% reachable, and the "iterative" walk is one hop wide: every follow-up
 %% query to a newly learned peer returns `no_route'. Fixing that needs
 %% real addresses on the wire AND a dialling transport; until then treat

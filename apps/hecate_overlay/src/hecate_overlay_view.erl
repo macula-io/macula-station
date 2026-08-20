@@ -9,7 +9,7 @@
 %%       capped at 15). Plumtree gossip eager-pushes along
 %%       active-view edges.</li>
 %%   <li><strong>Passive view</strong> — candidate pool. Default
-%%       cap is `4 × active`. Promoted into the active view on
+%%       cap is `4 × active'. Promoted into the active view on
 %%       active-peer failure; refreshed via periodic shuffles
 %%       with active neighbours.</li>
 %% </ul>

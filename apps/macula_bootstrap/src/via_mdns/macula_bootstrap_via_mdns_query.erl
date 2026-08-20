@@ -1,7 +1,7 @@
 %% @doc mDNS codec for via_mdns bootstrap.
 %%
 %% via_mdns (Part 5 §5) discovers nearby stations via IPv6 link-local
-%% mDNS (`ff02::fb` port 5353). The advertised service is a single
+%% mDNS (`ff02::fb' port 5353). The advertised service is a single
 %% record-set at the flat name `_macula._udp.local' carrying TXT
 %% fields:
 %%
