@@ -36,11 +36,23 @@
 -endif.
 -export([subscribe/4, unsubscribe/2, publish/4, call/5, is_connected/1]).
 %% Dedicated-stream content transfer (PLAN_PER_STREAM_QUIC_ISOLATION.md
-%% Phase 2), mirroring `macula_station_link' in the SDK — this module
-%% is the CALLING side only (a peer's `_content.*' answer always
-%% arrives via the accepting station's `macula_station_peer_observer',
-%% never back through here as an inbound stream), so unlike the SDK
-%% module there is no `new_dedicated_stream' acceptance clause to add.
+%% Phase 2), mirroring `macula_station_link' in the SDK — for content,
+%% this module is the CALLING side only (a peer's `_content.*' answer
+%% always arrives via the accepting station's
+%% `macula_station_peer_observer', never back through here as an
+%% inbound stream).
+%%
+%% That is NOT true of every dedicated stream, though: a peer can open
+%% a FRESH one on this connection unprompted, to relay a STREAM_OPEN
+%% for cross-station RPC/streaming onto us as the next hop
+%% (`macula_station_peer_observer:on_stream_open_lookup/4' opens a
+%% dedicated stream on whatever connection its remote_advertise entry
+%% names, and that connection can just as well be one we dialled out as
+%% one that dialled us). `handle_info({macula_peering,
+%% new_dedicated_stream, ...})' re-transfers ownership of exactly that
+%% case to `macula_station_peer_observer', which already owns all the
+%% relay bookkeeping (`streams' / `stream_route' / `stream_bufs' /
+%% `on_dedicated_frame') — reused whole rather than duplicated here.
 -export([open_content_stream/1, call_on_stream/6, close_content_stream/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -462,6 +474,40 @@ handle_info({quic, Bin, Stream, _Flags},
     {noreply, NewS};
 handle_info({content_call_timeout, Stream}, #state{content_pending = CP} = S) ->
     {noreply, on_content_timeout(maps:take(Stream, CP), S)};
+%% The peer opened a NEW dedicated stream on this connection, unprompted
+%% by anything we did — a station relaying a STREAM_OPEN through us onto
+%% the NEXT hop (macula_station_peer_observer:on_stream_open_lookup/4
+%% opens a fresh dedicated stream on whatever connection its
+%% remote_advertise entry names, and that connection can just as well be
+%% one WE dialled out as one that dialled us).
+%%
+%% This module's own moduledoc used to claim there was nothing to add
+%% here: "a peer's `_content.*' answer always arrives via the accepting
+%% station's `macula_station_peer_observer', never back through here as
+%% an inbound stream." True for content — false for the cross-station
+%% RPC/streaming relay peer_observer grew afterward, which was never
+%% cross-checked against outbound_link's assumption. Without this
+%% clause the stream's ownership transfer + `active, true' set by
+%% `macula_peering_conn' before the notify still happen, but the
+%% notification itself fell into the catch-all below and was dropped —
+%% every subsequent byte on the stream then failed
+%% `is_map_key(Stream, Bufs)' here too (this module only tracks buffers
+%% for streams IT opened) and was ALSO silently dropped. The stream just
+%% sat there, forever unread, which is exactly the deterministic
+%% timeout `stream_order_and_eof' measured: paris relays correctly,
+%% nuremberg's outbound_link (nuremberg dialled paris) receives the
+%% fresh stream and has nowhere to put it.
+%%
+%% Fix: re-transfer ownership to `macula_station_peer_observer', which
+%% already owns every other dedicated-stream relay concern (`streams',
+%% `stream_route', `stream_bufs', `on_dedicated_frame') — reuse that
+%% machinery entirely rather than duplicating any of it here. Once
+%% ownership moves, every later `{quic, Bin, Stream, _Flags}' for this
+%% stream is delivered straight to the observer's mailbox, bypassing
+%% this module completely; this clause fires exactly once per stream.
+handle_info({macula_peering, new_dedicated_stream, ConnPid, Stream}, S) ->
+    relay_dedicated_stream_to_observer(ConnPid, Stream),
+    {noreply, S};
 handle_info({'DOWN', Mon, process, _Pid, _Reason}, S) ->
     {noreply, on_subscriber_down(Mon, S)};
 handle_info({'EXIT', ConnPid, _Reason}, #state{conn_pid = ConnPid} = S) ->
@@ -786,6 +832,25 @@ forward_to_observer(Msg) ->
         undefined -> ok;
         Pid       -> Pid ! Msg, ok
     end.
+
+%% See the `new_dedicated_stream' handle_info clause above for why this
+%% exists. Resolves the observer once and uses the SAME pid for both the
+%% ownership transfer and the notification, rather than two independent
+%% `whereis/1' calls that could theoretically race a supervisor restart
+%% between them.
+relay_dedicated_stream_to_observer(ConnPid, Stream) ->
+    on_relay_target(whereis(macula_station_peer_observer), ConnPid, Stream).
+
+on_relay_target(undefined, _ConnPid, _Stream) ->
+    %% Observer not up (boot edge / restart). The stream is simply
+    %% never claimed and the peer's TTL eventually reclaims it on
+    %% their side — same failure shape as any other observer-down
+    %% window elsewhere in this module.
+    ok;
+on_relay_target(ObserverPid, ConnPid, Stream) ->
+    _ = macula_quic:controlling_process(Stream, ObserverPid),
+    ObserverPid ! {macula_peering, new_dedicated_stream, ConnPid, Stream},
+    ok.
 
 do_dial(#state{host = H, port = P, identity = Kp, verify = V,
                capabilities = Caps} = S) ->

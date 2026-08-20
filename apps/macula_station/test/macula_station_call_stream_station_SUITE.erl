@@ -23,13 +23,15 @@
          init_per_testcase/2, end_per_testcase/2]).
 
 -export([stream_station_routed_control/1,
-         stream_dials_outside_seed_set/1]).
+         stream_dials_outside_seed_set/1,
+         stream_relays_through_outbound_dialled_hop/1]).
 
 -define(REALM, <<0:256>>).
 -define(PROC, <<"echo.stream">>).
 
 suite() -> [{timetrap, {minutes, 2}}].
-all()   -> [stream_station_routed_control, stream_dials_outside_seed_set].
+all()   -> [stream_station_routed_control, stream_dials_outside_seed_set,
+            stream_relays_through_outbound_dialled_hop].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(macula),
@@ -86,6 +88,63 @@ stream_dials_outside_seed_set(Config) ->
         catch macula:close(Consumer),
         catch macula:close(Provider),
         macula_station_test_cluster:stop_cluster([B])
+    end.
+
+%% Chain A - B - C (A/C not peered), C DIALS B (the direction that
+%% matters — see below). Provider connects to C, consumer to A. The
+%% consumer's `call_stream/5' resolves the procedure via A's gossip-
+%% propagated remote_advertise entry (pointing at B), so A relays
+%% STREAM_OPEN onto B; B's own entry (gossip-learned from C) points at
+%% its connection to C, so B relays again onto C, which finally
+%% dispatches to the real provider.
+%%
+%% `dial_outbound(C, B)' — not `dial_outbound(B, C)' — is the one
+%% detail that makes this test exercise the bug it exists for: it
+%% makes C the DIALER of its connection to B, so C's local process for
+%% that connection is `macula_station_outbound_link', not
+%% `macula_station_peer_observer' directly. B, relaying, opens a FRESH
+%% dedicated stream on ITS handle to that same connection to forward
+%% STREAM_OPEN onward — which C receives as an unprompted inbound
+%% stream on the outbound_link-owned side. Before the fix,
+%% outbound_link had no `new_dedicated_stream' handling at all: the
+%% stream's ownership transfer happened (via macula_peering_conn) but
+%% the notification silently hit outbound_link's catch-all, and every
+%% subsequent byte on that stream failed outbound_link's
+%% `is_map_key(Stream, ContentBufs)' guard too (content buffers only
+%% track streams outbound_link itself opened) — also dropped. The
+%% consumer would then time out on `recv/2' with nothing to show for
+%% it. `dial_outbound(A, B)' direction does not matter for reproducing
+%% this — A only ever SENDS on its handle to B, which needs no special
+%% receive-side handling on either end.
+stream_relays_through_outbound_dialled_hop(Config) ->
+    Opts = ?config(cluster_opts, Config),
+    [A, B, C] = macula_station_test_cluster:spawn_cluster(3, Opts),
+    try
+        {ok, _LinkAB} = macula_station_test_cluster:dial_outbound(A, B),
+        {ok, _LinkCB} = macula_station_test_cluster:dial_outbound(C, B),
+        ok = macula_station_test_cluster:wait_for_handshakes(A, 1, 10_000),
+        ok = macula_station_test_cluster:wait_for_handshakes(C, 1, 10_000),
+        UrlA = station_url(macula_station_test_cluster:listen_addr(A)),
+        UrlC = station_url(macula_station_test_cluster:listen_addr(C)),
+        {ok, Provider} = macula:connect([UrlC], #{verify => none}),
+        {ok, Consumer} = macula:connect([UrlA], #{verify => none}),
+        try
+            ok = wait_healthy(Provider),
+            ok = wait_healthy(Consumer),
+            ok = macula:advertise_stream(Provider, ?REALM, ?PROC, server_stream,
+                                         fun push_three_chunks/2),
+            %% Advertise gossip needs to reach A via B before the
+            %% consumer's call can resolve a route at all.
+            timer:sleep(3_000),
+            {ok, Stream} = macula:call_stream(Consumer, ?REALM, ?PROC, #{}, #{}),
+            ?assertEqual([<<"chunk-1">>, <<"chunk-2">>, <<"chunk-3">>],
+                         recv_all(Stream))
+        after
+            catch macula:close(Consumer),
+            catch macula:close(Provider)
+        end
+    after
+        macula_station_test_cluster:stop_cluster([A, B, C])
     end.
 
 %%------------------------------------------------------------------
