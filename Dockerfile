@@ -72,7 +72,7 @@ COPY rebar.config rebar.lock* ./
 # `upgrade` (not just `get-deps`) forces a real check against the current
 # hex.pm index every build. See ci.yml's matching fix for the same
 # staleness in the test job's actions/cache step.
-RUN rebar3 get-deps && rebar3 upgrade
+RUN rebar3 get-deps && rebar3 upgrade --all
 
 COPY apps   ./apps
 COPY config ./config

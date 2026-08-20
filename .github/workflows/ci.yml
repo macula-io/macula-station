@@ -77,7 +77,7 @@ jobs:
       # 9.3.1 had already been published and satisfied the same "~> 9.1"
       # constraint the whole time.
       - name: Upgrade deps to latest matching version
-        run: rebar3 upgrade
+        run: rebar3 upgrade --all
 
       - name: Compile
         run: rebar3 compile
