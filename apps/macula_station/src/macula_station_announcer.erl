@@ -229,8 +229,16 @@ publish_station_endpoint(#state{port = undefined}) ->
 publish_station_endpoint(#state{dht = Dht, identity = Kp,
                                 host = Host, port = Port}) ->
     Pub    = macula_identity:public(Kp),
+    %% station_endpoint's record default TTL (5 min) exactly equals the
+    %% DHT's replication interval, leaving zero safety margin before a
+    %% still-valid record goes stale ahead of its own re-replication.
+    %% node_record avoids this with a 2x margin (this module's 10-min
+    %% ?DEFAULT_TTL_MS against the same 5-min interval, after the
+    %% 2026-07-27 replication-interval fix); give station_endpoint the
+    %% same explicit TTL rather than relying on the record's own default.
+    EndpointOpts = (host_opt(Host))#{ttl_ms => ?DEFAULT_TTL_MS},
     Signed = macula_record:sign(
-               macula_record:station_endpoint(Pub, Port, host_opt(Host)), Kp),
+               macula_record:station_endpoint(Pub, Port, EndpointOpts), Kp),
     try macula_dht:put_record(Dht, Signed)
     catch Class:Reason ->
         macula_diagnostics:event(<<"_macula.announce.endpoint_publish_failed">>,
