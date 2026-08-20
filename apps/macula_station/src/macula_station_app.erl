@@ -37,6 +37,11 @@
 
 -export([start/2, prep_stop/1, stop/1]).
 
+-ifdef(TEST).
+%% Exports for unit tests -- pure helpers that are otherwise private.
+-export([endpoint_url/2]).
+-endif.
+
 %% Mesh-realm tag — protocol-internal events live under the all-zeros
 %% realm. Used by `peering_router' and the announcer / fan-out path.
 -define(MESH_REALM, <<0:256>>).
@@ -804,8 +809,26 @@ bind_to_binary(L) when is_list(L)  -> list_to_binary(L);
 bind_to_binary(T) when is_tuple(T) -> list_to_binary(inet:ntoa(T)).
 
 endpoint_url(Bind, Port) ->
-    iolist_to_binary(["quic://", endpoint_host(Bind), ":",
+    iolist_to_binary(["quic://", bracket_ipv6(endpoint_host(Bind)), ":",
                       integer_to_list(Port)]).
+
+%% An IPv6 literal must be bracketed in a URL's host position (RFC 3986) --
+%% without it, the trailing `:Port' is ambiguous with the address's own
+%% colons, and any consumer parsing this as a dial URL
+%% (`macula_station_link:parse_seed/1' on the SDK side) rejects it outright
+%% as unparseable. A hostname or IPv4 literal never contains a colon, so
+%% checking for one is a safe, address-family-agnostic rule -- no need to
+%% know up front whether `Bind' was a v4 or v6 tuple. `station_endpoint'
+%% (the RPC/content-upload direct-dial path) doesn't hit this: it stores
+%% the raw host and lets the SDK's `macula_direct_dial:build_dial_url/2'
+%% bracket it when building the full URL. `content_announcement''s
+%% `endpoint' is a complete URL built once, here, with nothing downstream
+%% to add the brackets later -- so it has to happen in this function.
+bracket_ipv6(Host) ->
+    bracket_ipv6(Host, lists:member($:, Host)).
+
+bracket_ipv6(Host, true)  -> [$[, Host, $]];
+bracket_ipv6(Host, false) -> Host.
 
 endpoint_host(L) when is_list(L)  -> L;
 endpoint_host(T) when is_tuple(T) -> inet:ntoa(T).
