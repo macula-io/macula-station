@@ -62,7 +62,17 @@ WORKDIR /build
 # application source changes.
 COPY rebar.config rebar.lock* ./
 
-RUN rebar3 get-deps
+# rebar.lock is deliberately gitignored (this repo floats on `~>` ranges,
+# not exact pins) and is never present in a fresh checkout, so this layer
+# is keyed on rebar.config's content alone. Docker's build cache
+# (cache-from/cache-to: type=gha in ci.yml) would otherwise reuse this
+# layer's fetched deps unchanged for as long as rebar.config's dependency
+# line stays the same text — silently shipping a stale hex release even
+# after a newer one satisfying the same constraint is published.
+# `upgrade` (not just `get-deps`) forces a real check against the current
+# hex.pm index every build. See ci.yml's matching fix for the same
+# staleness in the test job's actions/cache step.
+RUN rebar3 get-deps && rebar3 upgrade
 
 COPY apps   ./apps
 COPY config ./config

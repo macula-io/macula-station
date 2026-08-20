@@ -65,6 +65,20 @@ jobs:
             ~/.cache/rebar3
           key: ${{ runner.os }}-otp${{ matrix.otp }}-${{ hashFiles('**/rebar.config', '**/rebar.lock', '**/*.app.src') }}
 
+      # rebar.lock is deliberately gitignored (this repo floats on `~>`
+      # ranges, not exact pins), so the cache key above can't reflect
+      # which hex release actually satisfies a dependency's constraint —
+      # it only changes when rebar.config/.app.src text changes. Without
+      # this step, a cache hit skips dependency resolution entirely and
+      # silently keeps building against whatever was cached the last time
+      # the key changed, even after a new hex release ships. Confirmed
+      # live 2026-08-20: three straight pushes built and xref-failed
+      # against a macula 9.1.1 cached from hours earlier, while 9.3.0 and
+      # 9.3.1 had already been published and satisfied the same "~> 9.1"
+      # constraint the whole time.
+      - name: Upgrade deps to latest matching version
+        run: rebar3 upgrade
+
       - name: Compile
         run: rebar3 compile
 
