@@ -33,6 +33,10 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([fanout_candidates/2, advance_seen/2]).
+-endif.
+
 -export_type([opts/0]).
 
 %% Internal — `_content.put_block' / `_content.get_block' / etc. all
@@ -57,21 +61,35 @@
 %% acking, and 256 KiB blobs over a slow link can take real time.
 -define(REPLICATION_TIMEOUT_MS, 10_000).
 
-%% Default hop budget for a daemon's `_content.get_block' that
-%% doesn't supply its own. 1 hop only — 2-hop iteration was
-%% overwhelming the fleet's macula_content_store gen_server under
-%% torture (each failed lookup amplified to 8² = 64 concurrent
-%% inbound `_content.get_block' calls per relay), and after a few
-%% rounds peer_observer crash-recovered, taking the conn_for ETS
-%% mirror with it and cascading every other test through stale
-%% conn lookups.
+%% Default hop budget for a daemon's `_content.get_block' /
+%% `_content.get_manifest' that doesn't supply its own.
 %%
-%% 1 hop covers the case where writer + reader's relays share at
-%% least one peer. For the worst-case partial-mesh pair with no
-%% mutual peer, the cross-station `_content.get_block' will return
-%% `not_found' until eager content replication lands (Day 3 / chunked
-%% manifests). The single-station path is unaffected.
--define(DEFAULT_HOPS, 1).
+%% Was capped at 1 hop because 2-hop iteration used to overwhelm the
+%% fleet's macula_content_store gen_server under torture (each failed
+%% lookup amplified to 8² = 64 concurrent inbound calls per relay —
+%% unbounded fanout width, EVERY peer connection, with no dedup, so a
+%% station with 8 peers asking 8 peers each hits 64). That amplification
+%% is why this stayed at 1 despite the partial-mesh topology genuinely
+%% needing 2 (a pair with no direct edge but a shared bridge peer needs
+%% exactly 2 hops: reader -> bridge -> writer's replica).
+%%
+%% Fixed at the fanout site instead of by staying at 1 forever:
+%% `fanout_candidates/2' now caps width to `?DEFAULT_REPLICATION_K' (the
+%% same bound PUT-side eager replication already uses, so GET never
+%% explores more of the mesh per hop than PUT already populated) AND
+%% threads a `seen' list through every hop so no peer is EVER asked
+%% twice across the whole walk, in either direction. Worst case for a
+%% 2-hop walk is now bounded to K + K*K = 12 calls, not 64 — see
+%% `macula_station_content_fanout_bound_tests' for the property test
+%% asserting this holds even against an adversarial (fully-connected,
+%% many-peer) topology.
+-define(DEFAULT_HOPS, 2).
+%% Fanout width per hop — reuses the PUT side's replication fan-out
+%% cap. A GET hop exploring MORE of the mesh than a PUT ever replicated
+%% to would just be wasted calls; using the same K keeps the two sides
+%% symmetric and keeps this one number, not two, as the mesh's fanout
+%% budget.
+-define(GET_FANOUT_WIDTH, ?DEFAULT_REPLICATION_K).
 
 %% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
 %% every use. A pid captured at child-spec time is dead the moment the
@@ -184,61 +202,148 @@ safe_replicate(LinkPid, MCID, Payload) ->
     safe_content_call(LinkPid, <<"_content.put_block">>, Args,
                       ?REPLICATION_TIMEOUT_MS).
 
-handle_get_manifest(#{mcid := MCID}) when is_binary(MCID) ->
-    classify_get_manifest(macula_content_store:get_manifest(MCID));
+%% Local hit short-circuits. Local miss falls back to a bounded
+%% multi-hop relay against peer stations, mirroring `handle_get_block'
+%% below exactly (same `hops_remaining'/`seen' shape, same
+%% `fanout_candidates/1' bound) — this handler had NO relay at all
+%% before: a miss returned `not_found' immediately with a comment
+%% saying iterative discovery was a "Phase 4+" concern. For CHUNKED
+%% content that is far more costly than it looks: `get_chunked/3'
+%% (macula.erl) fetches the manifest FIRST and gives up immediately on
+%% `not_found' — no chunk fetch is even attempted without it — so this
+%% one missing hop was the dominant reason chunked content above the
+%% 256 KiB threshold never arrived cross-station at all, independent of
+%% whether every individual chunk was otherwise reachable.
+handle_get_manifest(#{mcid := MCID} = Args) when is_binary(MCID) ->
+    on_local_manifest(macula_content_store:get_manifest(MCID), MCID, Args);
 handle_get_manifest(_Other) ->
     {error, bad_request}.
 
-classify_get_manifest({ok, Manifest})        -> {ok, Manifest};
-classify_get_manifest({error, not_found})    -> {ok, not_found}.
+on_local_manifest({ok, Manifest}, _MCID, _Args) ->
+    {ok, Manifest};
+on_local_manifest({error, not_found}, MCID, Args) ->
+    Hops = maps:get(hops_remaining, Args, ?DEFAULT_HOPS),
+    Seen = maps:get(seen, Args, []),
+    on_manifest_iterative_decision(Hops, MCID, Seen).
+
+on_manifest_iterative_decision(0, _MCID, _Seen) ->
+    {ok, not_found};
+on_manifest_iterative_decision(N, MCID, Seen) when N > 0 ->
+    fanout_remote_get_manifest(MCID, N - 1, Seen).
+
+fanout_remote_get_manifest(MCID, NextHops, Seen) ->
+    Candidates = fanout_candidates(safe_peer_connections(), Seen),
+    on_manifest_candidates(Candidates, MCID, NextHops,
+                           advance_seen(Seen, Candidates)).
+
+on_manifest_candidates([], _MCID, _NextHops, _NewSeen) ->
+    {ok, not_found};
+on_manifest_candidates(Candidates, MCID, NextHops, NewSeen) ->
+    Tag    = make_ref(),
+    Parent = self(),
+    Args   = #{mcid => MCID, hops_remaining => NextHops, seen => NewSeen},
+    [spawn(fun() ->
+        Reply = safe_manifest_call(LinkPid, Args),
+        Parent ! {Tag, Reply}
+     end) || {_Url, LinkPid} <- Candidates],
+    collect_first_manifest(Tag, length(Candidates),
+                           ?REMOTE_BLOCK_PER_PEER_MS + 200).
+
+safe_manifest_call(LinkPid, Args) ->
+    safe_content_call(LinkPid, <<"_content.get_manifest">>, Args,
+                      ?REMOTE_BLOCK_PER_PEER_MS).
+
+collect_first_manifest(_Tag, 0, _DeadlineMs) ->
+    {ok, not_found};
+collect_first_manifest(Tag, Remaining, DeadlineMs) ->
+    Start = erlang:monotonic_time(millisecond),
+    receive
+        {Tag, {ok, Wire}} when is_map(Wire) ->
+            {ok, Wire};
+        {Tag, _Other} ->
+            Elapsed = erlang:monotonic_time(millisecond) - Start,
+            collect_first_manifest(Tag, Remaining - 1,
+                                   max(0, DeadlineMs - Elapsed))
+    after DeadlineMs ->
+        {ok, not_found}
+    end.
 
 handle_get_block(#{mcid := MCID} = Args) when is_binary(MCID) ->
     on_local_block(macula_content_store:get_block(MCID), MCID, Args);
 handle_get_block(_Other) ->
     {error, bad_request}.
 
-%% Local hit short-circuits. Local miss falls back to multi-hop
-%% iterative fetch against peer stations — necessary because the v1
-%% put path stores ONLY locally on the writer's relay, and the
-%% reader (here) might be a different relay. Fans
-%% `_content.get_block' RPCs out to every peer link in parallel,
-%% returns the first peer that holds the block.
+%% Local hit short-circuits. Local miss falls back to a bounded
+%% multi-hop relay against peer stations — necessary because the v1
+%% put path stores ONLY locally on the writer's relay, and the reader
+%% (here) might be a different relay.
 %%
-%% The `hops_remaining' arg counts down hops the receiving handler
-%% is still allowed to walk. A daemon's first call arrives without
-%% the field — defaults to `?DEFAULT_HOPS' (2 in our partial-mesh
-%% topology, sufficient for the worst-case 2-hop path between
-%% centrum and haasrode). Each peer-to-peer iteration decrements
-%% the counter; reaching 0 stops at local lookup. Without multi-hop,
-%% partial-mesh pairs that lack a direct edge can't reach a block
-%% held only on the writer's relay.
+%% The `hops_remaining' arg counts down hops the receiving handler is
+%% still allowed to walk. A daemon's first call arrives without the
+%% field — defaults to `?DEFAULT_HOPS'. Each peer-to-peer iteration
+%% decrements the counter; reaching 0 stops at local lookup.
+%%
+%% `seen' is the OTHER half of what makes 2+ hops safe: every URL this
+%% walk has already asked (in EITHER direction — hop 1's askers are in
+%% hop 2's `seen' too) is threaded through so no peer is ever queried
+%% twice. Without it, two mutually-peered stations would re-ask each
+%% other every hop, and on a station with ~8 peers, 2 unbounded hops is
+%% 8² = 64 concurrent inbound calls — the exact amplification that
+%% overwhelmed `macula_content_store' and cascaded `peer_observer' in
+%% the incident `?DEFAULT_HOPS' used to be capped at 1 to avoid. `seen'
+%% plus the `?GET_FANOUT_WIDTH' cap on `fanout_candidates/1' bound the
+%% SAME 2-hop walk to at most K + K*K calls instead.
 on_local_block({ok, Block}, _MCID, _Args) ->
     {ok, Block};
 on_local_block({error, not_found}, MCID, Args) ->
     Hops = maps:get(hops_remaining, Args, ?DEFAULT_HOPS),
-    on_iterative_decision(Hops, MCID).
+    Seen = maps:get(seen, Args, []),
+    on_iterative_decision(Hops, MCID, Seen).
 
-on_iterative_decision(0, _MCID) ->
+on_iterative_decision(0, _MCID, _Seen) ->
     {ok, not_found};
-on_iterative_decision(N, MCID) when N > 0 ->
-    fanout_remote_get_block(MCID, N - 1).
+on_iterative_decision(N, MCID, Seen) when N > 0 ->
+    fanout_remote_get_block(MCID, N - 1, Seen).
 
-fanout_remote_get_block(MCID, NextHops) ->
-    Conns = safe_peer_connections(),
-    on_peer_count(length(Conns), MCID, NextHops, Conns).
+fanout_remote_get_block(MCID, NextHops, Seen) ->
+    Candidates = fanout_candidates(safe_peer_connections(), Seen),
+    on_block_candidates(Candidates, MCID, NextHops, advance_seen(Seen, Candidates)).
 
-on_peer_count(0, _MCID, _NextHops, _Conns) ->
+on_block_candidates([], _MCID, _NextHops, _NewSeen) ->
     {ok, not_found};
-on_peer_count(_N, MCID, NextHops, Conns) ->
+on_block_candidates(Candidates, MCID, NextHops, NewSeen) ->
     Tag    = make_ref(),
     Parent = self(),
-    Args   = #{mcid => MCID, hops_remaining => NextHops},
+    Args   = #{mcid => MCID, hops_remaining => NextHops, seen => NewSeen},
     [spawn(fun() ->
         Reply = safe_call(LinkPid, Args),
         Parent ! {Tag, Reply}
-     end) || {_Url, LinkPid} <- Conns],
-    collect_first_block(Tag, length(Conns),
+     end) || {_Url, LinkPid} <- Candidates],
+    collect_first_block(Tag, length(Candidates),
                         ?REMOTE_BLOCK_PER_PEER_MS + 200).
+
+%% Shared by both `_content.get_block' and `_content.get_manifest'
+%% relays: this hop's candidates are this station's own peer
+%% connections, minus anything already asked anywhere in the walk so
+%% far, capped to `?GET_FANOUT_WIDTH'. Order is whatever
+%% `peer_links:connections/0' returns — there is no key-distance
+%% concept here, unlike the DHT walk, so "first K not-yet-asked" is as
+%% principled a choice as any other and matches the PUT side's own
+%% unranked "first K" replication target selection.
+%%
+%% Pure (takes `Conns' explicitly) so the fanout-bound property can be
+%% tested against an adversarial topology without a live peer_links
+%% registry — see `macula_station_content_fanout_bound_tests'.
+fanout_candidates(Conns, Seen) ->
+    lists:sublist(
+      [C || {Url, _Pid} = C <- Conns, not lists:member(Url, Seen)],
+      ?GET_FANOUT_WIDTH).
+
+%% This hop's chosen candidates join `seen' before being handed to the
+%% NEXT hop, so a peer asked here is never asked again further out in
+%% the same walk either.
+advance_seen(Seen, Candidates) ->
+    Seen ++ [Url || {Url, _Pid} <- Candidates].
 
 safe_peer_connections() ->
     try macula_station_peer_links:connections()
