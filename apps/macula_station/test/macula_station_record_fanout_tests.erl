@@ -65,6 +65,10 @@ classification_test_() ->
          fun(Ctx) ->
              {timeout, 30,
               fun() -> unknown_record_type_is_ignored(Ctx) end}
+         end,
+         fun(Ctx) ->
+             {timeout, 30,
+              fun() -> unlabeled_record_defaults_to_daemon_topic(Ctx) end}
          end
      ]}.
 
@@ -88,6 +92,16 @@ daemon_record_lands_on_daemon_topic(Ctx) ->
 wire_decoded_daemon_record_lands_on_daemon_topic(Ctx) ->
     assert_publish_lands(Ctx,
                         wire_atomized_daemon_record(),
+                        <<"_mesh.daemon.announced_v1">>).
+
+%% Regression for the inverted-default bug (2026-08-20): a record with no
+%% `kind' field at all — the SDK's own peer default — must land on the
+%% DAEMON topic, not the station one. Real stations always stamp an
+%% explicit `kind = station' (`macula_station_announcer:node_record_opts/1');
+%% anything unlabeled is an ordinary daemon.
+unlabeled_record_defaults_to_daemon_topic(Ctx) ->
+    assert_publish_lands(Ctx,
+                        unlabeled_record(),
                         <<"_mesh.daemon.announced_v1">>).
 
 unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg,
@@ -141,7 +155,18 @@ receive_event(_Expected, Timeout) ->
     after Timeout -> timeout
     end.
 
+%% A real station always stamps `kind = station' explicitly
+%% (`macula_station_announcer:node_record_opts/1') — mirror that here
+%% rather than relying on the record's default, which is now `daemon'.
 station_record() ->
+    OwnerKp = macula_identity:generate(),
+    NodeId  = macula_identity:public(OwnerKp),
+    macula_record:sign(
+      macula_record:node_record(NodeId, [], 0, #{kind => <<"station">>}),
+      OwnerKp).
+
+%% No `kind' field at all — what the SDK's own peer default produces.
+unlabeled_record() ->
     OwnerKp = macula_identity:generate(),
     NodeId  = macula_identity:public(OwnerKp),
     macula_record:sign(macula_record:node_record(NodeId, [], 0), OwnerKp).

@@ -202,21 +202,31 @@ fan_out_depart(P, Record, Wiring) ->
 
 record_kind(Record) -> payload_kind(macula_record:payload(Record)).
 
+%% Unlabeled records default to `daemon', not `station'. Stations always
+%% stamp an explicit `kind = station' on their own node_record (see
+%% `macula_station_announcer:node_record_opts/1'); the SDK's own peer
+%% default omits `kind' entirely. Defaulting the unlabeled case to
+%% `station' silently misrouted every plain daemon connection onto the
+%% station announce/depart topics, which the realm's Directory.Subscriber
+%% trusts completely — the same inverted-default bug already fixed on the
+%% macula-realm side (`Directory.upsert_node_record/2'). `payload_kind_is_station/1'
+%% in `macula_station_announcer' already defaults the other, correct way;
+%% this brings the fan-out's classification in line with it.
 payload_kind(#{{text, <<"kind">>} := V}) -> unwrap_kind(V);
 payload_kind(#{<<"kind">>          := V}) -> unwrap_kind(V);
 payload_kind(#{kind                := V}) -> unwrap_kind(V);
-payload_kind(_)                            -> <<"station">>.
+payload_kind(_)                            -> <<"daemon">>.
 
 unwrap_kind({text, K}) when is_binary(K)                -> K;
 unwrap_kind(K)         when is_binary(K)                -> K;
 unwrap_kind(K)         when is_atom(K), K =/= undefined -> atom_to_binary(K, utf8);
-unwrap_kind(_)                                          -> <<"station">>.
+unwrap_kind(_)                                          -> <<"daemon">>.
 
-node_announce_topic(<<"daemon">>) -> <<"_mesh.daemon.announced_v1">>;
-node_announce_topic(_)            -> <<"_mesh.station.announced_v1">>.
+node_announce_topic(<<"station">>) -> <<"_mesh.station.announced_v1">>;
+node_announce_topic(_)             -> <<"_mesh.daemon.announced_v1">>.
 
-node_depart_topic(<<"daemon">>) -> <<"_mesh.daemon.departed_v1">>;
-node_depart_topic(_)            -> <<"_mesh.station.departed_v1">>.
+node_depart_topic(<<"station">>) -> <<"_mesh.station.departed_v1">>;
+node_depart_topic(_)             -> <<"_mesh.daemon.departed_v1">>.
 
 %%====================================================================
 %% Publish — register the mesh-realm pubsub_server (cheap idempotent
