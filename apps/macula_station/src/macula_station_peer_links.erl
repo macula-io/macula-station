@@ -200,8 +200,29 @@ parse_url(<<"quic://", Rest/binary>>)  -> parse_host_port(Rest);
 parse_url(<<"https://", Rest/binary>>) -> parse_host_port(Rest);
 parse_url(B) when is_binary(B)         -> parse_host_port(B).
 
+%% Bracketed IPv6 (`[::1]:36422` or bare `[::1]`) MUST be matched
+%% before the plain-host path: an IPv6 address contains colons of its
+%% own, so splitting on the first `:' in `[::1]:36422' without
+%% recognising the brackets first cuts inside the address
+%% (`binary:split/2' on `":"` yields `["[", ":1]:36422"]'), and
+%% `binary_to_integer/1' on the port half then crashes this
+%% gen_server — every real caller re-derives the URL fresh next
+%% register, so the entry is merely delayed, but the whole registry
+%% (every OTHER entry too) resets to empty on the restart in between.
+%% Production `outbound_peers' config is host+port pairs (DNS
+%% hostnames), never IPv6 literals — brackets only occur in test-
+%% harness loopback URLs — but the crash is loud enough elsewhere
+%% (asymmetric-loss / content-transfer station-to-station tests use
+%% `dial_outbound/2' against `::1') that it needs the real fix.
+parse_host_port(<<"[", Rest/binary>>) ->
+    parse_bracketed_host(binary:split(Rest, <<"]">>));
 parse_host_port(B) ->
     case binary:split(B, <<":">>) of
         [H, P] -> {H, binary_to_integer(P)};
         [H]    -> {H, 4433}
     end.
+
+parse_bracketed_host([Host, <<>>]) ->
+    {Host, 4433};
+parse_bracketed_host([Host, <<":", Port/binary>>]) ->
+    {Host, binary_to_integer(Port)}.
