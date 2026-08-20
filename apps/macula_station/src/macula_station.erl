@@ -39,7 +39,11 @@
     tombstone_type/0,
     %% Internal — called by `macula_station_app' during boot/teardown.
     remember_dial_opts/1,
-    forget_dial_opts/0
+    forget_dial_opts/0,
+    %% Internal — called by `macula_station_dht_dialer' to build a base
+    %% dial template with the station's own identity, replacing
+    %% `controlling_pid' with its own pid before actually dialling.
+    dial_opts/0
 ]).
 
 -ifdef(TEST).
@@ -363,6 +367,12 @@ dial({ok, Opts}, Target) ->
 dial({error, _} = E, _Target) ->
     E.
 
+%% @doc Base dial opts (identity, capabilities, DHT/pubsub fast-path
+%% recipients) with `controlling_pid' set to this station's own observer.
+%% `connect_to/1' uses this as-is; `macula_station_dht_dialer' overrides
+%% `controlling_pid' with its own pid before dialling, so it — not the
+%% observer — sees the `connected' event first and can trust-check it.
+-spec dial_opts() -> {ok, macula_peering:opts()} | {error, not_started}.
 dial_opts() ->
     compose_dial(observer(), persistent_term:get(?DIAL_KEY, undefined)).
 
