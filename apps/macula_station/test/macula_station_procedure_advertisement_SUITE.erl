@@ -61,7 +61,8 @@ advertisement_resolves_cross_station(Config) ->
         {value, [Got]} = find_on(A, Key, B),
         ?assertEqual(#{procedure_uri   => Uri,
                        advertiser_node => Adv,
-                       serving_station => BSt},
+                       serving_station => BSt,
+                       cert_chain      => undefined},
                      macula_record:read_procedure_advertisement(Got))
     end).
 
