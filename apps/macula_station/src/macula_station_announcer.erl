@@ -93,7 +93,7 @@
     refresh_ms   :: pos_integer(),
     timer_ref    :: reference() | undefined,
     %% Last signed node_record, re-broadcast over links between DHT refreshes.
-    last_signed  :: macula_record:record() | undefined,
+    last_signed  :: macula_record:m_record() | undefined,
     bcast_ref    :: reference() | undefined,
     %% Station's peer observer pid. `undefined' for unit tests that
     %% don't bring up a real observer.
@@ -266,7 +266,7 @@ enrich_or_fallback(ObsPid, Dht, RecOpts) ->
 %% cycle", not "crash the announcer". Returns `ok | error' so the caller can
 %% re-arm a short retry (?PUBLISH_RETRY_MS) rather than let the record lapse at
 %% its TTL after a full refresh interval.
--spec put_node_record(pid(), macula_record:record()) -> ok | error.
+-spec put_node_record(pid(), macula_record:m_record()) -> ok | error.
 put_node_record(Dht, Signed) ->
     try
         ok = macula_dht:put_record(Dht, Signed),

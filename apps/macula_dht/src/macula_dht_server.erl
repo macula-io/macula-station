@@ -91,7 +91,7 @@
 %% land here. Receivers (e.g. `publish_record_facts') translate
 %% the record into a typed business event on the peering pubsub
 %% channel.
--type on_record_stored_fun() :: fun((macula_record:record()) -> any()).
+-type on_record_stored_fun() :: fun((macula_record:m_record()) -> any()).
 
 -type opts() :: #{
     self_id               := macula_dht_xor:id(),
@@ -110,7 +110,7 @@
 -type find_node_result() :: {ok, [macula_frame:station_ref()]}
                           | {error, timeout | no_transport | term()}.
 
--type find_value_result() :: {value, [macula_record:record()]}
+-type find_value_result() :: {value, [macula_record:m_record()]}
                            | {nodes, [macula_frame:station_ref()]}
                            | {error, timeout | no_transport | term()}.
 
@@ -274,27 +274,27 @@ find_value(Pid, <<_:256>> = Key, <<_:256>> = PeerId, Timeout)
     gen_server:call(Pid, {find_value, Key, PeerId, Timeout}, Timeout + 1_000).
 
 -spec send_store(pid(), macula_identity:pubkey(),
-                 macula_record:record()) -> send_store_result().
+                 macula_record:m_record()) -> send_store_result().
 send_store(Pid, PeerId, Record) ->
     send_store(Pid, PeerId, Record, ?DEFAULT_STORE_TIMEOUT_MS).
 
--spec send_store(pid(), macula_identity:pubkey(), macula_record:record(),
+-spec send_store(pid(), macula_identity:pubkey(), macula_record:m_record(),
                  pos_integer()) -> send_store_result().
 send_store(Pid, <<_:256>> = PeerId, Record, Timeout)
   when is_map(Record), is_integer(Timeout), Timeout > 0 ->
     gen_server:call(Pid, {send_store, PeerId, Record, Timeout},
                     Timeout + 1_000).
 
--spec put_record(pid(), macula_record:record()) -> ok.
+-spec put_record(pid(), macula_record:m_record()) -> ok.
 put_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {put_record, Record}).
 
 -spec find_local_record(pid(), macula_dht_xor:id()) ->
-        [macula_record:record()].
+        [macula_record:m_record()].
 find_local_record(Pid, <<_:256>> = Key) ->
     gen_server:call(Pid, {find_local_record, Key}).
 
--spec list_records(pid()) -> [macula_record:record()].
+-spec list_records(pid()) -> [macula_record:m_record()].
 list_records(Pid) ->
     gen_server:call(Pid, list_records).
 
@@ -302,7 +302,7 @@ list_records(Pid) ->
 record_count(Pid) ->
     gen_server:call(Pid, record_count).
 
--spec delete_record(pid(), macula_record:record()) -> ok.
+-spec delete_record(pid(), macula_record:m_record()) -> ok.
 delete_record(Pid, Record) when is_map(Record) ->
     gen_server:call(Pid, {delete_record, Record}).
 
@@ -699,7 +699,7 @@ dispatch_find_value_timeout({{From, _Timer}, NewP}, S) ->
 %% of the same procedure_uri).
 %%=====================================================================
 
--spec store_put(ets:tid(), macula_record:record()) -> ok.
+-spec store_put(ets:tid(), macula_record:m_record()) -> ok.
 store_put(Ets, Record) ->
     StorageKey  = macula_record:storage_key(Record),
     EnvelopeKey = macula_record:key(Record),
@@ -711,7 +711,7 @@ store_put(Ets, Record) ->
 
 %% Fire the optional `on_record_stored' callback. Wrapped so a
 %% misbehaving callback never destabilises the DHT server.
--spec notify_record_stored(macula_record:record(), #state{}) -> ok.
+-spec notify_record_stored(macula_record:m_record(), #state{}) -> ok.
 notify_record_stored(_Record, #state{on_record_stored = undefined}) ->
     ok;
 notify_record_stored(Record, #state{on_record_stored = Fun}) ->
@@ -719,14 +719,14 @@ notify_record_stored(Record, #state{on_record_stored = Fun}) ->
     ok.
 
 -spec store_lookup(ets:tid(), macula_dht_xor:id()) ->
-          [macula_record:record()].
+          [macula_record:m_record()].
 store_lookup(Ets, StorageKey) ->
     [R || {_, R} <- ets:lookup(Ets, StorageKey)].
 
 %% @doc Remove a single record (identified by storage key + envelope
 %% owner) while preserving other records from other owners that
 %% share the same storage key.
--spec store_delete(ets:tid(), macula_record:record()) -> ok.
+-spec store_delete(ets:tid(), macula_record:m_record()) -> ok.
 store_delete(Ets, Record) ->
     StorageKey  = macula_record:storage_key(Record),
     EnvelopeKey = macula_record:key(Record),
@@ -740,7 +740,7 @@ store_delete(Ets, Record) ->
 %% Wire op: STORE outgoing + STORE_ACK correlation
 %%=====================================================================
 
--spec dispatch_send_store(macula_identity:pubkey(), macula_record:record(),
+-spec dispatch_send_store(macula_identity:pubkey(), macula_record:m_record(),
                           pos_integer(), gen_server:from(), #state{}) ->
           {reply, send_store_result(), #state{}} | {noreply, #state{}}.
 dispatch_send_store(_PeerId, _Record, _Timeout, _From,
@@ -793,8 +793,8 @@ on_store(Frame, FromNodeId, S) ->
     Record = maps:get(record, Frame),
     persist_if_valid(macula_record:verify(Record), Record, FromNodeId, S).
 
--spec persist_if_valid({ok, macula_record:record()} | {error, term()},
-                       macula_record:record(),
+-spec persist_if_valid({ok, macula_record:m_record()} | {error, term()},
+                       macula_record:m_record(),
                        macula_identity:pubkey(), #state{}) -> #state{}.
 persist_if_valid({ok, Record}, _Orig, FromNodeId,
                  #state{record_store = Ets, identity = Id,
@@ -976,7 +976,7 @@ on_find_value(Frame, FromNodeId, #state{record_store = Ets} = S) ->
     Key = maps:get(key, Frame),
     reply_find_value(store_lookup(Ets, Key), Key, FromNodeId, S).
 
--spec reply_find_value([macula_record:record()], macula_dht_xor:id(),
+-spec reply_find_value([macula_record:m_record()], macula_dht_xor:id(),
                        macula_identity:pubkey(), #state{}) -> #state{}.
 reply_find_value([], Key, FromNodeId,
                  #state{identity = Id, send_frame = Send, rt = Rt, k = K} = S) ->
@@ -1002,7 +1002,7 @@ on_value(Frame, FromNodeId, #state{pending_find_values = P} = S) ->
     resolve_value(maps:take({FromNodeId, Key}, P), Records, S).
 
 -spec resolve_value({{gen_server:from(), reference()}, map()} | error,
-                    [macula_record:record()], #state{}) -> #state{}.
+                    [macula_record:m_record()], #state{}) -> #state{}.
 resolve_value(error, _Records, S) ->
     S;
 resolve_value({{From, Timer}, NewP}, Records, S) ->

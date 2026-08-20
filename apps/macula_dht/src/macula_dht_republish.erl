@@ -145,14 +145,14 @@ run_tick(#state{dht = Dht, self_id = SelfId} = State) ->
                 zero_outcome(), Records),
     {Outcome, advance(State, Outcome)}.
 
--spec process_record(macula_record:record(), macula_identity:pubkey(),
+-spec process_record(macula_record:m_record(), macula_identity:pubkey(),
                      #state{}, outcome()) -> outcome().
 process_record(Record, SelfId, State, Acc0) ->
     Acc = bump(Acc0, records_seen),
     maybe_republish(macula_record:key(Record) =:= SelfId,
                     Record, State, Acc).
 
--spec maybe_republish(boolean(), macula_record:record(),
+-spec maybe_republish(boolean(), macula_record:m_record(),
                       #state{}, outcome()) -> outcome().
 maybe_republish(false, _Record, _State, Acc) ->
     Acc;

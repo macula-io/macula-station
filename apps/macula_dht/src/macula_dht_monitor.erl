@@ -236,7 +236,7 @@ replica_report(#state{dht = Dht, self_id = SelfId, k = K}) ->
     #{owned_records => length(Owned),
       placement_summaries => Summaries}.
 
--spec replica_summary(macula_record:record(), macula_dht:dht(),
+-spec replica_summary(macula_record:m_record(), macula_dht:dht(),
                       pos_integer()) -> replica_summary().
 replica_summary(Record, Dht, K) ->
     StorageKey = macula_record:storage_key(Record),

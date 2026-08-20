@@ -32,7 +32,7 @@
     %% peers via outbound CONNECT/HELLO handshake only) leaves this
     %% `undefined'. The DHT ingest path consumes `node_id' +
     %% `addresses' regardless and ignores the `record' field.
-    record       := macula_record:record() | undefined,
+    record       := macula_record:m_record() | undefined,
     addresses    := [map()],
     strategy     := strategy(),
     via          := module(),

@@ -100,13 +100,13 @@ clear_wiring() ->
 
 %% @doc DHT-side callback. The DHT calls this after every successful
 %% `store_put' (own put + incoming custodian STORE).
--spec on_record(macula_record:record()) -> ok.
+-spec on_record(macula_record:m_record()) -> ok.
 on_record(Record) ->
     gen_server:cast(?MODULE, {record_stored, Record}).
 
 %% @doc Test-friendly variant: target a specific fan-out pid instead
 %% of the registered singleton.
--spec on_record(pid(), macula_record:record()) -> ok.
+-spec on_record(pid(), macula_record:m_record()) -> ok.
 on_record(Pid, Record) when is_pid(Pid) ->
     gen_server:cast(Pid, {record_stored, Record}).
 

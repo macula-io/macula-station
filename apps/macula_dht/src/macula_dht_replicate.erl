@@ -130,7 +130,7 @@ tick(Pid) ->
 %% without `replicate_one/2', a record put on station A would only
 %% reach station B after the next tick — too slow for any client
 %% that puts and immediately reads from a different station.
--spec replicate_one(pid(), macula_record:record()) -> ok.
+-spec replicate_one(pid(), macula_record:m_record()) -> ok.
 replicate_one(Pid, Record) when is_map(Record) ->
     gen_server:cast(Pid, {replicate_one, Record}).
 
@@ -228,7 +228,7 @@ run_tick(#state{dht = Dht, interval_ms = Interval} = State) ->
 %% configuration defect, not a network one, and it is invisible in every
 %% other counter: stores succeed, acks arrive, and the copies quietly lapse
 %% between ticks. Say so once per tick, with the numbers needed to fix it.
--spec warn_if_ttl_too_short([macula_record:record()], pos_integer()) -> ok.
+-spec warn_if_ttl_too_short([macula_record:m_record()], pos_integer()) -> ok.
 warn_if_ttl_too_short(Records, IntervalMs) ->
     Now = erlang:system_time(millisecond),
     Doomed = [R || R <- Records,
@@ -244,7 +244,7 @@ log_doomed(N, Total, IntervalMs) ->
                    [N, Total, IntervalMs]),
     ok.
 
--spec fire_eager_stores(pid(), macula_record:record(), macula_dht:dht(),
+-spec fire_eager_stores(pid(), macula_record:m_record(), macula_dht:dht(),
                         pos_integer(), pos_integer()) -> ok.
 fire_eager_stores(Server, Record, Dht, K, Tmo) ->
     SelfId    = macula_dht:self_id(Dht),
@@ -284,7 +284,7 @@ collect_eager(Remaining, Tag, Deadline, Acc) ->
         Acc
     end.
 
--spec replicate_record(macula_record:record(), macula_identity:pubkey(),
+-spec replicate_record(macula_record:m_record(), macula_identity:pubkey(),
                        #state{}, outcome()) -> outcome().
 replicate_record(Record, SelfId,
                  #state{dht = Dht, k = K} = State, Acc) ->
@@ -296,7 +296,7 @@ replicate_record(Record, SelfId,
     lists:foldl(fun(PeerId, A) -> send_one(PeerId, Record, State, A) end,
                 bump(Acc, records_seen), Targets).
 
--spec send_one(macula_identity:pubkey(), macula_record:record(),
+-spec send_one(macula_identity:pubkey(), macula_record:m_record(),
                #state{}, outcome()) -> outcome().
 send_one(PeerId, Record,
          #state{dht = Dht, per_store_timeout_ms = Timeout}, Acc) ->

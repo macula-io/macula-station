@@ -193,16 +193,16 @@ lookup_nodes(Dht, Key, Opts) ->
 %% Record storage + FIND_VALUE (Session 3.7)
 %%=====================================================================
 
--spec put_record(dht(), macula_record:record()) -> ok.
+-spec put_record(dht(), macula_record:m_record()) -> ok.
 put_record(Dht, Record) ->
     macula_dht_server:put_record(Dht, Record).
 
 -spec find_local_record(dht(), macula_dht_xor:id()) ->
-        [macula_record:record()].
+        [macula_record:m_record()].
 find_local_record(Dht, Key) ->
     macula_dht_server:find_local_record(Dht, Key).
 
--spec list_records(dht()) -> [macula_record:record()].
+-spec list_records(dht()) -> [macula_record:m_record()].
 list_records(Dht) ->
     macula_dht_server:list_records(Dht).
 
@@ -210,7 +210,7 @@ list_records(Dht) ->
 record_count(Dht) ->
     macula_dht_server:record_count(Dht).
 
--spec delete_record(dht(), macula_record:record()) -> ok.
+-spec delete_record(dht(), macula_record:m_record()) -> ok.
 delete_record(Dht, Record) ->
     macula_dht_server:delete_record(Dht, Record).
 
@@ -225,20 +225,20 @@ find_value(Dht, Key, PeerId, Timeout) ->
     macula_dht_server:find_value(Dht, Key, PeerId, Timeout).
 
 -spec send_store(dht(), macula_identity:pubkey(),
-                 macula_record:record()) -> send_store_result().
+                 macula_record:m_record()) -> send_store_result().
 send_store(Dht, PeerId, Record) ->
     macula_dht_server:send_store(Dht, PeerId, Record).
 
--spec send_store(dht(), macula_identity:pubkey(), macula_record:record(),
+-spec send_store(dht(), macula_identity:pubkey(), macula_record:m_record(),
                  pos_integer()) -> send_store_result().
 send_store(Dht, PeerId, Record, Timeout) ->
     macula_dht_server:send_store(Dht, PeerId, Record, Timeout).
 
--spec store(dht(), macula_record:record()) -> macula_dht_store:result().
+-spec store(dht(), macula_record:m_record()) -> macula_dht_store:result().
 store(Dht, Record) ->
     macula_dht_store:store(Dht, Record).
 
--spec store(dht(), macula_record:record(), macula_dht_store:opts()) ->
+-spec store(dht(), macula_record:m_record(), macula_dht_store:opts()) ->
         macula_dht_store:result().
 store(Dht, Record, Opts) ->
     macula_dht_store:store(Dht, Record, Opts).
@@ -248,7 +248,7 @@ handle_frame(Dht, FromNodeId, Frame) ->
     macula_dht_server:handle_frame(Dht, FromNodeId, Frame).
 
 -spec set_on_record_stored(dht(),
-        fun((macula_record:record()) -> any()) | undefined) -> ok.
+        fun((macula_record:m_record()) -> any()) | undefined) -> ok.
 set_on_record_stored(Dht, Fun) ->
     macula_dht_server:set_on_record_stored(Dht, Fun).
 

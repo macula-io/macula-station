@@ -4,7 +4,7 @@
 %% trust boundary against whatever bytes its transport hands back:
 %%
 %% <ol>
-%%   <li>Decode the raw CBOR as a `macula_record:record()'
+%%   <li>Decode the raw CBOR as a `macula_record:m_record()'
 %%       — <em>safely</em>: external bytes may be arbitrary garbage
 %%       and `macula_record_cbor:decode/1' crashes on malformed
 %%       input rather than returning `{error, _}'.</li>
@@ -36,7 +36,7 @@
 %% `{error, bad_record_bytes}' so a single garbage response cannot
 %% crash a probe worker and force its tier to time out.
 -spec decode_record_bytes(binary()) ->
-          {ok, macula_record:record()} | {error, decode_error()}.
+          {ok, macula_record:m_record()} | {error, decode_error()}.
 decode_record_bytes(Bytes) when is_binary(Bytes) ->
     try macula_record:decode(Bytes) of
         {ok, _} = Ok   -> Ok;
@@ -58,7 +58,7 @@ decode_record_bytes(Bytes) when is_binary(Bytes) ->
 %% caller has already performed `macula_foundation:verify_record/1',
 %% but foundation may publish record types we don't know how to
 %% enumerate seeds from.
--spec peers_from_record(macula_record:record(),
+-spec peers_from_record(macula_record:m_record(),
                         macula_bootstrap_peer_discoverer:strategy(),
                         module()) ->
           [macula_bootstrap_peer_discoverer:verified_peer()].

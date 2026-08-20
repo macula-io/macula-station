@@ -54,7 +54,7 @@
 %% @doc Build a peer URL from a signed `node_record' and a list of
 %% address hints. The record MUST already be signed
 %% (`macula_record:sign/2').
--spec encode(macula_record:record(), [map()]) -> peer_url().
+-spec encode(macula_record:m_record(), [map()]) -> peer_url().
 encode(Record, Addresses)
   when is_map(Record), is_list(Addresses) ->
     RecBin = macula_record:encode(Record),
@@ -72,7 +72,7 @@ encode(Record, Addresses)
 %% decoded, signature-verified, non-expired `node_record' and
 %% `Addresses' is the hint list (may be empty).
 -spec decode(binary()) ->
-        {ok, macula_record:record(), [map()]} | {error, decode_error()}.
+        {ok, macula_record:m_record(), [map()]} | {error, decode_error()}.
 decode(Bin) when is_binary(Bin) ->
     case split_scheme(Bin) of
         {ok, B64}   -> decode_b64(B64);

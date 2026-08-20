@@ -51,11 +51,11 @@
 start_link(Spec) ->
     macula_station_server:start_link(Spec).
 
--spec stop(pid()) -> {ok, [macula_record:record()]}.
+-spec stop(pid()) -> {ok, [macula_record:m_record()]}.
 stop(Pid) ->
     macula_station_server:stop(Pid).
 
--spec stop(pid(), atom()) -> {ok, [macula_record:record()]}.
+-spec stop(pid(), atom()) -> {ok, [macula_record:m_record()]}.
 stop(Pid, Reason) ->
     macula_station_server:stop(Pid, Reason).
 
@@ -76,7 +76,7 @@ connect_to(Pid, Target) ->
 peers(Pid) ->
     macula_station_server:peers(Pid).
 
--spec tombstones(pid()) -> [macula_record:record()].
+-spec tombstones(pid()) -> [macula_record:m_record()].
 tombstones(Pid) ->
     macula_station_server:tombstones(Pid).
 

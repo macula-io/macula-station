@@ -90,7 +90,7 @@ build_find_value(<<_:256>> = Key, <<_:256>> = Origin, Identity) ->
 
 %% @doc Build a signed VALUE response carrying one or more records.
 -spec build_value_reply(Key :: macula_dht_xor:id(),
-                        [macula_record:record()],
+                        [macula_record:m_record()],
                         macula_identity:key_pair()) -> macula_frame:frame().
 build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
     macula_frame:sign(
@@ -98,7 +98,7 @@ build_value_reply(<<_:256>> = Key, Records, Identity) when is_list(Records) ->
       Identity).
 
 %% @doc Build a signed STORE request carrying a record to persist.
--spec build_store(macula_record:record(),
+-spec build_store(macula_record:m_record(),
                   macula_identity:key_pair()) -> macula_frame:frame().
 build_store(Record, Identity) when is_map(Record) ->
     macula_frame:sign(macula_frame:store(#{record => Record}), Identity).

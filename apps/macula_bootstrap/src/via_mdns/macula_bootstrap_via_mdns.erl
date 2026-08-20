@@ -43,7 +43,7 @@
         fun((SrcAddr :: inet:ip6_address(),
              Port    :: 1..65535,
              ExpectedNodeId :: macula_identity:pubkey()) ->
-              {ok, macula_record:record()} | {error, term()}).
+              {ok, macula_record:m_record()} | {error, term()}).
 
 -type discover_opts() :: #{
     udp_transport => module(),
