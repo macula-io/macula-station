@@ -29,7 +29,7 @@
 %% → listener → fabric) per PLAN_STATION_INTEGRATION §8.2 + the
 %% multi-identity rip-out (2026-05-04).
 %%
-%% Two children DO live in `init/1':
+%% Four children DO live in `init/1':
 %%
 %% <ul>
 %%   <li>`macula_station_record_fanout' — node-singleton DHT
@@ -38,10 +38,16 @@
 %%       `peer_observer' are up.</li>
 %%   <li>`macula_station_peer_links' — outbound station_link
 %%       registry. Empty until an outbound dialer registers links.</li>
+%%   <li>`macula_station_event_dedup' — `(publisher, seq)' pubsub
+%%       dedup cache.</li>
+%%   <li>`macula_station_dht_dialer' — on-demand outbound dial for
+%%       peers a DHT walk discovers but holds no connection to yet.
+%%       Reads the station's dial template and the observer lazily,
+%%       on first use.</li>
 %% </ul>
 %%
-%% Both are config-independent (running them under a disabled
-%% station env costs two idle gen_servers) so they live in `init/1'
+%% All four are config-independent (running them under a disabled
+%% station env costs four idle gen_servers) so they live in `init/1'
 %% rather than the boot pipeline.
 %%
 %% The walking-skeleton / chaos CT suites drive `macula_station_server'
@@ -97,7 +103,8 @@ init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 5, period => 10},
     {ok, {SupFlags, [peer_links_child(),
                      record_fanout_child(),
-                     event_dedup_child()]}}.
+                     event_dedup_child(),
+                     dht_dialer_child()]}}.
 
 %% `(publisher, seq)' pubsub-event dedup cache. Config-independent
 %% (one idle gen_server + a small ETS table when no traffic flows),
@@ -138,6 +145,20 @@ record_fanout_child() ->
         shutdown => 5_000,
         type     => worker,
         modules  => [macula_station_record_fanout]
+    }.
+
+%% On-demand outbound dial for peers a DHT walk discovers mid-lookup but
+%% holds no connection to yet. Config-independent at init time — like
+%% `peer_links' and `record_fanout', it reads the station's dial template
+%% and the observer lazily, on first use, not at boot.
+dht_dialer_child() ->
+    #{
+        id       => macula_station_dht_dialer,
+        start    => {macula_station_dht_dialer, start_link, []},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_dht_dialer]
     }.
 
 %%==================================================================

@@ -39,6 +39,10 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-ifdef(TEST).
+-export([next_candidates/3, node_id_of/1, addresses_of/1]).
+-endif.
+
 -export_type([opts/0]).
 
 %% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
@@ -159,62 +163,163 @@ on_local_hit([], Dht, Key) ->
 on_remote_lookup({ok, Record}) -> {ok, Record};
 on_remote_lookup(not_found)    -> {ok, not_found}.
 
-%% Ask every routing-table peer in parallel; first peer that
-%% returns `{value, [Record | _]}' wins. Other replies (nodes /
-%% errors / timeouts) are ignored — eager replication on put has
-%% landed copies on the writer's k-closest, so at least one of
-%% our peers should hold it.
+%% Iterative Kademlia FIND_VALUE walk. Round 0 asks every one of our own
+%% k-closest routing-table peers (we hold a connection to all of them, by
+%% definition) in parallel; first `{value, ...}' wins. On an all-NODES
+%% round, every replying peer's k-closest-to-Key becomes next round's
+%% candidate pool — dialled on demand via `macula_station_dht_dialer' for
+%% anything we are not already connected to (see its moduledoc for why
+%% that dial is trust-checked, not just opened).
 %%
-%% NOT a multi-round Kademlia walk: we don't recurse into
-%% `{nodes, ...}' responses to chase closer custodians. One hop is
-%% sufficient for the partial-mesh sizes we operate at (≤ low
-%% hundreds of stations) given that eager replication places copies
-%% with a fan-out of `k = 20'. Bigger meshes will want the full
-%% multi-round walk; that is a Phase 4+ concern.
+%% This used to stop after one hop: "eager replication landed copies on
+%% the writer's k-closest, so at least one of OUR peers should hold it."
+%% True only when the reader's k-closest and the writer's k-closest
+%% overlap — false by construction on a partial-mesh pair with no direct
+%% edge between them, which is exactly the case a one-hop fallback cannot
+%% reach no matter how the mesh's replication is tuned. Multi-round can.
 %%
-%% Now safe to fan in parallel because peer_observer's `conn_for'
-%% is an ETS read (commit 7d46867); the per-peer `find_value' wire
-%% sends do not serialise against the observer's mailbox.
+%% Bounded three ways: `?WALK_MAX_ROUNDS' caps rounds; `Seen' guarantees
+%% no NodeId is queried twice, so a cycle in NODES replies cannot loop
+%% even before the round cap; and every round only ever walks toward Key
+%% (`build_nodes_reply' returns a station's OWN k-closest, which is closer
+%% to Key than the querying station or it would not have been offered).
+%%
+%% Safe to fan a round out in parallel because peer_observer's `conn_for'
+%% is an ETS read (commit 7d46867); the per-peer `find_value' wire sends
+%% do not serialise against the observer's mailbox.
 -define(REMOTE_FIND_PER_PEER_MS, 1_500).
+-define(WALK_DIAL_TIMEOUT_MS,    3_000).
+-define(WALK_MAX_ROUNDS,             3).
+-define(WALK_ROUND_WIDTH,            5).
 
 remote_find_value(Dht, Key) ->
-    fanout_find_value(Dht, Key, peer_ids(Dht, Key)).
+    value_or_not_found(walk_find_value(Dht, Key)).
 
-%% The k-closest peers to Key, excluding self. Shared by the
-%% single-record (`_dht.find_record') and multi-record
-%% (`_dht.find_records') remote one-hop fallbacks.
+value_or_not_found({value, [Record | _]}) -> {ok, Record};
+value_or_not_found(not_found)             -> not_found.
+
+remote_find_records(Dht, Key) ->
+    records_or_empty(walk_find_value(Dht, Key)).
+
+records_or_empty({value, Records}) -> Records;
+records_or_empty(not_found)        -> [].
+
+%% The k-closest peers to Key from OUR OWN routing table, excluding self
+%% — round 0's candidates. Paired with `[]' addresses: round 0 needs no
+%% dial, we are already connected to everything in our own routing table.
+walk_find_value(Dht, Key) ->
+    walk(Dht, Key, [{Id, []} || Id <- peer_ids(Dht, Key)], sets:new(), 0).
+
 peer_ids(Dht, Key) ->
     Entries = macula_dht:k_closest(Dht, Key, 20),
     SelfId  = macula_dht:self_id(Dht),
     [Id || E <- Entries,
            (Id = macula_dht_entry:node_id(E)) =/= SelfId].
 
-fanout_find_value(_Dht, _Key, []) ->
+walk(_Dht, _Key, [], _Seen, _Round) ->
     not_found;
-fanout_find_value(Dht, Key, PeerIds) ->
+walk(_Dht, _Key, _Candidates, _Seen, Round) when Round >= ?WALK_MAX_ROUNDS ->
+    not_found;
+walk(Dht, Key, Candidates, Seen, Round) ->
+    Seen1 = lists:foldl(fun({Id, _Addrs}, Acc) -> sets:add_element(Id, Acc) end,
+                        Seen, Candidates),
+    settle_round(query_round(Dht, Key, Candidates), Dht, Key, Seen1, Round).
+
+settle_round({value, Records}, _Dht, _Key, _Seen, _Round) ->
+    {value, Records};
+settle_round({nodes, Refs}, Dht, Key, Seen, Round) ->
+    walk(Dht, Key, next_candidates(Key, Refs, Seen), Seen, Round + 1).
+
+%% Query every candidate of this round in parallel. Each spawned worker
+%% dials on demand (a no-op if already connected — see
+%% `macula_station_dht_dialer:ensure_dialed/3') before issuing FIND_VALUE,
+%% so an unroutable candidate costs at most `?WALK_DIAL_TIMEOUT_MS', not a
+%% silent hang.
+query_round(_Dht, _Key, []) ->
+    {nodes, []};
+query_round(Dht, Key, Candidates) ->
     Tag    = make_ref(),
     Parent = self(),
-    [spawn(fun() ->
-        Parent ! {Tag, macula_dht:find_value(Dht, Key, Pid,
-                                              ?REMOTE_FIND_PER_PEER_MS)}
-     end) || Pid <- PeerIds],
-    collect_first_value(Tag, length(PeerIds),
-                        ?REMOTE_FIND_PER_PEER_MS + 200).
+    [spawn(fun() -> Parent ! {Tag, query_one(Dht, Key, C)} end)
+     || C <- Candidates],
+    Budget = ?WALK_DIAL_TIMEOUT_MS + ?REMOTE_FIND_PER_PEER_MS + 200,
+    collect_round(Tag, length(Candidates), Budget, []).
 
-collect_first_value(_Tag, 0, _DeadlineMs) ->
-    not_found;
-collect_first_value(Tag, Remaining, DeadlineMs) ->
+query_one(Dht, Key, {PeerId, Addresses}) ->
+    dial_then_query(
+      macula_station_dht_dialer:ensure_dialed(PeerId, Addresses,
+                                              ?WALK_DIAL_TIMEOUT_MS),
+      Dht, Key, PeerId).
+
+dial_then_query(ok, Dht, Key, PeerId) ->
+    macula_dht:find_value(Dht, Key, PeerId, ?REMOTE_FIND_PER_PEER_MS);
+dial_then_query({error, Reason}, _Dht, _Key, _PeerId) ->
+    {error, {no_route, Reason}}.
+
+%% Short-circuits on the first VALUE. Otherwise waits out the round to
+%% collect every NODES reply — the whole point of a round is to learn as
+%% much of the next hop's candidate pool as possible, so stopping at the
+%% first NODES reply back would throw away exactly the information a
+%% multi-round walk exists to gather.
+collect_round(_Tag, 0, _DeadlineMs, RefsAcc) ->
+    {nodes, lists:append(RefsAcc)};
+collect_round(Tag, Remaining, DeadlineMs, RefsAcc) ->
     Start = erlang:monotonic_time(millisecond),
     receive
-        {Tag, {value, [Record | _]}} ->
-            {ok, Record};
+        {Tag, {value, [_ | _] = Records}} ->
+            {value, Records};
+        {Tag, {nodes, Refs}} ->
+            Elapsed = erlang:monotonic_time(millisecond) - Start,
+            collect_round(Tag, Remaining - 1, max(0, DeadlineMs - Elapsed),
+                         [Refs | RefsAcc]);
         {Tag, _Other} ->
             Elapsed = erlang:monotonic_time(millisecond) - Start,
-            collect_first_value(Tag, Remaining - 1,
-                                max(0, DeadlineMs - Elapsed))
+            collect_round(Tag, Remaining - 1, max(0, DeadlineMs - Elapsed),
+                         RefsAcc)
     after DeadlineMs ->
-        not_found
+        {nodes, lists:append(RefsAcc)}
     end.
+
+%% Fold every ref this round's NODES replies carried into next round's
+%% candidate pool: dedupe by node_id, drop anything already queried (in
+%% ANY prior round — `Seen' accumulates) or already self, drop anything
+%% with no address at all (an honest dead end — see
+%% `macula_dht_protocol:entry_to_station_ref/2'), sort by XOR distance to
+%% Key, and keep only the closest `?WALK_ROUND_WIDTH' — bounding fan-out
+%% growth round over round the same way `k' bounds it in the routing
+%% table itself.
+next_candidates(Key, Refs, Seen) ->
+    %% `Refs' arrives already flat — `collect_round' merges every peer's
+    %% NODES reply for this round with `lists:append/1' before handing it
+    %% to `settle_round'.
+    ById = lists:foldl(fun(R, Acc) -> maps:put(node_id_of(R), R, Acc) end,
+                       #{}, Refs),
+    Candidates = [R || R <- maps:values(ById),
+                        not sets:is_element(node_id_of(R), Seen),
+                        addresses_of(R) =/= []],
+    Sorted = lists:sort(
+               fun(A, B) ->
+                   macula_dht_xor:distance_int(Key, node_id_of(A)) =<
+                   macula_dht_xor:distance_int(Key, node_id_of(B))
+               end, Candidates),
+    [{node_id_of(R), addresses_of(R)}
+     || R <- lists:sublist(Sorted, ?WALK_ROUND_WIDTH)].
+
+%% `station_ref()' arrives here already decoded off the wire
+%% (`macula_frame:decode/1' inside the DHT server's frame ingestion), and
+%% this codebase has been repeatedly bitten by CBOR handing back
+%% `{text, Bin}' keys instead of atoms for a map that looks correct at
+%% the call site — see `macula_dht_endpoint_propagation_tests' for the
+%% same trap on the producer side. Read every shape rather than assume
+%% one.
+node_id_of(#{node_id := V})               -> V;
+node_id_of(#{{text, <<"node_id">>} := V}) -> V;
+node_id_of(#{<<"node_id">> := V})         -> V.
+
+addresses_of(#{addresses := A})               -> A;
+addresses_of(#{{text, <<"addresses">>} := A}) -> A;
+addresses_of(#{<<"addresses">> := A})         -> A;
+addresses_of(_)                               -> [].
 
 %% Multi-value sibling of `handle_find_record'. Returns EVERY record
 %% stored at the key (the full `bag'), not just the first — e.g.
@@ -231,39 +336,6 @@ on_local_records([_ | _] = Records, _Dht, _Key) ->
     {ok, Records};
 on_local_records([], Dht, Key) ->
     {ok, remote_find_records(Dht, Key)}.
-
-remote_find_records(Dht, Key) ->
-    fanout_find_records(Dht, Key, peer_ids(Dht, Key)).
-
-fanout_find_records(_Dht, _Key, []) ->
-    [];
-fanout_find_records(Dht, Key, PeerIds) ->
-    Tag    = make_ref(),
-    Parent = self(),
-    [spawn(fun() ->
-        Parent ! {Tag, macula_dht:find_value(Dht, Key, Pid,
-                                             ?REMOTE_FIND_PER_PEER_MS)}
-     end) || Pid <- PeerIds],
-    collect_first_values(Tag, length(PeerIds),
-                         ?REMOTE_FIND_PER_PEER_MS + 200).
-
-%% First peer that returns a non-empty value list wins the WHOLE
-%% list (mirrors collect_first_value/3, but keeps every record, not
-%% just the head).
-collect_first_values(_Tag, 0, _DeadlineMs) ->
-    [];
-collect_first_values(Tag, Remaining, DeadlineMs) ->
-    Start = erlang:monotonic_time(millisecond),
-    receive
-        {Tag, {value, [_ | _] = Records}} ->
-            Records;
-        {Tag, _Other} ->
-            Elapsed = erlang:monotonic_time(millisecond) - Start,
-            collect_first_values(Tag, Remaining - 1,
-                                 max(0, DeadlineMs - Elapsed))
-    after DeadlineMs ->
-        []
-    end.
 
 handle_find_records_by_type(Dht, #{type := Type})
   when is_integer(Type), Type >= 0, Type =< 255 ->

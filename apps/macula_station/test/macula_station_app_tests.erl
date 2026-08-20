@@ -25,15 +25,19 @@ disabled_env_yields_static_children_only_test_() ->
             process_flag(trap_exit, true),
             {ok, Sup} = start_station(),
             ?assert(is_pid(Sup)),
-            %% Three always-on infrastructure children:
-            %% event_dedup ((publisher,seq) pubsub-event dedup cache),
-            %% record_fanout (singleton DHT-record fan-out),
+            %% Four always-on infrastructure children:
+            %% dht_dialer (on-demand outbound dial for DHT-walk-discovered
+            %% peers), event_dedup ((publisher,seq) pubsub-event dedup
+            %% cache), record_fanout (singleton DHT-record fan-out),
             %% peer_links (outbound station_link registry).
             %% supervisor:which_children/1 returns them in
-            %% reverse-start order, so the last-started (event_dedup)
+            %% reverse-start order, so the last-started (dht_dialer)
             %% comes first.
             Children = supervisor:which_children(Sup),
-            ?assertMatch([{macula_station_event_dedup,
+            ?assertMatch([{macula_station_dht_dialer,
+                           _, worker,
+                           [macula_station_dht_dialer]},
+                          {macula_station_event_dedup,
                            _, worker,
                            [macula_station_event_dedup]},
                           {macula_station_record_fanout,
