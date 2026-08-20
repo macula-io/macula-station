@@ -49,7 +49,8 @@
 
 -export_type([opts/0]).
 
--type opts() :: #{dht := pid(), swim := pid()}.
+-type opts() :: #{dht := pid(), swim := pid(),
+                  identity => macula_identity:key_pair()}.
 
 %% Direction of a peering connection from THIS station's perspective:
 %%   inbound  — the listener accepted a CONNECT from the peer (server-role).
@@ -99,6 +100,11 @@
     %% carry it as the `responded_by' / `reported_by' pubkey so the
     %% caller knows who answered.
     self_id              :: macula_identity:pubkey() | undefined,
+    %% Full key pair, needed only for `macula_peering:send_on_stream/3'
+    %% (dedicated-stream relay) — see the comment at `identity' in
+    %% `macula_station_app:observer_child/3'. `undefined' in tests that
+    %% don't exercise streaming relay.
+    identity              :: macula_identity:key_pair() | undefined,
     peers                :: #{pid() => macula_identity:pubkey()},
     %% NodeId → {inbound, outbound} ConnPids. Both can be set for mutual
     %% peers; clears entry-by-entry on `disconnected'.
@@ -117,12 +123,26 @@
     %% pure cleanup.
     forwarded = #{}      :: #{<<_:128>> => {pid(), reference()}},
     %% In-flight streaming RPCs. Maps each stream_id to the caller-
-    %% origin connection that opened it and the advertiser connection
-    %% it was forwarded to, plus a TTL timer ref so a hung stream
-    %% (advertiser crashed mid-stream, malformed STREAM_END) is
-    %% reaped instead of leaking forever. Cleared on STREAM_END /
-    %% STREAM_ERROR / STREAM_REPLY (final frames) or on the timer.
-    streams   = #{}      :: #{<<_:128>> => {pid(), pid(), reference()}},
+    %% origin connection AND dedicated QUIC stream, the advertiser
+    %% connection AND dedicated QUIC stream it was forwarded to, plus
+    %% a TTL timer ref so a hung stream (advertiser crashed mid-stream,
+    %% malformed STREAM_END) is reaped instead of leaking forever.
+    %% Cleared on STREAM_END / STREAM_ERROR / STREAM_REPLY (final
+    %% frames), on the timer, or on either side's connection dying.
+    streams   = #{}      :: #{<<_:128>> => {pid(), reference(), pid(),
+                                            reference(), reference()}},
+    %% Reverse index for O(1) relay: a dedicated QUIC stream reference
+    %% (either the caller's or the advertiser's) to the paired
+    %% {OtherConnPid, OtherStream, Sid}. Populated in lock-step with
+    %% `streams' — one route entry per side of the pair.
+    stream_route = #{}   :: #{reference() => {pid(), reference(), <<_:128>>}},
+    %% Per-dedicated-stream inbound byte buffer, `{OwnerConnPid, Buf}'.
+    %% The owner pid is carried alongside the buffer because
+    %% `{quic, Bin, Stream, Flags}' messages don't carry a ConnPid —
+    %% mirrors `macula_station_link:stream_bufs' on the SDK side,
+    %% which doesn't need the owner because it only ever has ONE
+    %% peering connection.
+    stream_bufs = #{}    :: #{reference() => {pid(), binary()}},
     %% Per-ConnPid `last_frame_at' (monotonic ms). Updated on every
     %% inbound application frame. Drives the periodic conn-aging
     %% sweep that force-closes daemon-class connections whose
@@ -324,6 +344,7 @@ init(#{dht := Dht, swim := Swim} = Opts)
                     pubsub_registry  = maps:get(pubsub_registry, Opts, undefined),
                     remote_advertise = maps:get(remote_advertise, Opts, undefined),
                     self_id          = maps:get(self_id, Opts, undefined),
+                    identity         = maps:get(identity, Opts, undefined),
                     peers            = #{},
                     conns            = #{}},
     erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
@@ -481,6 +502,24 @@ handle_info({macula_peering, frame, ConnPid, Frame, RecvAtUs}, S) ->
     T1 = erlang:monotonic_time(microsecond),
     macula_station_frame_telemetry:record(Type, dispatch_self, T1 - T0),
     {noreply, NewS};
+handle_info({macula_peering, new_dedicated_stream, ConnPid, Stream},
+            #state{stream_bufs = Bufs} = S) ->
+    %% A peer opened a fresh dedicated QUIC stream on ConnPid — the
+    %% first bytes we see on it decide what it's for (see
+    %% `dispatch_dedicated_frame/3'). Seed an empty buffer now so the
+    %% first `{quic, Bin, Stream, _}' has somewhere to land.
+    {noreply, S#state{stream_bufs = Bufs#{Stream => {ConnPid, <<>>}}}};
+handle_info({quic, Bin, Stream, _Flags}, #state{stream_bufs = Bufs} = S)
+        when is_binary(Bin), is_map_key(Stream, Bufs) ->
+    {OwnerConn, Buf} = maps:get(Stream, Bufs),
+    {Frames, Tail} = macula_frame:parse_stream(<<Buf/binary, Bin/binary>>),
+    NewS = lists:foldl(
+             fun(Frame, Acc) ->
+                 dispatch_dedicated_frame(Frame, OwnerConn, Stream, Acc)
+             end,
+             S#state{stream_bufs = Bufs#{Stream => {OwnerConn, Tail}}},
+             Frames),
+    {noreply, NewS};
 handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
     {noreply, on_disconnected(ConnPid, S)};
 handle_info({macula_peering, disconnected_outbound, ConnPid, _Reason}, S) ->
@@ -566,9 +605,10 @@ on_forwarded_timeout({{_Origin, _TRef}, NewF}, S) ->
 
 on_stream_timeout(error, S) ->
     S;
-on_stream_timeout({{_Caller, _Adv, _TRef}, NewSt}, S) ->
+on_stream_timeout({{_CallerConn, CallerStream, _AdvConn, AdvStream, _TRef}, NewSt},
+                  S) ->
     logger:info("[peer_observer] stream relay timed out — purging", []),
-    S#state{streams = NewSt}.
+    close_stream_pair(CallerStream, AdvStream, S#state{streams = NewSt}).
 
 terminate(_Reason, _S) -> ok.
 code_change(_OldVsn, S, _Extra) -> {ok, S}.
@@ -898,11 +938,6 @@ classify(find_value)   -> dht;
 classify(value)        -> dht;
 classify(store)        -> dht;
 classify(store_ack)    -> dht;
-classify(stream_open)  -> stream;
-classify(stream_data)  -> stream;
-classify(stream_end)   -> stream;
-classify(stream_error) -> stream;
-classify(stream_reply) -> stream;
 classify(_)            -> other.
 
 claimed_caller(#{caller := <<_:256>> = Pub}) -> Pub;
@@ -946,15 +981,6 @@ dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
 dispatch(dht, Frame, _ConnPid, NodeId, #state{dht = Dht} = S) ->
     ok = macula_dht:handle_frame(Dht, NodeId, Frame),
     S;
-dispatch(stream, Frame, ConnPid, NodeId, S) ->
-    %% STREAM_OPEN is signed end-to-end by the original caller (same
-    %% rationale as CALL); subsequent stream frames are signed by
-    %% whichever end emitted them, and for now we verify against the
-    %% connection's NodeId — sufficient for the single-station +
-    %% direct-edge cases. Multi-hop stream relay would need
-    %% claimed-signer extraction analogous to claimed_caller/1, but
-    %% the suite only exercises single-station streaming for now.
-    deliver_stream(macula_frame:frame_type(Frame), Frame, ConnPid, NodeId, S);
 dispatch(other, _Frame, _ConnPid, _NodeId, S) ->
     S.
 
@@ -1093,123 +1119,161 @@ unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
                               reported_by => SelfId}).
 
 %%==================================================================
-%% STREAM dispatch — STREAM_OPEN routes by procedure (mirrors CALL);
-%% STREAM_DATA / STREAM_END / STREAM_ERROR / STREAM_REPLY route by
-%% stream_id (mirrors how `forwarded' relays RESULT by call_id).
+%% STREAM dispatch — dedicated QUIC streams, NOT the shared control
+%% stream. Each session has its own stream on the caller's connection
+%% and its own stream on the advertiser's connection; this relay is a
+%% full participant on both, opening the advertiser-side stream
+%% itself and mirroring frames verbatim between the two.
+%%
+%% The first frame on a fresh dedicated stream (no `stream_route'
+%% entry yet) MUST be STREAM_OPEN — it routes by procedure, exactly
+%% like a CALL. Every later frame on either side of an established
+%% route is looked up directly by its physical stream reference (no
+%% stream_id map lookup needed) and relayed onto the paired stream.
 %%==================================================================
 
-deliver_stream(stream_open, Frame, ConnPid, NodeId, S) ->
+dispatch_dedicated_frame(Frame, ConnPid, Stream, S) ->
+    on_dedicated_frame(maps:find(Stream, S#state.stream_route),
+                       macula_frame:frame_type(Frame), Frame, ConnPid,
+                       Stream, S).
+
+on_dedicated_frame(error, stream_open, Frame, ConnPid, Stream, S) ->
+    NodeId = frame_source(ConnPid, S#state.peers),
     on_stream_open_verify(macula_frame:verify(Frame, claimed_caller(Frame)),
-                          Frame, ConnPid, NodeId, S);
-deliver_stream(stream_reply, Frame, ConnPid, _NodeId, S) ->
-    %% Signed end-to-end by `responded_by' — verify against that,
-    %% same pattern as on_call_reply. Multi-hop safe.
-    on_stream_relay(macula_frame:verify(Frame, claimed_replier(Frame)),
-                    Frame, ConnPid, S);
-deliver_stream(_Other, Frame, ConnPid, NodeId, S) ->
-    %% stream_data / stream_end / stream_error: SDK >= 4.4.9 stamps the
-    %% emitter's pubkey in `signer'; verify against that. Frames from
-    %% older SDKs have no `signer' field — fall back to the inbound
-    %% conn's NodeId, which is correct for the single-hop direct edge
-    %% but fails on multi-hop. The fallback preserves the pre-4.4.9
-    %% behaviour during the rollout window.
+                          Frame, ConnPid, Stream, NodeId, S);
+on_dedicated_frame(error, _NotOpen, _Frame, _ConnPid, _Stream, S) ->
+    %% Nothing but our own STREAM_OPEN protocol legitimately opens a
+    %% fresh dedicated stream — anything else arriving first is a
+    %% protocol violation from a misbehaving or pre-dedicated-stream
+    %% peer. Drop it; the stream simply never gets a route and its
+    %% buffer is reclaimed on disconnect.
+    S;
+on_dedicated_frame({ok, {_OtherConn, OtherStream, Sid}}, Type, Frame,
+                   ConnPid, _Stream, S) ->
+    on_routed_frame(verify_dedicated(Type, Frame, ConnPid, S#state.peers),
+                    Type, Sid, OtherStream, S).
+
+%% STREAM_REPLY is signed end-to-end by `responded_by' (same pattern
+%% as a RESULT). STREAM_DATA / STREAM_END / STREAM_ERROR: SDK >= 4.4.9
+%% stamps the emitter's pubkey in `signer'; older SDKs fall back to
+%% the inbound conn's NodeId (single-hop only, matches legacy
+%% behaviour on the shared-stream path this replaces).
+verify_dedicated(stream_reply, Frame, _ConnPid, _Peers) ->
+    macula_frame:verify(Frame, claimed_replier(Frame));
+verify_dedicated(_Other, Frame, ConnPid, Peers) ->
     Pub = case claimed_signer(Frame) of
-              undefined -> NodeId;
+              undefined -> frame_source(ConnPid, Peers);
               Signer    -> Signer
           end,
-    on_stream_relay(macula_frame:verify(Frame, Pub), Frame, ConnPid, S).
+    macula_frame:verify(Frame, Pub).
 
-on_stream_open_verify({error, _}, _Frame, _ConnPid, _NodeId, S) ->
+on_routed_frame({error, _}, _Type, _Sid, _OtherStream, S) ->
     S;
-on_stream_open_verify({ok, Frame}, _OrigFrame, ConnPid, NodeId, S) ->
-    on_stream_open_lookup(remote_lookup(Frame, S), Frame, ConnPid, NodeId, S).
+on_routed_frame({ok, Frame}, Type, Sid, OtherStream, S) ->
+    relay_on_stream(OtherStream, Frame, S),
+    maybe_close_stream_route(Type, Sid, S).
+
+on_stream_open_verify({error, _}, _Frame, _ConnPid, _Stream, _NodeId, S) ->
+    S;
+on_stream_open_verify({ok, Frame}, _OrigFrame, ConnPid, Stream, _NodeId, S) ->
+    on_stream_open_lookup(remote_lookup(Frame, S), Frame, ConnPid, Stream, S).
 
 %% Procedure not advertised on this station — synthesize a
-%% `stream_error' back to the caller so the SDK fails fast instead
-%% of waiting for the deadline.
-on_stream_open_lookup({error, not_found}, Frame, _ConnPid, NodeId,
-                      #state{self_id = SelfId, conns = C} = S) ->
-    Reply = stream_unknown_reply(Frame, SelfId),
-    send_reply_to(primary_conn_lookup(maps:find(NodeId, C)), Reply),
-    S;
+%% `stream_error' back to the caller, directly on their dedicated
+%% stream, so the SDK fails fast instead of waiting for the deadline.
+on_stream_open_lookup({error, not_found}, Frame, _CallerConn, CallerStream,
+                      #state{self_id = SelfId} = S) ->
+    reply_on_stream(CallerStream, stream_unknown_reply(Frame, SelfId), S);
 on_stream_open_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame,
-                      _ConnPid, NodeId,
-                      #state{conns = C, streams = Streams} = S) ->
-    %% Forward STREAM_OPEN as-is to the advertiser; remember the
-    %% caller-origin and the advertiser conn so subsequent
-    %% STREAM_DATA / STREAM_END frames can route back and forth.
-    macula_peering:send_frame(AdvertiserConn, Frame),
-    CallerOrigin = origin_for_reply(primary_conn_lookup(maps:find(NodeId, C))),
-    track_stream(maps:get(stream_id, Frame),
-                 CallerOrigin, AdvertiserConn, Streams, S).
+                      CallerConn, CallerStream, S) ->
+    %% Open OUR side of the advertiser's dedicated stream (mirrors
+    %% what the caller's SDK already did on its side), forward
+    %% STREAM_OPEN as the first bytes on it, and remember the route
+    %% both ways so subsequent frames need no procedure lookup.
+    open_advertiser_stream(macula_peering:open_dedicated_stream(AdvertiserConn),
+                           Frame, CallerConn, CallerStream, AdvertiserConn, S).
 
-track_stream(_Sid, undefined, _AdvConn, _Streams, S) ->
-    %% Caller's origin already gone — the advertiser's eventual
-    %% STREAM_DATA cannot route anywhere; drop on arrival via the
-    %% missing-streams-entry path.
-    S;
-track_stream(Sid, CallerOrigin, AdvertiserConn, Streams, S) ->
-    TRef = erlang:send_after(?STREAM_TTL_MS, self(),
-                             {stream_timeout, Sid}),
-    S#state{streams = Streams#{Sid => {CallerOrigin, AdvertiserConn, TRef}}}.
+open_advertiser_stream({ok, AdvStream}, Frame, CallerConn, CallerStream,
+                       AdvertiserConn, S) ->
+    S1 = reply_on_stream(AdvStream, Frame, S),
+    track_stream_route(maps:get(stream_id, Frame), CallerConn, CallerStream,
+                       AdvertiserConn, AdvStream, S1);
+open_advertiser_stream({error, _Reason}, Frame, _CallerConn, CallerStream,
+                       _AdvertiserConn, #state{self_id = SelfId} = S) ->
+    reply_on_stream(CallerStream,
+                    stream_unavailable_reply(Frame, SelfId), S).
+
+track_stream_route(Sid, CallerConn, CallerStream, AdvConn, AdvStream,
+                   #state{streams = Streams, stream_route = Route,
+                          stream_bufs = Bufs} = S) ->
+    TRef = erlang:send_after(?STREAM_TTL_MS, self(), {stream_timeout, Sid}),
+    S#state{
+        streams = Streams#{Sid => {CallerConn, CallerStream, AdvConn,
+                                   AdvStream, TRef}},
+        stream_route = Route#{CallerStream => {AdvConn, AdvStream, Sid},
+                              AdvStream    => {CallerConn, CallerStream, Sid}},
+        %% We opened AdvStream ourselves, so no `new_dedicated_stream'
+        %% notification seeds its buffer the way an inbound one does —
+        %% seed it here instead.
+        stream_bufs = Bufs#{AdvStream => {AdvConn, <<>>}}
+    }.
 
 stream_unknown_reply(#{stream_id := Sid}, _SelfId) ->
     macula_frame:stream_error(#{stream_id => Sid,
                                 code      => <<"unknown_next_peer">>,
                                 message   => <<"procedure not advertised">>}).
 
-%% Bidirectional relay: a stream frame from the caller goes to the
-%% advertiser; a frame from the advertiser goes to the caller. We
-%% identify the source by comparing the inbound conn against the
-%% pair we tracked on STREAM_OPEN. Unknown stream_id (never opened
-%% on this station, or already torn down) drops silently.
-on_stream_relay({error, _}, _Frame, _ConnPid, S) ->
-    S;
-on_stream_relay({ok, Frame}, _OrigFrame, ConnPid,
-                #state{streams = Streams} = S) ->
-    Sid = maps:get(stream_id, Frame),
-    on_stream_relay_lookup(maps:find(Sid, Streams), Sid,
-                           macula_frame:frame_type(Frame),
-                           Frame, ConnPid, Streams, S).
-
-on_stream_relay_lookup(error, _Sid, _Type, _Frame, _ConnPid, _Streams, S) ->
-    S;
-on_stream_relay_lookup({ok, {CallerOrigin, AdvConn, TRef}}, Sid, Type,
-                       Frame, ConnPid, Streams, S) ->
-    Target = relay_target(ConnPid, CallerOrigin, AdvConn),
-    _ = macula_peering:send_frame(Target, Frame),
-    maybe_close_stream(Type, Sid, TRef, Streams, S).
-
-%% Source = caller-side ⇒ forward to advertiser. Source = anything
-%% else (advertiser-side, in the typical server_stream path
-%% server → caller) ⇒ forward to caller. The routing pair was
-%% established when STREAM_OPEN arrived; we identify the caller-
-%% origin conn by exact pid match against the tracked pair.
-relay_target(SourceConn, CallerOrigin, AdvConn)
-  when SourceConn =:= CallerOrigin ->
-    AdvConn;
-relay_target(_SourceConn, CallerOrigin, _AdvConn) ->
-    CallerOrigin.
+stream_unavailable_reply(#{stream_id := Sid}, _SelfId) ->
+    macula_frame:stream_error(#{stream_id => Sid,
+                                code      => <<"unavailable">>,
+                                message   => <<"failed to open relay stream">>}).
 
 %% STREAM_END / STREAM_ERROR / STREAM_REPLY are terminal. For
 %% server_stream (the only mode our suite exercises today) the
 %% server emits STREAM_END(role=send) and the stream is done. Bidi
-%% would close on a matched pair of STREAM_END(role=send) frames;
-%% a stricter implementation would wait for both. Drop on the
-%% first terminal frame for now — the TTL timer catches the bidi
-%% case if the second END never arrives.
-maybe_close_stream(stream_end,   Sid, TRef, Streams, S) ->
-    cancel_and_drop_stream(Sid, TRef, Streams, S);
-maybe_close_stream(stream_error, Sid, TRef, Streams, S) ->
-    cancel_and_drop_stream(Sid, TRef, Streams, S);
-maybe_close_stream(stream_reply, Sid, TRef, Streams, S) ->
-    cancel_and_drop_stream(Sid, TRef, Streams, S);
-maybe_close_stream(_Other, _Sid, _TRef, _Streams, S) ->
+%% would close on a matched pair of STREAM_END(role=send) frames; a
+%% stricter implementation would wait for both. Close on the first
+%% terminal frame for now — the TTL timer catches the bidi case if
+%% the second END never arrives.
+maybe_close_stream_route(stream_end,   Sid, S) -> drop_stream_route(Sid, S);
+maybe_close_stream_route(stream_error, Sid, S) -> drop_stream_route(Sid, S);
+maybe_close_stream_route(stream_reply, Sid, S) -> drop_stream_route(Sid, S);
+maybe_close_stream_route(_Other, _Sid, S)      -> S.
+
+drop_stream_route(Sid, #state{streams = Streams} = S) ->
+    close_stream_entry(maps:take(Sid, Streams), S).
+
+close_stream_entry(error, S) ->
+    S;
+close_stream_entry({{_CallerConn, CallerStream, _AdvConn, AdvStream, TRef},
+                    NewStreams}, S) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    close_stream_pair(CallerStream, AdvStream, S#state{streams = NewStreams}).
+
+%% Reclaim both dedicated QUIC streams and their routing/buffer
+%% entries. Both are OURS to close: `CallerStream' custody was
+%% transferred to us via `open_and_handoff' when the caller's SDK
+%% opened it, and `AdvStream' is one we opened ourselves.
+close_stream_pair(CallerStream, AdvStream,
+                  #state{stream_route = Route, stream_bufs = Bufs} = S) ->
+    catch macula_quic:close_stream(CallerStream),
+    catch macula_quic:close_stream(AdvStream),
+    S#state{
+        stream_route = maps:without([CallerStream, AdvStream], Route),
+        stream_bufs  = maps:without([CallerStream, AdvStream], Bufs)
+    }.
+
+%% Send a frame directly on a dedicated stream. Frames relayed
+%% verbatim already carry the original signer's `signature' — the
+%% station's own identity is only ever used for frames the STATION
+%% itself originates (stream_error synthesized here).
+reply_on_stream(Stream, Frame, #state{identity = Id} = S) ->
+    _ = catch macula_peering:send_on_stream(Stream, Frame, Id),
     S.
 
-cancel_and_drop_stream(Sid, TRef, Streams, S) ->
-    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
-    S#state{streams = maps:remove(Sid, Streams)}.
+relay_on_stream(Stream, Frame, #state{identity = Id}) ->
+    _ = catch macula_peering:send_on_stream(Stream, Frame, Id),
+    ok.
 
 %% RESULT / call_error from an advertiser destined for a previously-
 %% forwarded CALL. Match by call_id; relay back to the origin.
@@ -1407,12 +1471,52 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     maybe_purge_advertise(R, ConnPid),
     NewIsStation = drop_is_station_if_isolated(NodeId, NewConns, S#state.is_station),
     S1 = bump_if_resynced(Resynced, S),
-    S1#state{peers            = maps:remove(ConnPid, P),
+    %% Dedicated QUIC streams don't self-clean like the shared control
+    %% stream did: each is a real resource this observer holds custody
+    %% of. Without this, the peer on the OTHER side of a session
+    %% routed through the dying ConnPid would sit until the 5-minute
+    %% TTL fires, and the dead stream refs would leak in `stream_route'
+    %% / `stream_bufs' the whole time.
+    S2 = drop_streams_for(ConnPid, S1),
+    S3 = drop_orphan_stream_bufs_for(ConnPid, S2),
+    S3#state{peers            = maps:remove(ConnPid, P),
              conns            = NewConns,
              direction_of_pid = maps:remove(ConnPid, D),
              forwarded        = drop_forwarded_for(ConnPid, F),
              last_frame_at    = maps:remove(ConnPid, LF),
              is_station       = NewIsStation}.
+
+%% Tear down every routed stream session that has either its caller
+%% or its advertiser leg on the connection that just died — the
+%% session cannot continue with one side gone.
+drop_streams_for(ConnPid, #state{streams = Streams} = S) ->
+    maps:fold(fun(Sid, Entry, Acc) ->
+        drop_stream_if_owned(ConnPid, Sid, Entry, Acc)
+    end, S, Streams).
+
+drop_stream_if_owned(ConnPid, Sid,
+                     {ConnPid, CallerStream, _AdvConn, AdvStream, TRef}, S) ->
+    drop_dead_stream_entry(Sid, CallerStream, AdvStream, TRef, S);
+drop_stream_if_owned(ConnPid, Sid,
+                     {_CallerConn, CallerStream, ConnPid, AdvStream, TRef}, S) ->
+    drop_dead_stream_entry(Sid, CallerStream, AdvStream, TRef, S);
+drop_stream_if_owned(_ConnPid, _Sid, _Entry, S) ->
+    S.
+
+drop_dead_stream_entry(Sid, CallerStream, AdvStream, TRef,
+                       #state{streams = Streams} = S) ->
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    close_stream_pair(CallerStream, AdvStream,
+                      S#state{streams = maps:remove(Sid, Streams)}).
+
+%% A dedicated stream whose STREAM_OPEN never fully arrived (still
+%% sitting only in `stream_bufs', with no `streams'/`stream_route'
+%% entry yet) leaks otherwise — `drop_streams_for/2' above only
+%% catches sessions that made it to a tracked route.
+drop_orphan_stream_bufs_for(ConnPid, #state{stream_bufs = Bufs} = S) ->
+    S#state{stream_bufs = maps:filter(fun(_Stream, {OwnerConn, _Buf}) ->
+                                          OwnerConn =/= ConnPid
+                                      end, Bufs)}.
 
 bump_if_resynced(resynced, S) -> bump_verdict(conn_resynced, S);
 bump_if_resynced(_Other,   S) -> S.

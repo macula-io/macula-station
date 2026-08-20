@@ -610,7 +610,14 @@ observer_child(#station_cfg{identity = Kp}, DhtPid, SwimPid) ->
         handler_registry => macula_handler_registry,
         pubsub_registry  => hecate_pubsub_registry,
         remote_advertise => macula_remote_advertise_registry,
-        self_id          => macula_identity:public(Kp)
+        self_id          => macula_identity:public(Kp),
+        %% Full key pair, not just the pubkey. Dedicated-stream relay
+        %% (`macula_peering:send_on_stream/3') bypasses the peering_conn
+        %% process entirely, so unlike `macula_peering:send_frame/2' —
+        %% which signs with the connection's own identity internally —
+        %% the observer must hold real signing key material to send on
+        %% a stream it has taken custody of.
+        identity         => Kp
     },
     #{
         id       => macula_station_peer_observer,

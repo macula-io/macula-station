@@ -10,8 +10,10 @@
 %% Offset of #state.is_station inside the observer's gen_server state
 %% tuple, for tests that inject the peer-station flag via
 %% sys:replace_state. Counted from the record def (tag=1, dht=2, ..,
-%% is_station=14). Update if the record order changes.
--define(IS_STATION_INDEX, 14).
+%% is_station=17 as of the `identity' / `stream_route' / `stream_bufs'
+%% fields added for dedicated-stream relay). Update if the record
+%% order changes.
+-define(IS_STATION_INDEX, 17).
 
 %%==================================================================
 %% Connected → observes DHT + adds to SWIM.
@@ -916,22 +918,18 @@ forwarded_entry_purged_on_ttl_timeout_test_() ->
         end
      end}.
 
-%% Reach into the observer's state record. The `forwarded' field is
-%% the LAST element of the record (as of this commit); when the
-%% record layout changes update both the index and the comment.
+%% Reach into the observer's state record.
 %%
-%% State layout (record positions):
-%%   1: tag (state)        2: dht                 3: swim
-%%   4: handler_registry   5: pubsub_registry     6: remote_advertise
-%%   7: self_id            8: peers               9: conns
 %% State record layout (1-indexed within the tuple, after the
 %% record-name atom at slot 1):
 %%   2: dht,  3: swim,  4: handler_registry,  5: pubsub_registry,
-%%   6: remote_advertise,  7: self_id,  8: peers,  9: conns,
-%%  10: direction_of_pid,  11: forwarded
+%%   6: remote_advertise,  7: self_id,  8: identity,  9: peers,
+%%  10: conns,  11: direction_of_pid,  12: forwarded
+%% Update this index (and `?IS_STATION_INDEX' above) if the record
+%% layout changes.
 forwarded_size(Obs) ->
     State = sys:get_state(Obs),
-    F = element(11, State),
+    F = element(12, State),
     map_size(F).
 
 advertise(Obs, AdvConn, AdvKp, Realm, Procedure) ->
