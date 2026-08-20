@@ -1126,10 +1126,12 @@ unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
 %% itself and mirroring frames verbatim between the two.
 %%
 %% The first frame on a fresh dedicated stream (no `stream_route'
-%% entry yet) MUST be STREAM_OPEN — it routes by procedure, exactly
-%% like a CALL. Every later frame on either side of an established
-%% route is looked up directly by its physical stream reference (no
-%% stream_id map lookup needed) and relayed onto the paired stream.
+%% entry yet) is STREAM_OPEN (routes by procedure, exactly like a
+%% CALL) or CALL itself (content transfer, PLAN_PER_STREAM_QUIC_
+%% ISOLATION.md Phase 2 — see the CALL clause below). Every later
+%% frame on either side of an established STREAM_OPEN route is looked
+%% up directly by its physical stream reference (no stream_id map
+%% lookup needed) and relayed onto the paired stream.
 %%==================================================================
 
 dispatch_dedicated_frame(Frame, ConnPid, Stream, S) ->
@@ -1137,21 +1139,53 @@ dispatch_dedicated_frame(Frame, ConnPid, Stream, S) ->
                        macula_frame:frame_type(Frame), Frame, ConnPid,
                        Stream, S).
 
+%% Content transfer never populates `stream_route' — a content stream
+%% carries one independent local CALL after another, each dispatched
+%% and replied on this same stream reference, with no cross-connection
+%% relay and no established "route" to remember between them. So this
+%% clause fires uniformly for the FIRST call on a fresh content stream
+%% and every one after it, not just the first.
+on_dedicated_frame(error, call, Frame, _ConnPid, Stream, S) ->
+    dispatch_content_call(macula_frame:verify(Frame, claimed_caller(Frame)),
+                          Frame, Stream, S);
 on_dedicated_frame(error, stream_open, Frame, ConnPid, Stream, S) ->
     NodeId = frame_source(ConnPid, S#state.peers),
     on_stream_open_verify(macula_frame:verify(Frame, claimed_caller(Frame)),
                           Frame, ConnPid, Stream, NodeId, S);
 on_dedicated_frame(error, _NotOpen, _Frame, _ConnPid, _Stream, S) ->
-    %% Nothing but our own STREAM_OPEN protocol legitimately opens a
-    %% fresh dedicated stream — anything else arriving first is a
-    %% protocol violation from a misbehaving or pre-dedicated-stream
-    %% peer. Drop it; the stream simply never gets a route and its
-    %% buffer is reclaimed on disconnect.
+    %% Nothing but STREAM_OPEN or CALL legitimately opens a fresh
+    %% dedicated stream — anything else arriving first is a protocol
+    %% violation from a misbehaving or pre-dedicated-stream peer.
+    %% Drop it; the stream simply never gets a route and its buffer
+    %% is reclaimed on disconnect.
     S;
 on_dedicated_frame({ok, {_OtherConn, OtherStream, Sid}}, Type, Frame,
                    ConnPid, _Stream, S) ->
     on_routed_frame(verify_dedicated(Type, Frame, ConnPid, S#state.peers),
                     Type, Sid, OtherStream, S).
+
+%% Local handler dispatch only — content procedures are never
+%% remote-advertised (every station serves `_content.*' from its own
+%% store, see macula_station_content_handlers), so there is no
+%% forward-to-advertiser branch here the way `deliver_call/5' has one
+%% for ordinary CALL. `dispatch_call/3' already produces a well-formed
+%% RESULT or call_error frame — including for an unregistered
+%% procedure (`unknown_next_peer') — so a caller that mistakenly
+%% routes a non-local procedure through a dedicated stream gets a
+%% clean error, not silence.
+dispatch_content_call({error, _}, _Frame, _Stream, S) ->
+    S;
+dispatch_content_call({ok, _Frame}, _OrigFrame, _Stream,
+                      #state{handler_registry = undefined} = S) ->
+    S;
+dispatch_content_call({ok, Frame}, _OrigFrame, Stream,
+                      #state{handler_registry = Registry, self_id = SelfId,
+                             identity = Id} = S) ->
+    spawn(fun() ->
+        Reply = macula_handler_dispatch:dispatch_call(Frame, Registry, SelfId),
+        _ = catch macula_peering:send_on_stream(Stream, Reply, Id)
+    end),
+    S.
 
 %% STREAM_REPLY is signed end-to-end by `responded_by' (same pattern
 %% as a RESULT). STREAM_DATA / STREAM_END / STREAM_ERROR: SDK >= 4.4.9

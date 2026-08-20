@@ -181,11 +181,8 @@ fire_eager_block_replication(MCID, Payload) ->
 
 safe_replicate(LinkPid, MCID, Payload) ->
     Args = #{mcid => MCID, payload => Payload, replicate => false},
-    try macula_station_link:call(LinkPid, ?CONTENT_REALM,
-                                  <<"_content.put_block">>,
-                                  Args, ?REPLICATION_TIMEOUT_MS)
-    catch _:_ -> {error, exception}
-    end.
+    safe_content_call(LinkPid, <<"_content.put_block">>, Args,
+                      ?REPLICATION_TIMEOUT_MS).
 
 handle_get_manifest(#{mcid := MCID}) when is_binary(MCID) ->
     classify_get_manifest(macula_content_store:get_manifest(MCID));
@@ -249,9 +246,37 @@ safe_peer_connections() ->
     end.
 
 safe_call(LinkPid, Args) ->
-    try macula_station_link:call(LinkPid, ?CONTENT_REALM,
-                                  <<"_content.get_block">>,
-                                  Args, ?REMOTE_BLOCK_PER_PEER_MS)
+    safe_content_call(LinkPid, <<"_content.get_block">>, Args,
+                      ?REMOTE_BLOCK_PER_PEER_MS).
+
+%% Station-to-station leg of content transfer (eager replication on
+%% put, iterative fanout on get) — same dedicated-content-stream
+%% primitive the daemon-facing side uses (PLAN_PER_STREAM_QUIC_
+%% ISOLATION.md Phase 2), so a big block replicating between two
+%% stations doesn't head-of-line-block SWIM/DHT/other traffic on
+%% their peering connection either. Each call here is single-shot
+%% (one block, not a multi-chunk transfer), so open, call, close —
+%% no link-pinning-across-multiple-calls concern the daemon side has.
+safe_content_call(LinkPid, Procedure, Args, TimeoutMs) ->
+    on_content_stream_opened(
+      safe_open_content_stream(LinkPid), LinkPid, Procedure, Args, TimeoutMs).
+
+safe_open_content_stream(LinkPid) ->
+    try macula_station_link:open_content_stream(LinkPid)
+    catch _:_ -> {error, exception}
+    end.
+
+on_content_stream_opened({error, _} = E, _LinkPid, _Procedure, _Args,
+                         _TimeoutMs) ->
+    E;
+on_content_stream_opened({ok, Stream}, LinkPid, Procedure, Args, TimeoutMs) ->
+    Result = safe_call_on_stream(LinkPid, Stream, Procedure, Args, TimeoutMs),
+    macula_station_link:close_content_stream(LinkPid, Stream),
+    Result.
+
+safe_call_on_stream(LinkPid, Stream, Procedure, Args, TimeoutMs) ->
+    try macula_station_link:call_on_stream(LinkPid, Stream, ?CONTENT_REALM,
+                                           Procedure, Args, TimeoutMs)
     catch _:_ -> {error, exception}
     end.
 

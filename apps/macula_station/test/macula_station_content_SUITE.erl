@@ -21,7 +21,9 @@
          chunked_put_get_round_trips/1,
          chunked_content_reassembles_in_order/1,
          empty_content_round_trips/1,
-         chunked_content_gets_announced_and_resolves/1]).
+         chunked_content_gets_announced_and_resolves/1,
+         eager_replication_lands_on_peer_station/1,
+         iterative_get_reaches_two_hop_peer/1]).
 
 suite() -> [{timetrap, {minutes, 3}}].
 
@@ -30,7 +32,9 @@ all() ->
      chunked_put_get_round_trips,
      chunked_content_reassembles_in_order,
      empty_content_round_trips,
-     chunked_content_gets_announced_and_resolves].
+     chunked_content_gets_announced_and_resolves,
+     eager_replication_lands_on_peer_station,
+     iterative_get_reaches_two_hop_peer].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(macula),
@@ -104,6 +108,98 @@ chunked_content_gets_announced_and_resolves(Config) ->
         {ok, SmallMCID} = macula:put_content(Pool, <<"tiny">>),
         ?assertEqual({ok, []}, macula:find_content_providers(Pool, SmallMCID))
     end).
+
+%% PLAN_PER_STREAM_QUIC_ISOLATION.md Phase 2 — the station-to-station
+%% leg of content transfer (`macula_station_content_handlers:
+%% safe_replicate/3') moved onto a dedicated QUIC stream, same as the
+%% daemon-facing leg above. A daemon connected ONLY to A puts a
+%% single-block blob; A's `handle_put_block' eager-replicates to its
+%% peer B over the new dedicated-stream primitive. Verified from the
+%% outside: a SEPARATE daemon pool connected ONLY to B can
+%% `get_content' the same MCID straight from B's own local store — no
+%% further network hop needed if replication actually landed.
+eager_replication_lands_on_peer_station(Config) ->
+    Opts = ?config(cluster_opts, Config),
+    [A, B] = macula_station_test_cluster:spawn_cluster(2, Opts),
+    try
+        ok = boot_content_store(A, ?config(priv_dir, Config)),
+        ok = boot_content_store(B, ?config(priv_dir, Config)),
+        %% `dial_outbound/2', not `dial/2': the eager-replication path
+        %% (`macula_station_content_handlers:safe_peer_connections/0')
+        %% reads `macula_station_peer_links:connections/0', which is
+        %% populated ONLY by a real `macula_station_outbound_link'
+        %% worker (see its moduledoc) — `dial/2' is a raw ad-hoc
+        %% `macula_station:connect_to/1' that bypasses `outbound_link'
+        %% entirely and leaves `peer_links' permanently empty for the
+        %% pairing, however the handshake itself succeeds fine.
+        {ok, _Link} = macula_station_test_cluster:dial_outbound(A, B),
+        ok = macula_station_test_cluster:wait_for_handshakes(A, 1, 10_000),
+        UrlA = station_url(macula_station_test_cluster:listen_addr(A)),
+        UrlB = station_url(macula_station_test_cluster:listen_addr(B)),
+        {ok, PoolA} = macula:connect([UrlA], #{verify => none}),
+        {ok, PoolB} = macula:connect([UrlB], #{verify => none}),
+        try
+            ok = wait_healthy(PoolA),
+            ok = wait_healthy(PoolB),
+            Bytes = <<"replicate me to the peer station">>,
+            {ok, MCID} = macula:put_content(PoolA, Bytes),
+            ?assertMatch(<<1, 16#55, _:32/binary>>, MCID),
+            ?assertEqual({ok, Bytes}, wait_get_content(PoolB, MCID, 50))
+        after
+            catch macula:close(PoolA),
+            catch macula:close(PoolB)
+        end
+    after
+        macula_station_test_cluster:stop_cluster([A, B])
+    end.
+
+%% Chain A - B - C (A/C not peered). Content put via A eager-replicates
+%% to B (same mechanism the test above verifies). A daemon connected
+%% ONLY to C has no direct route to A's copy — C's local
+%% `_content.get_block' misses, and `?DEFAULT_HOPS' = 1 iterative
+%% fanout to C's own peer (B) — over the SAME new dedicated-stream
+%% primitive, this time the `_content.get_block' direction
+%% (`macula_station_content_handlers:safe_call/2') — finds B's
+%% replicated copy and returns it.
+iterative_get_reaches_two_hop_peer(Config) ->
+    Opts = ?config(cluster_opts, Config),
+    [A, B, C] = macula_station_test_cluster:spawn_cluster(3, Opts),
+    try
+        [ok = boot_content_store(S, ?config(priv_dir, Config)) || S <- [A, B, C]],
+        %% `dial_outbound/2' on both legs — see the comment in
+        %% `eager_replication_lands_on_peer_station' above.
+        {ok, _LinkAB} = macula_station_test_cluster:dial_outbound(A, B),
+        {ok, _LinkCB} = macula_station_test_cluster:dial_outbound(C, B),
+        ok = macula_station_test_cluster:wait_for_handshakes(A, 1, 10_000),
+        ok = macula_station_test_cluster:wait_for_handshakes(C, 1, 10_000),
+        UrlA = station_url(macula_station_test_cluster:listen_addr(A)),
+        UrlC = station_url(macula_station_test_cluster:listen_addr(C)),
+        {ok, PoolA} = macula:connect([UrlA], #{verify => none}),
+        {ok, PoolC} = macula:connect([UrlC], #{verify => none}),
+        try
+            ok = wait_healthy(PoolA),
+            ok = wait_healthy(PoolC),
+            Bytes = <<"two hops away via iterative fanout">>,
+            {ok, MCID} = macula:put_content(PoolA, Bytes),
+            %% Give eager replication (A -> B) time to land before C's
+            %% iterative fanout (C -> B) can find it.
+            ?assertEqual({ok, Bytes}, wait_get_content(PoolC, MCID, 50))
+        after
+            catch macula:close(PoolA),
+            catch macula:close(PoolC)
+        end
+    after
+        macula_station_test_cluster:stop_cluster([A, B, C])
+    end.
+
+wait_get_content(_Pool, _MCID, 0) -> {error, not_found};
+wait_get_content(Pool, MCID, N) ->
+    get_content_or_retry(macula:get_content(Pool, MCID), Pool, MCID, N).
+
+get_content_or_retry({ok, _Bin} = Result, _Pool, _MCID, _N) -> Result;
+get_content_or_retry(_Other, Pool, MCID, N) ->
+    timer:sleep(100),
+    wait_get_content(Pool, MCID, N - 1).
 
 wait_providers(_Pool, _MCID, 0) -> {ok, []};
 wait_providers(Pool, MCID, N) ->
