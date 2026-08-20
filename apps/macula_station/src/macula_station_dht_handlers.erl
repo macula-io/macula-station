@@ -235,8 +235,10 @@ settle_round({nodes, Refs}, Dht, Key, Seen, Round) ->
 %% `macula_station_dht_dialer:ensure_dialed/3') before issuing FIND_VALUE,
 %% so an unroutable candidate costs at most `?WALK_DIAL_TIMEOUT_MS', not a
 %% silent hang.
-query_round(_Dht, _Key, []) ->
-    {nodes, []};
+%%
+%% `Candidates' is never `[]' here — `walk/5' short-circuits to
+%% `not_found' before ever calling this, so an empty-list clause would be
+%% dead code (dialyzer correctly flags it as unreachable).
 query_round(Dht, Key, Candidates) ->
     Tag    = make_ref(),
     Parent = self(),
