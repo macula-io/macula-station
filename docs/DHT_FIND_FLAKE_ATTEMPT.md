@@ -1,6 +1,34 @@
-# Cross-station DHT find flake — attempt 1 (REVERTED)
+# Cross-station DHT find flake — attempt 1 (REVERTED), attempt 2 (SHIPPED)
 
-**Status:** Reverted 2026-05-10. Hypothesis was wrong; the attempt's narrative is preserved here so the next attempt starts from data, not memory.
+**Status:** Attempt 1 reverted 2026-05-10, wrong hypothesis, narrative
+preserved below so the next attempt started from data, not memory.
+**Attempt 2 shipped 2026-08-20** (`macula_station_dht_dialer` +
+multi-round walk in `macula_station_dht_handlers`, commits `2c62e1a`/
+`214890f`/`2ab879b`) — exactly "Where to look next" option 1 below.
+Verified live on the fleet's one no-direct-edge pair
+(helsinki/nuremberg): cross-station resolve went from ~0% to passing on
+most runs. Not 100% — a bounded 3-round walk against a cold-start
+identity is still probabilistic, consistent with option 4's framing
+below (poll-with-retry still improves the effective rate further). See
+`macula-io` memory `project_direct_dial_discovery_track` for the full
+verification history and current numbers.
+
+⚠ **A second, more serious bug was found and fixed 2026-08-21 while
+re-verifying this fix live, in the module the fix itself introduced.**
+`macula_station_dht_dialer` (the on-demand dialer this fix added) set
+itself as the QUIC controlling process for every connection it dials,
+but never forwarded any frame other than its own dial-handshake
+bookkeeping — silently dropping every CALL/RESULT/PUBLISH/anything
+arriving on a connection it established, for that connection's entire
+life, with only a debug-level log line. This made any NEW edge the walk
+creates (exactly what this attempt's fix is FOR) write-only from the
+dialling station's own point of view. Found via a 100%-reproducible,
+directional pooled-RPC timeout on the live fleet; fixed in commit
+`02ba687` by forwarding unconditionally, mirroring
+`macula_station_outbound_link`'s own catch-all. See that commit's
+message for full detail — noted here because it directly affects THIS
+fix's blast radius: every connection the walk dials on-demand was
+silently one-way until `02ba687` shipped.
 
 ## The flake
 
