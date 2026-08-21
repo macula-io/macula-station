@@ -46,11 +46,21 @@ load(Path) ->
 %% Generate — fresh key pair, persisted atomically with 0600 perms.
 %%------------------------------------------------------------------
 
-%% @doc Generate a fresh identity and persist it to `Path' atomically.
-%% Creates missing parent directories; leaves the file at mode 0600.
+%% @doc Generate a fresh, puzzle-hardened identity and persist it to
+%% `Path' atomically. Creates missing parent directories; leaves the
+%% file at mode 0600.
+%%
+%% Puzzle-hardened, not a plain `macula_identity:generate()' — a
+%% station identity is exactly the case
+%% `macula_station_listener:puzzle_enforcement_mode/0' exists to check,
+%% and nothing about deferring the grind to some later opt-in serves a
+%% station (unlike enforcement itself, which needs a fleet-wide
+%% rollout before it can safely reject anything). Grinding difficulty
+%% 8 (`macula_identity''s default) is sub-millisecond in practice, so
+%% this adds no meaningful boot latency.
 -spec generate(file:name_all()) -> {ok, kp()} | {error, term()}.
 generate(Path) ->
-    persist(macula_identity:generate(), Path).
+    persist(macula_identity:generate(#{puzzle => true}), Path).
 
 -spec persist(kp(), file:name_all()) -> {ok, kp()} | {error, term()}.
 persist(Kp, Path) ->

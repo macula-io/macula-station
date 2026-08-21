@@ -25,6 +25,18 @@ cold_boot_generates_and_persists_test_() ->
         end
     end}.
 
+%% A station identity is exactly the case `puzzle_enforcement_mode/0'
+%% checks -- see `macula_station_identity:generate/1''s own doc for
+%% why this isn't deferred to an opt-in.
+cold_boot_identity_is_puzzle_hardened_test_() ->
+    {setup, fun tmpdir/0, fun rm_rf/1, fun(Dir) ->
+        fun() ->
+            Path = macula_station_identity:path_for(Dir),
+            {ok, Kp} = macula_station_identity:load_or_generate(Path),
+            ?assert(macula_identity:puzzle_valid(macula_identity:public(Kp)))
+        end
+    end}.
+
 warm_boot_returns_same_identity_test_() ->
     {setup, fun tmpdir/0, fun rm_rf/1, fun(Dir) ->
         fun() ->
