@@ -121,11 +121,26 @@ handle_info({'EXIT', ConnPid, Reason}, #state{pending = P} = S)
     {noreply, on_disconnected(ConnPid, Reason, S)};
 handle_info({'EXIT', _Pid, _Reason}, S) ->
     {noreply, S};
-handle_info({macula_peering, frame, ConnPid, _Frame}, S) ->
-    %% DHT/pubsub frames are fast-pathed straight past this process (see
-    %% `dial_opts_with_self/0'); anything landing here is unexpected but
-    %% harmless to drop rather than crash on.
-    ?LOG_DEBUG("[dht_dialer] unexpected frame on ~p, dropped", [ConnPid]),
+handle_info({macula_peering, frame, ConnPid, Frame}, S) ->
+    %% This module stays the QUIC `controlling_pid' for every
+    %% connection it dials (set in `dial_opts_with_self/0', needed to
+    %% catch the `connected'/`disconnected' notifications above) — it
+    %% is never handed off, unlike a dedicated stream relayed via
+    %% `macula_station_outbound_link', which transfers ownership once
+    %% its job is done. Every later frame on this connection keeps
+    %% arriving here for the connection's whole lifetime, and must be
+    %% forwarded, exactly as `macula_station_outbound_link' forwards
+    %% any frame type it does not handle itself — dropping it made a
+    %% dialer-established connection write-only from this station's
+    %% own point of view: it could relay a CALL out via
+    %% `macula_station_peer_observer:on_remote_lookup/5' sending
+    %% straight over the raw ConnPid, but could never receive a reply,
+    %% a fresh CALL, or anything else back, since nothing else owned
+    %% this mailbox. Found live 2026-08-21: the walk's on-demand dial
+    %% created a genuine direct link where none existed before, and
+    %% calls INTO the dialling station over it timed out 100% of the
+    %% time with zero error signal beyond a debug log line.
+    forward_to_observer({macula_peering, frame, ConnPid, Frame}),
     {noreply, S};
 handle_info(_Msg, S) ->
     {noreply, S}.
