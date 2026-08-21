@@ -76,7 +76,15 @@
     %% peers from `macula_station_peer_links'. Empty list
     %% means no outbound dial (the station only accepts inbound).
     outbound_peers         = [] :: [#{host := binary(),
-                                      port := inet:port_number()}]
+                                      port := inet:port_number()}],
+    %% S/Kademlia identity-puzzle enforcement for inbound handshakes.
+    %% Translated into the `macula_station' application env by the
+    %% boot pipeline (`macula_station_app:apply_puzzle_enforcement_env/1')
+    %% so `macula_station_listener:puzzle_enforcement_mode/0' reads it
+    %% from boot, not just from an operator's live `application:set_env/3'
+    %% that a restart would silently discard. See that function's own
+    %% doc for the `off' -> `log_only' -> `enforce' rollout order.
+    puzzle_enforcement     = off :: off | log_only | enforce
 }).
 
 %% Matches the shape of `application:get_env(macula_station, realms_cfg, [])'

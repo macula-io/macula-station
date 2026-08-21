@@ -280,6 +280,83 @@ from_env_json_omits_outbound_peers_defaults_to_empty_test_() ->
     end}.
 
 %%==================================================================
+%% from_env/0 — puzzle_enforcement JSON parsing
+%%==================================================================
+
+from_env_json_omits_puzzle_enforcement_defaults_to_off_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Path = write_json(Dir, base_config(Dir, <<"127.0.0.1">>, 9000)),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual(off, Cfg#station_cfg.puzzle_enforcement)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_puzzle_enforcement_log_only_populates_record_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg0 = base_config(Dir, <<"127.0.0.1">>, 9000),
+                With = Cfg0#{<<"puzzle_enforcement">> => <<"log_only">>},
+                Path = write_json(Dir, With),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual(log_only, Cfg#station_cfg.puzzle_enforcement)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+from_env_json_puzzle_enforcement_enforce_populates_record_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg0 = base_config(Dir, <<"127.0.0.1">>, 9000),
+                With = Cfg0#{<<"puzzle_enforcement">> => <<"enforce">>},
+                Path = write_json(Dir, With),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                {ok, Cfg} = macula_station_config:from_env(),
+                ?assertEqual(enforce, Cfg#station_cfg.puzzle_enforcement)
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+%% A typo (or a future mode this build doesn't know about yet) must
+%% surface as the same {error, {bad_config, _}} shape every other
+%% malformed field does -- silently falling back to `off' would mean
+%% an operator's JSON says "enforce" while the station quietly never
+%% enforces anything, which is exactly the failure this whole feature
+%% exists to prevent.
+from_env_json_puzzle_enforcement_typo_is_bad_config_test_() ->
+    {setup, fun clear_env/0, fun restore_env/1, fun(_) ->
+        fun() ->
+            Dir = make_tmpdir(),
+            try
+                Cfg0 = base_config(Dir, <<"127.0.0.1">>, 9000),
+                With = Cfg0#{<<"puzzle_enforcement">> => <<"enforced">>},
+                Path = write_json(Dir, With),
+                os:putenv("MACULA_STATION_CONFIG", Path),
+                ?assertEqual(
+                   {error, {bad_config, {puzzle_enforcement, <<"enforced">>}}},
+                   macula_station_config:from_env())
+            after
+                rm_rf(Dir)
+            end
+        end
+    end}.
+
+%%==================================================================
 %% Helpers
 %%==================================================================
 
@@ -306,7 +383,7 @@ set_app_env(Dir, Bind, Port) ->
 
 clear_env() ->
     Keys = [data_dir, identity_file, bind, port, certfile, keyfile,
-            capabilities, cache, rebootstrap, admin],
+            capabilities, cache, rebootstrap, admin, puzzle_enforcement],
     Saved = [{K, application:get_env(macula_station, K)} || K <- Keys],
     [application:unset_env(macula_station, K) || K <- Keys],
     os:unsetenv("MACULA_STATION_CONFIG"),

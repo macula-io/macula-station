@@ -84,6 +84,7 @@ boot_cfg(SupPid, {error, Reason}) ->
     halt_sup(SupPid, Reason);
 boot_cfg(SupPid, {ok, Cfg}) ->
     apply_bootstrap_env(Cfg),
+    apply_puzzle_enforcement_env(Cfg),
     boot_handler_registry(SupPid, Cfg).
 
 %% Push the JSON-supplied bootstrap config into `macula_bootstrap'
@@ -120,6 +121,17 @@ apply_bootstrap_env(#station_cfg{discoverers = Discoverers,
         _ -> application:set_env(macula_bootstrap, cascade_opts, Opts)
     end,
     ok.
+
+%% Push the JSON-supplied puzzle-enforcement mode into `macula_station'
+%% application env, read by `macula_station_listener:puzzle_enforcement_mode/0'
+%% on every handshake completion. Without this, the only way to set the
+%% mode was a live `application:set_env/3' against the running node --
+%% which a restart (watchtower, a crash, an operator bounce) silently
+%% discards back to the hardcoded `off' default, with no signal that
+%% enforcement quietly turned itself off. Config-file-sourced, so it
+%% survives every redeploy the same way `outbound_peers' or `geo' do.
+apply_puzzle_enforcement_env(#station_cfg{puzzle_enforcement = Mode}) ->
+    application:set_env(macula_station, puzzle_enforcement, Mode).
 
 %%==================================================================
 %% Registries — no inter-deps, started first so the DHT / observer

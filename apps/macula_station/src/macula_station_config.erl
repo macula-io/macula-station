@@ -213,7 +213,7 @@ assemble_from_json(M, Path) ->
     require_keys([<<"data_dir">>, <<"bind">>, <<"port">>,
                   <<"certfile">>, <<"keyfile">>],
                  M, Path,
-                 fun() -> {ok, build_record_from_json(M)} end).
+                 fun() -> with_puzzle_enforcement(M) end).
 
 require_keys([], _M, _Path, K) ->
     K();
@@ -223,7 +223,30 @@ require_keys([Key | Rest], M, Path, K) ->
         false -> {error, {bad_config, {missing, key_to_atom(Key)}}}
     end.
 
-build_record_from_json(M) ->
+%% Validated as its own fallible step, not inline in
+%% `build_record_from_json/2' -- an unrecognised mode must surface as
+%% the same `{error, {bad_config, _}}' shape every other malformed
+%% config field does, not as a raised exception a caller matching on
+%% `{ok, _} | {error, _}' would never expect.
+with_puzzle_enforcement(M) ->
+    on_puzzle_enforcement(
+      decode_puzzle_enforcement(maps:get(<<"puzzle_enforcement">>, M, <<"off">>)), M).
+
+on_puzzle_enforcement({error, _} = E, _M) -> E;
+on_puzzle_enforcement({ok, Mode}, M) -> {ok, build_record_from_json(M, Mode)}.
+
+%% Rejects anything but the three known modes rather than silently
+%% defaulting a typo (e.g. "enforced") to `off' -- an operator who
+%% believes enforcement is on because the JSON says so, when it is
+%% actually off because the atom didn't match, is the exact silent
+%% failure this whole feature exists to avoid.
+decode_puzzle_enforcement(<<"off">>)      -> {ok, off};
+decode_puzzle_enforcement(<<"log_only">>) -> {ok, log_only};
+decode_puzzle_enforcement(<<"enforce">>)  -> {ok, enforce};
+decode_puzzle_enforcement(Other) ->
+    {error, {bad_config, {puzzle_enforcement, Other}}}.
+
+build_record_from_json(M, PuzzleEnforcement) ->
     DataDir   = to_str(maps:get(<<"data_dir">>, M)),
     Geo       = maps:get(<<"geo">>,       M, #{}),
     Bootstrap = maps:get(<<"bootstrap">>, M, #{}),
@@ -246,7 +269,8 @@ build_record_from_json(M) ->
         power_m                = to_pos_int_or_undef(maps:get(<<"power_m">>, Geo, undefined)),
         discoverers            = decode_discoverers_json(maps:get(<<"discoverers">>, Bootstrap, [])),
         bootstrap_cascade_opts = decode_atom_keyed(maps:get(<<"cascade_opts">>, Bootstrap, #{})),
-        outbound_peers         = decode_outbound_peers(maps:get(<<"outbound_peers">>, M, []))
+        outbound_peers         = decode_outbound_peers(maps:get(<<"outbound_peers">>, M, [])),
+        puzzle_enforcement     = PuzzleEnforcement
     }.
 
 %% JSON outbound_peers shape: [{"host": "station-be-...", "port": 4433}, ...]
@@ -344,7 +368,8 @@ from_app_env() ->
         {capabilities,  {optional, 0}},
         {cache,         optional},
         {rebootstrap,   optional},
-        {admin,         optional}
+        {admin,         optional},
+        {puzzle_enforcement, {optional, off}}
     ])).
 
 promote({ok, Map})          -> {ok, finalise_app_env(Map)};
@@ -390,7 +415,8 @@ finalise_app_env(Map0) ->
         capabilities     = maps:get(capabilities, Map, 0) bor ?CAP_STATION,
         cache_cfg        = decode_cache_app_env(maps:get(cache, Map, undefined)),
         rebootstrap_cfg  = decode_rebootstrap_app_env(maps:get(rebootstrap, Map, undefined)),
-        admin_cfg        = decode_admin_app_env(maps:get(admin, Map, undefined))
+        admin_cfg        = decode_admin_app_env(maps:get(admin, Map, undefined)),
+        puzzle_enforcement = maps:get(puzzle_enforcement, Map, off)
     }.
 
 decode_cache_app_env(undefined)            -> undefined;
