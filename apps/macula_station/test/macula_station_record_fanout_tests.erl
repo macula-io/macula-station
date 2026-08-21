@@ -69,6 +69,14 @@ classification_test_() ->
          fun(Ctx) ->
              {timeout, 30,
               fun() -> unlabeled_record_defaults_to_daemon_topic(Ctx) end}
+         end,
+         fun(Ctx) ->
+             {timeout, 30,
+              fun() -> test_daemon_record_is_never_announced(Ctx) end}
+         end,
+         fun(Ctx) ->
+             {timeout, 30,
+              fun() -> test_station_record_is_never_announced(Ctx) end}
          end
      ]}.
 
@@ -103,6 +111,21 @@ unlabeled_record_defaults_to_daemon_topic(Ctx) ->
     assert_publish_lands(Ctx,
                         unlabeled_record(),
                         <<"_mesh.daemon.announced_v1">>).
+
+%% `kind = test_daemon' / `test_station' must never reach either public
+%% presence topic — see `maybe_publish_presence/3'. A realm dashboard's
+%% "N nodes dialled in" counter was mostly counting these before the fix
+%% (macula-e2e's own throwaway DHT round-trip fixtures, tagged this way
+%% 2026-08-21 for exactly this reason).
+test_daemon_record_is_never_announced(Ctx) ->
+    assert_publish_does_not_land(Ctx, test_daemon_record(),
+                                 [<<"_mesh.station.announced_v1">>,
+                                  <<"_mesh.daemon.announced_v1">>]).
+
+test_station_record_is_never_announced(Ctx) ->
+    assert_publish_does_not_land(Ctx, test_station_record(),
+                                 [<<"_mesh.station.announced_v1">>,
+                                  <<"_mesh.daemon.announced_v1">>]).
 
 unknown_record_type_is_ignored(#{publisher := Pub, registry := Reg,
                                  identity := PubIdentity}) ->
@@ -154,6 +177,40 @@ receive_event(_Expected, Timeout) ->
         {'$gen_cast', {send_frame, #{frame_type := event, topic := T}}} -> T
     after Timeout -> timeout
     end.
+
+%% Subscribes to every topic in `ForbiddenTopics', fires the record, and
+%% fails if ANY of them ever receives an event. 300ms, not 5s: this
+%% asserts an absence, so it only needs to be long enough that a real
+%% publish (which lands well under 200ms in `assert_publish_lands/3'
+%% above) would have shown up by now.
+assert_publish_does_not_land(#{publisher := Pub, registry := Reg,
+                               observer := Obs, identity := PubIdentity},
+                             Record, ForbiddenTopics) ->
+    {ok, Server} = hecate_pubsub_registry:register(Reg, ?MESH_REALM, PubIdentity),
+    SubKp        = macula_identity:generate(),
+    SubId        = macula_identity:public(SubKp),
+    [ok = hecate_pubsub_server:subscribe(Server, T, SubId)
+     || T <- ForbiddenTopics],
+    ok = stub_observer:register_conn(Obs, SubId, self()),
+    macula_station_record_fanout:on_record(Pub, Record),
+    case receive_event(ForbiddenTopics, 300) of
+        timeout -> ok;
+        Topic   -> erlang:error({test_record_leaked_onto_presence_topic, Topic})
+    end.
+
+test_daemon_record() ->
+    OwnerKp = macula_identity:generate(),
+    NodeId  = macula_identity:public(OwnerKp),
+    macula_record:sign(
+      macula_record:node_record(NodeId, [], 0, #{kind => <<"test_daemon">>}),
+      OwnerKp).
+
+test_station_record() ->
+    OwnerKp = macula_identity:generate(),
+    NodeId  = macula_identity:public(OwnerKp),
+    macula_record:sign(
+      macula_record:node_record(NodeId, [], 0, #{kind => <<"test_station">>}),
+      OwnerKp).
 
 %% A real station always stamps `kind = station' explicitly
 %% (`macula_station_announcer:node_record_opts/1') — mirror that here

@@ -156,9 +156,8 @@ fan_out(Record, #{} = Wiring) ->
     classify(macula_record:type(Record), Record, Wiring).
 
 classify(16#01, Record, Wiring) ->
-    Topic   = node_announce_topic(record_kind(Record)),
     Payload = macula_record:encode(Record),
-    publish_on(Wiring, Topic, Payload),
+    maybe_publish_presence(record_kind(Record), Payload, Wiring),
     publish_record_stored(16#01, Payload, Wiring);
 classify(16#0C, Record, Wiring) ->
     Payload = macula_record:encode(Record),
@@ -196,9 +195,7 @@ classify_tombstone(_, _, _) ->
     ok.
 
 fan_out_depart(P, Record, Wiring) ->
-    Topic   = node_depart_topic(payload_kind(P)),
-    Payload = macula_record:encode(Record),
-    publish_on(Wiring, Topic, Payload).
+    maybe_publish_depart(payload_kind(P), macula_record:encode(Record), Wiring).
 
 record_kind(Record) -> payload_kind(macula_record:payload(Record)).
 
@@ -227,6 +224,38 @@ node_announce_topic(_)             -> <<"_mesh.daemon.announced_v1">>.
 
 node_depart_topic(<<"station">>) -> <<"_mesh.station.departed_v1">>;
 node_depart_topic(_)             -> <<"_mesh.daemon.departed_v1">>.
+
+%% `kind = test_station' / `test_daemon' opt into the SAME actor-
+%% discriminator field a real peer sets (or, for a daemon, leaves
+%% unset) — chosen over a separate boolean opt because
+%% `node_record_opts/0' already routes entirely on `kind', and a
+%% second field callers could forget to check would just grow a new
+%% way to leak test noise onto `_mesh.*'. Kept as two values, not one
+%% flat `test', so a test record still carries which side of the
+%% station/daemon axis it stands in for, the same as a real one does.
+%% Found live 2026-08-21: a realm dashboard's public "N nodes dialled
+%% in" counter was mostly counting throwaway
+%% `macula_record:node_record/3' fixtures from macula-e2e's own DHT
+%% round-trip rounds, which never expire fast enough not to show up
+%% as if they were real connected daemons. Skip the presence
+%% announce/depart entirely for either test kind — the generic
+%% `_dht.records.<type>.stored' topic (`classify/3', `fan_out_depart/3')
+%% still fires unconditionally either way, so anything that
+%% legitimately wants to observe test records in the DHT itself is
+%% unaffected.
+maybe_publish_presence(<<"test_station">>, _Payload, _Wiring) ->
+    ok;
+maybe_publish_presence(<<"test_daemon">>, _Payload, _Wiring) ->
+    ok;
+maybe_publish_presence(Kind, Payload, Wiring) ->
+    publish_on(Wiring, node_announce_topic(Kind), Payload).
+
+maybe_publish_depart(<<"test_station">>, _Payload, _Wiring) ->
+    ok;
+maybe_publish_depart(<<"test_daemon">>, _Payload, _Wiring) ->
+    ok;
+maybe_publish_depart(Kind, Payload, Wiring) ->
+    publish_on(Wiring, node_depart_topic(Kind), Payload).
 
 %%====================================================================
 %% Publish — register the mesh-realm pubsub_server (cheap idempotent
