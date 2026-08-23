@@ -4,10 +4,10 @@
 %% behind a small set of ergonomic operations: `store/1' takes raw
 %% bytes and returns an MCID; `fetch/1' takes an MCID and returns
 %% the bytes (locally only — remote fetches go through
-%% `macula_content_transfer' + `macula_content_dht').
+%% `macula_content_bitswap' + `macula_content_dht').
 %%
 %% Intended for application code; the supervised gen_servers
-%% (`macula_content_store', `macula_content_transfer') are the
+%% (`macula_content_store', `macula_content_bitswap') are the
 %% preferred call targets only when the facade isn't expressive
 %% enough.
 -module(macula_content).

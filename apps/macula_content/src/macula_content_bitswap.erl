@@ -11,7 +11,14 @@
 %% into here via `process_inbound/2'; outbound frames are built by
 %% the pure builder functions and returned to the caller for
 %% transmission.
--module(macula_content_transfer).
+%%
+%% Named `_bitswap', not `_transfer': the `macula' SDK dependency
+%% ships its own unrelated `macula_content_transfer' (client-side
+%% put/get, added in 9.9.0) — same name, different app, different
+%% purpose. `rebar3 release' hard-fails on duplicate module names
+%% across included apps, so this collided fatally the moment `macula'
+%% crossed 9.9.0. Renamed this side (the consumer) rather than the SDK.
+-module(macula_content_bitswap).
 -behaviour(gen_server).
 
 -export([

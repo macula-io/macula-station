@@ -243,7 +243,7 @@ dispatch_swim(From, Frame, Swim) ->
         {error, _Reason} -> ok
     end.
 
-%% Content frames dispatch through macula_content_transfer. The
+%% Content frames dispatch through macula_content_bitswap. The
 %% transfer module returns either `ok' (fire-and-forget) or
 %% `{ok, ReplyFrame}' which the listener sends back over the
 %% same peering connection via `macula_peering:send_frame/2'
@@ -253,7 +253,7 @@ dispatch_content(ConnPid, From, Frame) ->
     case macula_frame:verify(Frame, From) of
         {ok, Verified}  -> handle_content_reply(
                               ConnPid,
-                              macula_content_transfer:process_inbound(From, Verified));
+                              macula_content_bitswap:process_inbound(From, Verified));
         {error, _Reason} -> ok
     end.
 

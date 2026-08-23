@@ -4,7 +4,7 @@
 %% <ul>
 %%   <li>`macula_content_store' — gen_server backing local content
 %%       blocks and manifests via filesystem + ETS index.</li>
-%%   <li>`macula_content_transfer' — gen_server tracking outbound
+%%   <li>`macula_content_bitswap' — gen_server tracking outbound
 %%       requests and dispatching inbound WANT / HAVE / BLOCK /
 %%       MANIFEST_REQ / MANIFEST_RES / CANCEL frames.</li>
 %% </ul>
@@ -34,12 +34,12 @@ init([]) ->
           shutdown => 5000,
           type     => worker,
           modules  => [macula_content_store]},
-        #{id       => macula_content_transfer,
-          start    => {macula_content_transfer, start_link, []},
+        #{id       => macula_content_bitswap,
+          start    => {macula_content_bitswap, start_link, []},
           restart  => permanent,
           shutdown => 5000,
           type     => worker,
-          modules  => [macula_content_transfer]}
+          modules  => [macula_content_bitswap]}
     ],
     {ok, {SupFlags, Children}}.
 
