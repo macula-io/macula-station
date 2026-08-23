@@ -520,9 +520,15 @@ handle_info({quic, Bin, Stream, _Flags}, #state{stream_bufs = Bufs} = S)
              S#state{stream_bufs = Bufs#{Stream => {OwnerConn, Tail}}},
              Frames),
     {noreply, NewS};
-handle_info({macula_peering, disconnected, ConnPid, _Reason}, S) ->
+handle_info({macula_peering, disconnected, ConnPid, Reason}, S) ->
+    logger:info("[peer_observer] disconnected pid=~p peer=~p reason=~p "
+                "direction=inbound",
+                [ConnPid, maps:get(ConnPid, S#state.peers, undefined), Reason]),
     {noreply, on_disconnected(ConnPid, S)};
-handle_info({macula_peering, disconnected_outbound, ConnPid, _Reason}, S) ->
+handle_info({macula_peering, disconnected_outbound, ConnPid, Reason}, S) ->
+    logger:info("[peer_observer] disconnected pid=~p peer=~p reason=~p "
+                "direction=outbound",
+                [ConnPid, maps:get(ConnPid, S#state.peers, undefined), Reason]),
     {noreply, on_disconnected(ConnPid, S)};
 handle_info({'DOWN', _Ref, process, Pid, _Reason},
             #state{peers = P} = S) ->
