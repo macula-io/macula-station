@@ -593,9 +593,35 @@ touch_conn(ConnPid, #state{last_frame_at = LF} = S) ->
 %% through the peering_conn monitor and routes through
 %% `on_disconnected' for normal cleanup. We don't need a second
 %% app-layer liveness check on top of that.
-run_conn_sweep(#state{last_frame_at = LF, peers = P} = S) ->
+%%
+%% Also sweeps `remote_advertise' for entries whose `conn_pid' is
+%% already dead — the same "in case a DOWN message was lost" case,
+%% just never extended past `last_frame_at'. Confirmed live: a
+%% station's registry held an advertise entry whose `conn_pid'
+%% `is_process_alive' returned `false' for, unreachable until
+%% something happened to overwrite it — no natural process re-derives
+%% or re-checks an existing entry's liveness otherwise. Bounds any
+%% such staleness to one sweep interval regardless of how the DOWN
+%% was actually lost, rather than depending on correctly diagnosing
+%% that mechanism.
+run_conn_sweep(#state{last_frame_at = LF, peers = P, remote_advertise = R} = S) ->
     Live = maps:filter(fun(Pid, _Last) -> maps:is_key(Pid, P) end, LF),
+    sweep_dead_advertisers(R),
     S#state{last_frame_at = Live}.
+
+sweep_dead_advertisers(undefined) ->
+    ok;
+sweep_dead_advertisers(R) ->
+    DeadConns = dead_advertiser_conns(macula_remote_advertise_registry:list(R)),
+    lists:foreach(fun(Pid) ->
+        logger:warning("[peer_observer] conn_sweep: purging dead "
+                       "advertiser conn_pid=~p", [Pid]),
+        macula_remote_advertise_registry:purge_conn(R, Pid)
+    end, DeadConns).
+
+dead_advertiser_conns(Entries) ->
+    lists:usort([Pid || {_Realm, _Proc, #{conn_pid := Pid}} <- Entries,
+                        not is_process_alive(Pid)]).
 
 %% TTL fired with no reply ever arriving. The origin's station_link
 %% has already given up at the SDK level (its own deadline timer
@@ -1372,6 +1398,23 @@ on_advertise_frame(R, unadvertise, Frame, _ConnPid, NodeId, Source) ->
 on_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid, _Source) ->
     ok;
 on_advertise_match(true, R, Realm, Proc, Adv, ConnPid, Source) ->
+    %% An ADVERTISE frame queued on a connection that has since died
+    %% (a newer handshake from the same peer superseded it via
+    %% `purge_stale_slot/4', or it crashed outright) can still be
+    %% sitting in this process's mailbox and get processed here AFTER
+    %% the connection is already gone. Confirmed live: a station's
+    %% registry held an entry whose `conn_pid' was already dead --
+    %% `is_process_alive' came back `false' for a pid `list/1' still
+    %% returned, on a fleet station, well after the connection that
+    %% sent this exact frame had been superseded. Refusing to
+    %% register/replace against a dead `ConnPid' closes the race
+    %% regardless of ordering against `purge_stale_slot/4' — no
+    %% special-casing needed for exactly which of the two ran first.
+    live_advertise_match(is_process_alive(ConnPid), R, Realm, Proc, Adv, ConnPid, Source).
+
+live_advertise_match(false, _R, _Realm, _Proc, _Adv, _ConnPid, _Source) ->
+    ok;
+live_advertise_match(true, R, Realm, Proc, Adv, ConnPid, Source) ->
     %% Direct vs gossip gate. A `direct' ADVERTISE comes straight
     %% from the original daemon's connection (CAP_STATION unset) —
     %% it always wins, replacing any existing entry. A `gossip'

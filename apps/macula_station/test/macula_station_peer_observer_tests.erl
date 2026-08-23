@@ -470,6 +470,82 @@ advertise_frame_registers_handler_test_() ->
         end
      end}.
 
+advertise_frame_on_a_dead_conn_is_not_registered_test_() ->
+    %% Defensive: `route/4' already refuses a frame once
+    %% `on_disconnected' has processed its ConnPid's death (it's no
+    %% longer in `peers'), and empirically (10 runs, both message
+    %% orderings tried) that guard alone seems to already be
+    %% sufficient — a manufactured "frame arrives while ConnPid is
+    %% dead but not yet reaped" scenario could not be made to reach
+    %% `live_advertise_match(true, ...)` in this test harness. This
+    %% test exercises the extra `is_process_alive' guard directly
+    %% rather than trying to race it via message ordering: kept as a
+    %% correctness floor (a dead pid must never be write-eligible,
+    %% however that state is reached) even though the specific live
+    %% race it was added for was never conclusively reproduced — see
+    %% `conn_sweep_purges_dead_advertisers_test_' for the fix that
+    %% *is* confirmed to close the actual observed bug (a stale entry
+    %% sitting in the registry with an already-dead `conn_pid').
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId   = macula_identity:public(AdvKp),
+            AdvConn = spawn_dummy(),
+            Realm   = <<7:256>>,
+            Procedure = <<"_realm.membership.join_with_token_v1">>,
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            exit(AdvConn, kill),
+            wait_for(fun() -> not is_process_alive(AdvConn) end, 500),
+            Frame = macula_frame:sign(
+                      macula_frame:advertise(#{realm      => Realm,
+                                               procedure  => Procedure,
+                                               advertiser => AdvId}),
+                      AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, Frame},
+            timer:sleep(100),
+            ?assertEqual({error, not_found},
+                         macula_remote_advertise_registry:lookup(
+                           Ra, Realm, Procedure))
+        end
+     end}.
+
+conn_sweep_purges_dead_advertisers_test_() ->
+    %% The actual, confirmed-live bug: a station's advertise registry
+    %% held an entry whose `conn_pid' was already dead
+    %% (`is_process_alive' => `false'), with nothing to ever notice or
+    %% correct it — no process re-validates an existing entry's
+    %% liveness on its own. `conn_sweep' already existed for the exact
+    %% same class of problem in `last_frame_at' ("defensive, in case a
+    %% DOWN message was lost") — this extends that same sweep to the
+    %% advertise registry rather than depending on diagnosing exactly
+    %% how the DOWN got lost. Registers directly against the registry
+    %% (bypassing the observer's own connect/advertise message flow
+    %% entirely) so the dead `conn_pid' is deterministic, not raced.
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, ra := Ra, adv_kp := AdvKp} = Ctx,
+            AdvId = macula_identity:public(AdvKp),
+            DeadConn = spawn(fun() -> ok end),
+            wait_for(fun() -> not is_process_alive(DeadConn) end, 500),
+            Realm     = <<7:256>>,
+            Procedure = <<"_realm.membership.join_with_token_v1">>,
+            ok = macula_remote_advertise_registry:register(
+                   Ra, Realm, Procedure,
+                   #{advertiser => AdvId, conn_pid => DeadConn, source => direct}),
+            {ok, _} = macula_remote_advertise_registry:lookup(Ra, Realm, Procedure),
+            Obs ! conn_sweep,
+            wait_for(fun() ->
+                {error, not_found} =:=
+                    macula_remote_advertise_registry:lookup(Ra, Realm, Procedure)
+            end, 500),
+            ?assertEqual({error, not_found},
+                         macula_remote_advertise_registry:lookup(Ra, Realm, Procedure))
+        end
+     end}.
+
 mismatched_advertiser_pubkey_rejected_test_() ->
     %% A peer cannot advertise on behalf of a different identity —
     %% the on-wire `advertiser' field MUST equal the connection's
