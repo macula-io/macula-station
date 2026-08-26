@@ -243,6 +243,150 @@ shuffle_reply_merges_into_passive_test() ->
     ?assert(hecate_overlay_view:is_passive(id(71), View1)).
 
 %%=====================================================================
+%% Admission gating (realm_admin_pubkey in ctx())
+%%
+%% Every existing test above constructs ctx() without
+%% realm_admin_pubkey and still passes unmodified -- confirms gating
+%% is genuinely opt-in, not a behaviour change for ungated callers.
+%%=====================================================================
+
+gated_join_with_valid_endorsement_admits_test() ->
+    {SelfKp, Self, RealmKp, RealmId} = gated_fixture(),
+    Joiner = macula_identity:public(macula_identity:generate()),
+    Endorsement = endorsement(RealmKp, RealmId, Joiner),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_join(
+              #{realm => RealmId, new_member => Joiner,
+                record => Endorsement}), SelfKp),
+    {View1, Actions} = hecate_overlay_proto:process(View0, Joiner, Frame, Ctx),
+    ?assert(hecate_overlay_view:is_active(Joiner, View1)),
+    ?assert(lists:any(
+              fun({send, T, F}) ->
+                  T =:= Joiner andalso
+                  macula_frame:frame_type(F) =:= hyparview_neighbor
+              end, Actions)).
+
+gated_join_without_endorsement_is_dropped_test() ->
+    {SelfKp, Self, _RealmKp, RealmId} = gated_fixture(),
+    Joiner = macula_identity:public(macula_identity:generate()),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_join(
+              #{realm => RealmId, new_member => Joiner}), SelfKp),
+    {View1, Actions} = hecate_overlay_proto:process(View0, Joiner, Frame, Ctx),
+    ?assertNot(hecate_overlay_view:is_active(Joiner, View1)),
+    ?assertEqual([], Actions).
+
+gated_join_with_wrong_signer_is_dropped_test() ->
+    {SelfKp, Self, _RealmKp, RealmId} = gated_fixture(),
+    Impostor = macula_identity:generate(),
+    Joiner = macula_identity:public(macula_identity:generate()),
+    %% Signed by someone who is NOT the realm admin.
+    BadEndorsement = macula_record:sign(
+        macula_record:realm_member_endorsement(
+          macula_identity:public(Impostor),
+          #{realm => macula_identity:public(Impostor),
+            member_node => Joiner, roles => [<<"member">>]}),
+        Impostor),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_join(
+              #{realm => RealmId, new_member => Joiner,
+                record => BadEndorsement}), SelfKp),
+    {View1, Actions} = hecate_overlay_proto:process(View0, Joiner, Frame, Ctx),
+    ?assertNot(hecate_overlay_view:is_active(Joiner, View1)),
+    ?assertEqual([], Actions).
+
+gated_forward_join_carries_and_verifies_endorsement_test() ->
+    {SelfKp, Self, RealmKp, RealmId} = gated_fixture(),
+    Sender = id(1),
+    NewMember = macula_identity:public(macula_identity:generate()),
+    Endorsement = endorsement(RealmKp, RealmId, NewMember),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    %% ttl=0 -> accept_into_active's endorsement-check path.
+    Frame = macula_frame:sign(macula_frame:hyparview_forward_join(
+              #{realm => RealmId, new_member => NewMember,
+                ttl => 0, arwl => 6, prwl => 3, record => Endorsement}),
+              SelfKp),
+    {View1, _Actions} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
+    ?assert(hecate_overlay_view:is_active(NewMember, View1)).
+
+gated_forward_join_without_endorsement_is_dropped_test() ->
+    {SelfKp, Self, _RealmKp, RealmId} = gated_fixture(),
+    Sender = id(1),
+    NewMember = macula_identity:public(macula_identity:generate()),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_forward_join(
+              #{realm => RealmId, new_member => NewMember,
+                ttl => 0, arwl => 6, prwl => 3}), SelfKp),
+    {View1, Actions} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
+    ?assertNot(hecate_overlay_view:is_active(NewMember, View1)),
+    ?assertEqual([], Actions).
+
+%% forward_join_to_others (the fan-out on admission) must thread the
+%% inbound JOIN's endorsement into the frames it sends onward -- this
+%% is what actually lets downstream peers verify it, not just this one.
+gated_join_forwards_carry_the_endorsement_test() ->
+    {SelfKp, Self, RealmKp, RealmId} = gated_fixture(),
+    Joiner = macula_identity:public(macula_identity:generate()),
+    Endorsement = endorsement(RealmKp, RealmId, Joiner),
+    View0 = lists:foldl(fun(P, V) -> hecate_overlay_view:add_active(V, P) end,
+                        hecate_overlay_view:new(Self, #{active_cap => 5,
+                                                        passive_cap => 20}),
+                        [id(10), id(11)]),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_join(
+              #{realm => RealmId, new_member => Joiner,
+                record => Endorsement}), SelfKp),
+    {_View1, Actions} = hecate_overlay_proto:process(View0, Joiner, Frame, Ctx),
+    Forwards = [F || {send, _, F} <- Actions,
+                     macula_frame:frame_type(F) =:= hyparview_forward_join],
+    ?assertEqual(2, length(Forwards)),
+    [?assertEqual(Endorsement, maps:get(record, F)) || F <- Forwards].
+
+gated_neighbor_high_with_valid_endorsement_admits_test() ->
+    {SelfKp, Self, RealmKp, RealmId} = gated_fixture(),
+    Sender = macula_identity:public(macula_identity:generate()),
+    Endorsement = endorsement(RealmKp, RealmId, Sender),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_neighbor(
+              #{realm => RealmId, priority => high,
+                record => Endorsement}), SelfKp),
+    {View1, _Actions} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
+    ?assert(hecate_overlay_view:is_active(Sender, View1)).
+
+gated_neighbor_high_without_endorsement_is_dropped_test() ->
+    {SelfKp, Self, _RealmKp, RealmId} = gated_fixture(),
+    Sender = macula_identity:public(macula_identity:generate()),
+    View0 = hecate_overlay_view:new(Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId, realm_admin_pubkey => RealmId},
+    Frame = macula_frame:sign(macula_frame:hyparview_neighbor(
+              #{realm => RealmId, priority => high}), SelfKp),
+    {View1, Actions} = hecate_overlay_proto:process(View0, Sender, Frame, Ctx),
+    ?assertNot(hecate_overlay_view:is_active(Sender, View1)),
+    ?assertEqual([], Actions).
+
+%% neighbor/3 (the outbound builder used for JOIN/FORWARD_JOIN's own
+%% acks) must attach self_endorsement when ctx() carries one, so a
+%% gated receiver on the other end doesn't drop our own ack.
+neighbor_builder_attaches_self_endorsement_test() ->
+    {SelfKp, Self, RealmKp, RealmId} = gated_fixture(),
+    SelfEndorsement = endorsement(RealmKp, RealmId, Self),
+    Ctx = (ctx(SelfKp, Self))#{realm => RealmId,
+                               self_endorsement => SelfEndorsement},
+    View0 = hecate_overlay_view:new(Self),
+    JoinFrame = macula_frame:sign(macula_frame:hyparview_join(
+                  #{realm => RealmId, new_member => id(1)}), SelfKp),
+    {_View1, Actions} = hecate_overlay_proto:process(View0, id(1), JoinFrame, Ctx),
+    [{send, _, Ack}] = [A || {send, _, F} = A <- Actions,
+                             macula_frame:frame_type(F) =:= hyparview_neighbor],
+    ?assertEqual(SelfEndorsement, maps:get(record, Ack)).
+
+%%=====================================================================
 %% Helpers
 %%=====================================================================
 
@@ -263,6 +407,23 @@ ctx(Kp, Self) ->
         realm    => crypto:strong_rand_bytes(32),
         identity => Kp
     }.
+
+%% {SelfKp, Self, RealmAdminKp, RealmId} -- RealmId IS the realm
+%% admin's own pubkey (macula_record:realm_member_endorsement/2's own
+%% convention: "Envelope key is the RealmId (admin signs)").
+gated_fixture() ->
+    SelfKp = macula_identity:generate(),
+    Self = macula_identity:public(SelfKp),
+    RealmKp = macula_identity:generate(),
+    RealmId = macula_identity:public(RealmKp),
+    {SelfKp, Self, RealmKp, RealmId}.
+
+endorsement(RealmKp, RealmId, MemberNode) ->
+    macula_record:sign(
+      macula_record:realm_member_endorsement(
+        RealmId, #{realm => RealmId, member_node => MemberNode,
+                   roles => [<<"member">>]}),
+      RealmKp).
 
 build_fwd(NewMember, Ttl, Arwl, Prwl, _Sender) ->
     %% A fresh signing identity stands in for the sender; the

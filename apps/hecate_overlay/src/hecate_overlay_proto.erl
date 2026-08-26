@@ -14,12 +14,24 @@
 %%       contact: add_active(joiner), reply NEIGHBOR(high),
 %%       FORWARD_JOIN(ttl=ARWL) to every other active peer.
 %%       Eviction in the active view emits DISCONNECT to the
-%%       demoted peer.</li>
+%%       demoted peer. When `ctx()' carries `realm_admin_pubkey',
+%%       admission is gated on the frame's `record' field holding a
+%%       `realm_member_endorsement' signed by that key for this
+%%       exact (realm, joiner) pair (`hecate_realm_join:
+%%       verify_endorsement/3') — a missing or invalid endorsement is
+%%       dropped silently (no ack, no forward, view unchanged), never
+%%       admitted. Without `realm_admin_pubkey' in `ctx()', admission
+%%       is unconditional (opt-in gating, matches the frame spec's
+%%       own "endorsement is optional" design).</li>
 %%   <li><strong>FORWARD_JOIN</strong> — if ttl=0 or active view
 %%       is empty: add_active(new_member) + reply NEIGHBOR(high).
 %%       Otherwise: if ttl == PRWL, also add_passive(new_member);
 %%       decrement ttl and forward to a random active peer that
-%%       is not the sender.</li>
+%%       is not the sender. Carries the ORIGINAL JOIN's `record'
+%%       (endorsement) through the whole forward chain and re-verifies
+%%       it at every admission point — trust in the endorsement is
+%%       never transitively assumed just because a neighbour forwarded
+%%       it.</li>
 %%   <li><strong>NEIGHBOR(high)</strong> — always add_active(sender),
 %%       evicting if needed.</li>
 %%   <li><strong>NEIGHBOR(low)</strong> — add_active(sender) only
@@ -62,7 +74,19 @@
     prwl                 => non_neg_integer(),
     shuffle_ttl          => non_neg_integer(),
     shuffle_active_size  => non_neg_integer(),
-    shuffle_passive_size => non_neg_integer()
+    shuffle_passive_size => non_neg_integer(),
+    %% When present, JOIN/FORWARD_JOIN/NEIGHBOR admission is gated on a
+    %% `realm_member_endorsement' record signed by this key (see the
+    %% moduledoc). Absent = unconditional admission, today's behaviour.
+    realm_admin_pubkey   => macula_identity:pubkey(),
+    %% This peer's OWN signed endorsement, attached to every outgoing
+    %% NEIGHBOR frame (`neighbor/3') this peer sends -- a NEIGHBOR is
+    %% itself an admission event on the receiving end (see
+    %% `on_neighbor'), so this peer must be able to prove its own
+    %% membership too, not just the peers it admits. Required whenever
+    %% `realm_admin_pubkey' is set on the OTHER side of a link; a
+    %% NEIGHBOR built without it will be dropped by a gated receiver.
+    self_endorsement     => macula_record:m_record()
 }.
 
 -type action() :: {send, peer(), macula_frame:frame()}.
@@ -119,12 +143,44 @@ process(View, _FromId, _Frame, _Ctx) ->
 -spec on_join(hecate_overlay_view:view(), peer(),
               macula_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
-on_join(View, FromId, _Frame, Ctx) ->
+on_join(View, FromId, Frame, Ctx) ->
+    admit_join(check_admission(Frame, FromId, Ctx), View, FromId, Frame, Ctx).
+
+admit_join(ok, View, FromId, Frame, Ctx) ->
     NewMember = FromId,
     {View1, EvictionActions} = absorb_active(View, NewMember, Ctx),
     NeighborAck = neighbor(NewMember, high, Ctx),
-    Forwards = forward_join_to_others(View1, NewMember, FromId, Ctx),
-    {View1, [NeighborAck | EvictionActions ++ Forwards]}.
+    Endorsement = maps:get(record, Frame, undefined),
+    Forwards = forward_join_to_others(View1, NewMember, FromId, Endorsement, Ctx),
+    {View1, [NeighborAck | EvictionActions ++ Forwards]};
+admit_join({error, _Reason}, View, _FromId, _Frame, _Ctx) ->
+    %% Missing/invalid endorsement under a gated ctx() -- drop
+    %% silently. No ack, no forward: the joiner is never told why,
+    %% same as any other frame this module doesn't recognise.
+    {View, []}.
+
+%% @doc `ok' when `ctx()' carries no `realm_admin_pubkey' (ungated) or
+%% `Frame' presents a valid endorsement for (realm(Ctx), ClaimedMember)
+%% signed by that key. `{error, Reason}' otherwise.
+-spec check_admission(macula_frame:frame(), peer(), ctx()) ->
+        ok | {error, term()}.
+check_admission(Frame, ClaimedMember, Ctx) ->
+    verify_admission(maps:find(realm_admin_pubkey, Ctx), Frame, ClaimedMember, Ctx).
+
+verify_admission(error, _Frame, _ClaimedMember, _Ctx) ->
+    ok;
+verify_admission({ok, AdminPubkey}, Frame, ClaimedMember, Ctx) ->
+    verify_record(maps:find(record, Frame), AdminPubkey, ClaimedMember, Ctx).
+
+verify_record(error, _AdminPubkey, _ClaimedMember, _Ctx) ->
+    {error, missing_endorsement};
+verify_record({ok, #{key := AdminPubkey} = Record}, AdminPubkey, ClaimedMember, Ctx) ->
+    case hecate_realm_join:verify_endorsement(Record, realm(Ctx), ClaimedMember) of
+        {ok, _Roles} -> ok;
+        {error, _} = Err -> Err
+    end;
+verify_record({ok, _WrongSigner}, _AdminPubkey, _ClaimedMember, _Ctx) ->
+    {error, untrusted_signer}.
 
 -spec absorb_active(hecate_overlay_view:view(), peer(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
@@ -137,20 +193,24 @@ absorb_active(View, Peer, Ctx) ->
     {View1, Disconnects}.
 
 -spec forward_join_to_others(hecate_overlay_view:view(), peer(), peer(),
+                             macula_record:m_record() | undefined,
                              ctx()) -> [action()].
-forward_join_to_others(View, NewMember, Origin, Ctx) ->
+forward_join_to_others(View, NewMember, Origin, Endorsement, Ctx) ->
     Targets = [P || P <- hecate_overlay_view:active(View),
                     P =/= NewMember, P =/= Origin],
     Arwl = arwl(Ctx),
     Prwl = prwl(Ctx),
+    Spec = with_record(#{realm      => realm(Ctx),
+                          new_member => NewMember,
+                          ttl        => Arwl,
+                          arwl       => Arwl,
+                          prwl       => Prwl}, Endorsement),
     [{send, T,
-      sign_with(macula_frame:hyparview_forward_join(
-                  #{realm      => realm(Ctx),
-                    new_member => NewMember,
-                    ttl        => Arwl,
-                    arwl       => Arwl,
-                    prwl       => Prwl}),
+      sign_with(macula_frame:hyparview_forward_join(Spec),
                 identity(Ctx))} || T <- Targets].
+
+with_record(Spec, undefined) -> Spec;
+with_record(Spec, Record) -> Spec#{record => Record}.
 
 %%=====================================================================
 %% FORWARD_JOIN
@@ -170,23 +230,34 @@ on_forward_join(View, FromId, Frame, Ctx) ->
                             hecate_overlay_view:view(),
                             macula_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
-classify_forward_join(NewMember, _From, 0, _Prwl, View, _Frame, Ctx) ->
-    accept_into_active(View, NewMember, Ctx);
+classify_forward_join(NewMember, _From, 0, _Prwl, View, Frame, Ctx) ->
+    accept_into_active(View, NewMember, Frame, Ctx);
 classify_forward_join(NewMember, From, Ttl, Prwl, View, Frame, Ctx) ->
     case hecate_overlay_view:active_size(View) of
         N when N =< 1 ->
-            accept_into_active(View, NewMember, Ctx);
+            accept_into_active(View, NewMember, Frame, Ctx);
         _ ->
             View1 = maybe_add_passive(NewMember, Ttl, Prwl, View),
             forward_to_random(View1, From, NewMember, Ttl - 1, Frame, Ctx)
     end.
 
--spec accept_into_active(hecate_overlay_view:view(), peer(), ctx()) ->
+%% Same admission gate as `on_join''s `admit_join/5' -- a FORWARD_JOIN
+%% reaching an active-admission point carries the ORIGINAL JOIN's
+%% `record' (endorsement), threaded through by `forward_join_to_others/5'
+%% and `forward_to_random/6', and is re-verified here rather than
+%% trusted just because a neighbour forwarded it.
+-spec accept_into_active(hecate_overlay_view:view(), peer(),
+                         macula_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
-accept_into_active(View, NewMember, Ctx) ->
+accept_into_active(View, NewMember, Frame, Ctx) ->
+    admit_forward_join(check_admission(Frame, NewMember, Ctx), View, NewMember, Ctx).
+
+admit_forward_join(ok, View, NewMember, Ctx) ->
     {View1, Evictions} = absorb_active(View, NewMember, Ctx),
     Ack = neighbor(NewMember, high, Ctx),
-    {View1, [Ack | Evictions]}.
+    {View1, [Ack | Evictions]};
+admit_forward_join({error, _Reason}, View, _NewMember, _Ctx) ->
+    {View, []}.
 
 -spec maybe_add_passive(peer(), non_neg_integer(), non_neg_integer(),
                         hecate_overlay_view:view()) ->
@@ -209,35 +280,51 @@ forward_to_random(View, From, NewMember, NewTtl, Frame, Ctx) ->
                           non_neg_integer(), macula_frame:frame(),
                           ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
-pick_forward_target([], View, NewMember, _NewTtl, _Frame, Ctx) ->
-    accept_into_active(View, NewMember, Ctx);
+pick_forward_target([], View, NewMember, _NewTtl, Frame, Ctx) ->
+    accept_into_active(View, NewMember, Frame, Ctx);
 pick_forward_target(Cands, View, _NewMember, NewTtl, Frame, Ctx) ->
     Target = lists:nth(rand:uniform(length(Cands)), Cands),
-    Forward = sign_with(macula_frame:hyparview_forward_join(
-                          #{realm      => realm(Ctx),
-                            new_member => maps:get(new_member, Frame),
-                            ttl        => NewTtl,
-                            arwl       => maps:get(arwl, Frame),
-                            prwl       => maps:get(prwl, Frame)}),
-                        identity(Ctx)),
+    Spec = with_record(#{realm      => realm(Ctx),
+                          new_member => maps:get(new_member, Frame),
+                          ttl        => NewTtl,
+                          arwl       => maps:get(arwl, Frame),
+                          prwl       => maps:get(prwl, Frame)},
+                        maps:get(record, Frame, undefined)),
+    Forward = sign_with(macula_frame:hyparview_forward_join(Spec), identity(Ctx)),
     {View, [{send, Target, Forward}]}.
 
 %%=====================================================================
 %% NEIGHBOR
 %%=====================================================================
 
+%% A NEIGHBOR can arrive unsolicited (shuffle-driven promotion), not
+%% only as an ack to a JOIN this peer itself initiated -- both
+%% priorities admit into the active view (`low' only when there's
+%% room) and are gated by the same `check_admission/3' JOIN/
+%% FORWARD_JOIN uses, so trust is never assumed just because a frame
+%% is shaped like an ack.
 -spec on_neighbor(hecate_overlay_view:view(), peer(),
                   macula_frame:frame(), ctx()) ->
         {hecate_overlay_view:view(), [action()]}.
-on_neighbor(View, FromId, #{priority := high}, Ctx) ->
+on_neighbor(View, FromId, #{priority := high} = Frame, Ctx) ->
+    admit_neighbor_high(check_admission(Frame, FromId, Ctx), View, FromId, Ctx);
+on_neighbor(View, FromId, #{priority := low} = Frame, Ctx) ->
+    admit_neighbor_low(check_admission(Frame, FromId, Ctx), View, FromId).
+
+admit_neighbor_high(ok, View, FromId, Ctx) ->
     {View1, Evictions} = absorb_active(View, FromId, Ctx),
     {View1, Evictions};
-on_neighbor(View, FromId, #{priority := low}, _Ctx) ->
+admit_neighbor_high({error, _Reason}, View, _FromId, _Ctx) ->
+    {View, []}.
+
+admit_neighbor_low(ok, View, FromId) ->
     case hecate_overlay_view:active_size(View)
             < hecate_overlay_view:active_cap(View) of
         true  -> {hecate_overlay_view:add_active(View, FromId), []};
         false -> {hecate_overlay_view:add_passive(View, FromId), []}
-    end.
+    end;
+admit_neighbor_low({error, _Reason}, View, _FromId) ->
+    {View, []}.
 
 %%=====================================================================
 %% DISCONNECT
@@ -324,8 +411,9 @@ collect_sample(View, Ctx) ->
 -spec neighbor(peer(), macula_frame:neighbor_priority(), ctx()) ->
         action().
 neighbor(Target, Priority, Ctx) ->
-    F = macula_frame:hyparview_neighbor(
-          #{realm => realm(Ctx), priority => Priority}),
+    Spec = with_record(#{realm => realm(Ctx), priority => Priority},
+                        maps:get(self_endorsement, Ctx, undefined)),
+    F = macula_frame:hyparview_neighbor(Spec),
     {send, Target, sign_with(F, identity(Ctx))}.
 
 -spec build_disconnect(ctx()) -> macula_frame:frame().

@@ -114,8 +114,8 @@ build_join(Realm, NewMember, Endorsement, Identity)
   when is_binary(Realm), byte_size(Realm) =:= 32,
        is_binary(NewMember), byte_size(NewMember) =:= 32,
        is_map(Endorsement) ->
-    _Encoded = macula_record:encode(Endorsement),
     macula_frame:sign(macula_frame:hyparview_join(#{
         realm      => Realm,
-        new_member => NewMember
+        new_member => NewMember,
+        record     => Endorsement
     }), Identity).

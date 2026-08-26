@@ -114,6 +114,26 @@ build_join_frame_is_signed_hyparview_join_test() ->
     %% Signed by the joining member → verifies against Member pubkey.
     ?assertMatch({ok, _}, macula_frame:verify(F, Member)).
 
+%% THE gap that shipped broken: build_join computed the endorsement
+%% and then discarded it (`_Encoded = macula_record:encode(Endorsement)`,
+%% never attached to the frame). Assert it actually travels and is
+%% independently verifiable on the far side -- not just that the frame
+%% has the right type/realm/new_member, which the test above already
+%% covered without ever catching this.
+build_join_frame_carries_a_verifiable_endorsement_test() ->
+    {AdminKp, RealmId} = admin(),
+    MemberKp = macula_identity:generate(),
+    Member   = macula_identity:public(MemberKp),
+    Endorsement = signed_endorsement(AdminKp, RealmId, Member, [<<"peer">>]),
+    F = hecate_realm_join:build_join(RealmId, Member, Endorsement, MemberKp),
+    ?assertEqual(Endorsement, maps:get(record, F)),
+    %% Round-trip through the wire, exactly as a receiving peer would.
+    {ok, D, <<>>} = macula_frame:decode(macula_frame:encode(F)),
+    ?assertEqual(Endorsement, maps:get(record, D)),
+    ?assertMatch({ok, [<<"peer">>]},
+                 hecate_realm_join:verify_endorsement(
+                   maps:get(record, D), RealmId, Member)).
+
 %%=====================================================================
 %% Helpers
 %%=====================================================================
