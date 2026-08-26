@@ -108,6 +108,12 @@
 -define(MESH_REALM, <<0:256>>).
 -define(TOPIC, <<"_mesh.health.v1">>).
 
+%% Same named table `macula_station_peer_observer' owns (see its own
+%% `?CONNS_TABLE' macro) — `macula_station_route_pubsub_frames' already
+%% reaches into it the same way, by re-declaring the literal atom
+%% locally rather than adding a peer_observer API for it.
+-define(CONNS_TABLE, macula_station_peer_observer_conns).
+
 %% Wire tripwire. See the moduledoc for why the kernel and not the BEAM.
 %%
 %% 30 samples is 5 minutes at ?TICK_MS. A healthy station drains its UDP
@@ -313,13 +319,37 @@ rate(Label, Reds, Prev, Now) ->
             0
     end.
 
+%% Additive fields only — this payload fans out to every connected peer
+%% link every tick (see `broadcast/1'), so anything bulkier than a
+%% handful of small counters belongs on the `/metrics' scrape endpoint
+%% instead, which has exactly one consumer per read rather than one
+%% copy per peer. `conns_count' and `overlay_relay' were both already
+%% counted elsewhere (peer_observer's own conns table and its
+%% overlay_relay counters); this just surfaces them to the mesh.
 build_payload(Kp, Now, Procs) ->
     Term = #{
-        <<"node_id">> => macula_identity:public(Kp),
-        <<"ts_ms">>   => Now,
-        <<"procs">>   => Procs
+        <<"node_id">>       => macula_identity:public(Kp),
+        <<"ts_ms">>         => Now,
+        <<"procs">>         => Procs,
+        <<"conns_count">>   => conns_count(),
+        <<"overlay_relay">> => overlay_relay_payload()
     },
     erlang:term_to_binary(Term).
+
+conns_count() ->
+    case ets:info(?CONNS_TABLE, size) of
+        undefined -> 0;
+        N         -> N
+    end.
+
+overlay_relay_payload() ->
+    #{relayed := Relayed,
+      verify_failed := VerifyFailed,
+      target_not_connected := TargetNotConnected} =
+        macula_station_peer_observer:overlay_relay_stats(),
+    #{<<"relayed">>              => Relayed,
+      <<"verify_failed">>        => VerifyFailed,
+      <<"target_not_connected">> => TargetNotConnected}.
 
 broadcast(Payload) ->
     Conns = macula_station_peer_links:connections(),
