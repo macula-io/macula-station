@@ -28,6 +28,10 @@
 %%     "cache":        { "path": "/var/lib/macula/station/cache",
 %%                       "flush_period_ms": 30000 },
 %%     "rebootstrap":  { ... },
+%%     "peering_redundancy": { "min_station_peers": 3,
+%%                             "check_period_ms": 60000,
+%%                             "cooldown_ms": 300000,
+%%                             "candidate_pool": 32 },
 %%     "admin":        { "bind": "127.0.0.1", "port": 8443 },
 %%     "geo":          { "hostname": "station-be-brussels.macula.io",
 %%                       "city":     "Brussels",
@@ -51,7 +55,8 @@
 ]).
 
 -export_type([opts/0, station_opts/0, station_cfg/0,
-              cache_cfg/0, rebootstrap_cfg/0, admin_cfg/0]).
+              cache_cfg/0, rebootstrap_cfg/0, peering_redundancy_cfg/0,
+              admin_cfg/0]).
 
 -define(CONFIG_ENV_VAR, "MACULA_STATION_CONFIG").
 
@@ -260,6 +265,8 @@ build_record_from_json(M, PuzzleEnforcement) ->
         capabilities           = maps:get(<<"capabilities">>, M, 0) bor ?CAP_STATION,
         cache_cfg              = decode_cache_json(maps:get(<<"cache">>, M, undefined)),
         rebootstrap_cfg        = decode_rebootstrap_json(maps:get(<<"rebootstrap">>, M, undefined)),
+        peering_redundancy_cfg = decode_peering_redundancy_json(
+                                    maps:get(<<"peering_redundancy">>, M, undefined)),
         admin_cfg              = decode_admin_json(maps:get(<<"admin">>, M, undefined)),
         hostname               = to_bin_or_undef(maps:get(<<"hostname">>, Geo, undefined)),
         city                   = to_bin_or_undef(maps:get(<<"city">>,     Geo, undefined)),
@@ -331,6 +338,15 @@ decode_admin_json(M) when is_map(M) ->
         port = maps:get(<<"port">>, M, 8443)
     }.
 
+decode_peering_redundancy_json(undefined) -> undefined;
+decode_peering_redundancy_json(M) when is_map(M) ->
+    #peering_redundancy_cfg{
+        min_station_peers = maps:get(<<"min_station_peers">>, M, 3),
+        check_period_ms   = maps:get(<<"check_period_ms">>,   M, 60_000),
+        cooldown_ms       = maps:get(<<"cooldown_ms">>,       M, 300_000),
+        candidate_pool    = maps:get(<<"candidate_pool">>,    M, 32)
+    }.
+
 to_str(B) when is_binary(B) -> binary_to_list(B);
 to_str(L) when is_list(L)   -> L.
 
@@ -368,6 +384,7 @@ from_app_env() ->
         {capabilities,  {optional, 0}},
         {cache,         optional},
         {rebootstrap,   optional},
+        {peering_redundancy, optional},
         {admin,         optional},
         {puzzle_enforcement, {optional, off}}
     ])).
@@ -415,6 +432,8 @@ finalise_app_env(Map0) ->
         capabilities     = maps:get(capabilities, Map, 0) bor ?CAP_STATION,
         cache_cfg        = decode_cache_app_env(maps:get(cache, Map, undefined)),
         rebootstrap_cfg  = decode_rebootstrap_app_env(maps:get(rebootstrap, Map, undefined)),
+        peering_redundancy_cfg = decode_peering_redundancy_app_env(
+                                    maps:get(peering_redundancy, Map, undefined)),
         admin_cfg        = decode_admin_app_env(maps:get(admin, Map, undefined)),
         puzzle_enforcement = maps:get(puzzle_enforcement, Map, off)
     }.
@@ -434,6 +453,16 @@ decode_rebootstrap_app_env(M) when is_map(M) ->
         min_viable_peers    = maps:get(min_viable_peers,    M, 8),
         check_period_ms     = maps:get(check_period_ms,     M, 5_000),
         partition_window_ms = maps:get(partition_window_ms, M, 60_000)
+    }.
+
+decode_peering_redundancy_app_env(undefined) -> undefined;
+decode_peering_redundancy_app_env(#peering_redundancy_cfg{} = R) -> R;
+decode_peering_redundancy_app_env(M) when is_map(M) ->
+    #peering_redundancy_cfg{
+        min_station_peers = maps:get(min_station_peers, M, 3),
+        check_period_ms   = maps:get(check_period_ms,   M, 60_000),
+        cooldown_ms       = maps:get(cooldown_ms,       M, 300_000),
+        candidate_pool    = maps:get(candidate_pool,    M, 32)
     }.
 
 decode_admin_app_env(undefined)         -> undefined;

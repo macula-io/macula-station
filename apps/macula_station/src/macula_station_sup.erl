@@ -63,7 +63,7 @@
 %% `macula_station_app'. They register the child pid under a fixed
 %% local name so the station API can find it.
 -export([start_dht/1, start_swim/1, start_observer/1, start_listener/1,
-         start_cache/1, start_rebootstrap/1,
+         start_cache/1, start_rebootstrap/1, start_peering_redundancy/1,
          start_handler_registry/1, start_remote_advertise_registry/1,
          start_pubsub_registry/1, start_route_pubsub_frames/1,
          start_dht_handlers/1,
@@ -80,6 +80,7 @@
 -define(LISTENER_NAME,                   macula_station_listener).
 -define(CACHE_NAME,                      macula_station_cache).
 -define(REBOOTSTRAP_NAME,                macula_station_rebootstrap).
+-define(PEERING_REDUNDANCY_NAME,         macula_station_peering_redundancy).
 -define(HANDLER_REGISTRY_NAME,           macula_handler_registry).
 -define(REMOTE_ADVERTISE_REGISTRY_NAME,  macula_remote_advertise_registry).
 -define(PUBSUB_REGISTRY_NAME,            hecate_pubsub_registry).
@@ -195,6 +196,12 @@ start_cache(Opts) ->
 start_rebootstrap(Opts) ->
     register_result(macula_station_rebootstrap:start_link(Opts),
                     ?REBOOTSTRAP_NAME).
+
+-spec start_peering_redundancy(macula_station_peering_redundancy:opts()) ->
+    {ok, pid()} | {error, term()}.
+start_peering_redundancy(Opts) ->
+    register_result(macula_station_peering_redundancy:start_link(Opts),
+                    ?PEERING_REDUNDANCY_NAME).
 
 -spec start_handler_registry(map()) -> {ok, pid()} | {error, term()}.
 start_handler_registry(Opts) ->

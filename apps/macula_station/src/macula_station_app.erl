@@ -25,8 +25,8 @@
 %%        wiring + DHT callback install → announcer →
 %%        content_announcer (when enabled) → bloom_exchange →
 %%        peering_router → relay_ping →
-%%        cache (optional) → rebootstrap (optional) → admin
-%%        (optional).
+%%        cache (optional) → rebootstrap (optional) →
+%%        peering_redundancy (optional) → admin (optional).
 %%
 %% A boot failure at any step shuts the sup back down and returns the
 %% reason to the application framework.
@@ -180,12 +180,18 @@ on_pubsub_dispatcher(SupPid, Cfg, {ok, _Pid}) ->
 %% per configured outbound peer. They run in parallel with the rest
 %% of the boot chain so they have time to handshake before the
 %% bootstrap cascade's `seed_dial' tier probes the registry.
-%% No-op when the JSON config carries no `outbound_peers' (e.g. CT
-%% suites that drive the station programmatically with explicit
-%% bootstrap tiers).
+%% No-op when the JSON config carries no `outbound_peers' AND no
+%% `peering_redundancy_cfg' (e.g. CT suites that drive the station
+%% programmatically with explicit bootstrap tiers). An empty static
+%% peer list still needs a live (if childless) supervisor when the
+%% redundancy watchdog is enabled -- `macula_station_peering_redundancy'
+%% dials dynamically-discovered peers into this same supervisor, so a
+%% station with zero configured peers can still self-form a backbone
+%% purely from DHT knowledge.
 %%==================================================================
 
-boot_outbound_links(SupPid, #station_cfg{outbound_peers = []} = Cfg) ->
+boot_outbound_links(SupPid, #station_cfg{outbound_peers = [],
+                                          peering_redundancy_cfg = undefined} = Cfg) ->
     boot_dht(SupPid, Cfg);
 boot_outbound_links(SupPid, #station_cfg{identity = Kp,
                                           capabilities = Caps,
@@ -418,7 +424,7 @@ on_cache(SupPid, Cfg, {ok, _Pid}) ->
     boot_rebootstrap(SupPid, Cfg).
 
 boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = undefined} = Cfg) ->
-    boot_admin(SupPid, Cfg);
+    boot_peering_redundancy(SupPid, Cfg);
 boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = RbCfg} = Cfg) ->
     {ok, DhtPid} = macula_station:dht(),
     Spec = rebootstrap_child(DhtPid, RbCfg),
@@ -427,6 +433,19 @@ boot_rebootstrap(SupPid, #station_cfg{rebootstrap_cfg = RbCfg} = Cfg) ->
 on_rebootstrap(SupPid, _Cfg, {error, R}) ->
     halt_sup(SupPid, {rebootstrap_start_failed, R});
 on_rebootstrap(SupPid, Cfg, {ok, _Pid}) ->
+    boot_peering_redundancy(SupPid, Cfg).
+
+boot_peering_redundancy(SupPid, #station_cfg{peering_redundancy_cfg = undefined} = Cfg) ->
+    boot_admin(SupPid, Cfg);
+boot_peering_redundancy(SupPid, #station_cfg{peering_redundancy_cfg = PrCfg} = Cfg) ->
+    {ok, DhtPid} = macula_station:dht(),
+    {ok, ObsPid} = macula_station:observer(),
+    Spec = peering_redundancy_child(DhtPid, ObsPid, PrCfg, Cfg),
+    on_peering_redundancy(SupPid, Cfg, supervisor:start_child(SupPid, Spec)).
+
+on_peering_redundancy(SupPid, _Cfg, {error, R}) ->
+    halt_sup(SupPid, {peering_redundancy_start_failed, R});
+on_peering_redundancy(SupPid, Cfg, {ok, _Pid}) ->
     boot_admin(SupPid, Cfg).
 
 boot_admin(SupPid, #station_cfg{admin_cfg = undefined}) ->
@@ -796,6 +815,19 @@ rebootstrap_child(DhtPid, RbCfg) ->
         shutdown => 5_000,
         type     => worker,
         modules  => [macula_station_rebootstrap]
+    }.
+
+peering_redundancy_child(DhtPid, ObsPid, PrCfg,
+                          #station_cfg{identity = Kp, capabilities = Caps}) ->
+    Opts = #{dht => DhtPid, observer => ObsPid, identity => Kp,
+             capabilities => Caps, peering_redundancy => PrCfg},
+    #{
+        id       => macula_station_peering_redundancy,
+        start    => {macula_station_sup, start_peering_redundancy, [Opts]},
+        restart  => permanent,
+        shutdown => 5_000,
+        type     => worker,
+        modules  => [macula_station_peering_redundancy]
     }.
 
 admin_sup_child(AdminCfg) ->

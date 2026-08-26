@@ -41,6 +41,13 @@
     %% again when the DHT size stays below a floor for a sustained
     %% window.
     rebootstrap_cfg = undefined :: rebootstrap_cfg() | undefined,
+    %% Backbone peering-redundancy watchdog — dials additional
+    %% station-to-station peers, beyond the fixed `outbound_peers'
+    %% list, when the count of live station-classified links stays
+    %% below a floor. Realm-agnostic: selection runs entirely off
+    %% DHT-known station diversity metadata (asn/country/tier), same
+    %% as `outbound_peers' and `capabilities' above.
+    peering_redundancy_cfg = undefined :: peering_redundancy_cfg() | undefined,
     %% Admin HTTP API binding. When present, the boot pipeline
     %% starts a loopback-only httpd exposing `/status', `/dht/stats',
     %% `/swim/members', `/bootstrap/rerun'.
@@ -113,6 +120,21 @@
 }).
 
 -type rebootstrap_cfg() :: #rebootstrap_cfg{}.
+
+-record(peering_redundancy_cfg, {
+    min_station_peers = 3      :: pos_integer(),
+    check_period_ms   = 60_000 :: pos_integer(),
+    %% How long a dialled-and-dropped candidate is excluded from
+    %% re-selection, so a flaky link cannot cause a dial/evict/redial
+    %% oscillation.
+    cooldown_ms       = 300_000 :: pos_integer(),
+    %% Candidate pool size handed to `macula_dht:k_closest/3' before
+    %% diversity ranking — deliberately larger than any realistic
+    %% `min_station_peers' so ranking has real choices to work with.
+    candidate_pool    = 32      :: pos_integer()
+}).
+
+-type peering_redundancy_cfg() :: #peering_redundancy_cfg{}.
 
 -record(admin_cfg, {
     %% Loopback-only binding; plan §8.6 defers TLS + client-cert

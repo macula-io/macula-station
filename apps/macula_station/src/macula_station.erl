@@ -30,6 +30,7 @@
     connect_to/1,
     cache/0,
     rebootstrap/0,
+    peering_redundancy/0,
     admin/0,
     admin_addr/0,
     shutdown/0,
@@ -119,6 +120,9 @@ cache() -> resolve(macula_station_cache).
 %% @doc Pid of the re-bootstrap watchdog (if configured).
 -spec rebootstrap() -> {ok, pid()} | {error, not_started}.
 rebootstrap() -> resolve(macula_station_rebootstrap).
+
+-spec peering_redundancy() -> {ok, pid()} | {error, not_started}.
+peering_redundancy() -> resolve(macula_station_peering_redundancy).
 
 %% @doc Pid of the admin HTTP listener (if configured).
 -spec admin() -> {ok, pid()} | {error, not_started}.
