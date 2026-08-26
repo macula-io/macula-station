@@ -1013,8 +1013,43 @@ dispatch(pubsub, Frame, _ConnPid, NodeId, S) ->
 dispatch(dht, Frame, _ConnPid, NodeId, #state{dht = Dht} = S) ->
     ok = macula_dht:handle_frame(Dht, NodeId, Frame),
     S;
-dispatch(other, _Frame, _ConnPid, _NodeId, S) ->
+dispatch(other, Frame, ConnPid, NodeId, S) ->
+    dispatch_overlay(macula_frame:frame_type(Frame), Frame, ConnPid, NodeId, S).
+
+%% Phase 3.5 — point-to-point overlay relay by NodeId. `overlay_relay' is
+%% the only frame type this station acts on out of everything that falls
+%% into `other'; every other unrecognised type is still silently dropped,
+%% same as always. This is deliberately the narrowest possible relay: no
+%% new state, no session/pairing bookkeeping, no cleanup on disconnect —
+%% `conns' and its `:DOWN' handling are exactly what CALL forwarding
+%% already uses (`on_remote_lookup/5' above), reused as-is. A target not
+%% currently connected here is a silent drop: HyParView is a soft-state
+%% gossip protocol whose own shuffle/retry timers are the recovery path,
+%% the same way they already have to tolerate ordinary packet loss.
+dispatch_overlay(overlay_relay, Frame, _ConnPid, NodeId, #state{conns = C} = S) ->
+    relay_overlay(macula_frame:verify(Frame, NodeId), NodeId, C),
+    S;
+dispatch_overlay(_Other, _Frame, _ConnPid, _NodeId, S) ->
     S.
+
+relay_overlay({ok, #{peer := Target, payload := Payload}}, Origin, C) ->
+    forward_overlay(primary_conn_lookup(maps:find(Target, C)), Origin, Payload);
+relay_overlay({error, _Reason}, _Origin, _C) ->
+    %% Envelope signature doesn't verify against the authenticated
+    %% sender — never relayed, same trust posture as CALL/ADVERTISE.
+    ok.
+
+forward_overlay({ok, TargetConn}, Origin, Payload) ->
+    %% The relayed copy always carries OUR OWN authenticated identity for
+    %% the sender — Origin comes from this connection's own verified
+    %% NodeId, never from anything the original frame claimed about
+    %% itself, so the receiving end's `Meta.sender' can't be spoofed by
+    %% the relayed peer.
+    macula_peering:send_frame(
+        TargetConn,
+        macula_frame:overlay_relay(#{peer => Origin, payload => Payload}));
+forward_overlay(error, _Origin, _Payload) ->
+    ok.
 
 deliver_swim({ok, _}, Frame, NodeId, Swim) ->
     ok = macula_swim:handle_frame(Swim, NodeId, Frame);
