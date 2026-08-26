@@ -14,7 +14,7 @@
         macula_routing,
         macula_handler,
         macula_bootstrap,
-        hecate_overlay,
+        macula_plumtree,
         hecate_realm,
         macula_content
     ]},
