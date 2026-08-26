@@ -7,6 +7,8 @@
     {applications, [
         kernel,
         stdlib,
+        runtime_tools,
+        recon,
         macula,
         macula_transport,
         macula_dht,
