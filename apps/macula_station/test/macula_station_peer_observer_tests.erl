@@ -1435,3 +1435,73 @@ wait_dead(Pid) ->
         false -> ok;
         true  -> timer:sleep(5), wait_dead(Pid)
     end.
+
+%%==================================================================
+%% Phase 3.5 overlay_relay instrumentation.
+%%
+%% Both branches below were completely unobservable before this: a real
+%% incident (overlay_relay silently failing on the live fleet while CI's
+%% local test-cluster suite stayed green) could not be diagnosed because
+%% nothing distinguished "bad signature" from "target not connected"
+%% from outside a live trace. These tests are the regression coverage
+%% for the fix, driven the same way the rest of this file drives
+%% dispatch: inject a real `{macula_peering, frame, ConnPid, Frame}'
+%% message into a real observer with a genuinely connected peer, no
+%% QUIC involved.
+%%==================================================================
+
+overlay_relay_bad_signature_is_counted_and_logged_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
+            %% Signed with a THIRD identity, not the one that connected
+            %% ConnPid — `macula_frame:verify/2' checks the envelope
+            %% against the connection's own authenticated NodeId, so
+            %% this is a genuine signature mismatch, not a forged frame
+            %% shape.
+            Target = peer_node_id(),
+            Impostor = macula_identity:generate(),
+            Frame = macula_frame:sign(
+                      macula_frame:overlay_relay(
+                        #{peer => Target, payload => <<"irrelevant">>}),
+                      Impostor),
+            Before = macula_station_peer_observer:overlay_relay_stats(),
+            Obs ! {macula_peering, frame, ConnPid, Frame},
+            wait_for(fun() ->
+                maps:get(verify_failed,
+                         macula_station_peer_observer:overlay_relay_stats())
+                  =:= maps:get(verify_failed, Before) + 1
+            end, 500),
+            After = macula_station_peer_observer:overlay_relay_stats(),
+            ?assertEqual(maps:get(relayed, Before), maps:get(relayed, After)),
+            ?assertEqual(maps:get(target_not_connected, Before),
+                         maps:get(target_not_connected, After))
+        end
+    end}.
+
+overlay_relay_target_not_connected_is_counted_and_logged_test_() ->
+    {setup, fun setup/0, fun teardown/1, fun(Ctx) ->
+        fun() ->
+            {Obs, _Dht, _Swim, _NodeId, ConnPid} = one_connected_peer(Ctx),
+            PeerKp = maps:get(peer_kp, Ctx),
+            %% Signed by the SAME identity that connected ConnPid, so
+            %% this verifies cleanly — the drop is purely because
+            %% `Target' has no entry in `conns' at all.
+            Target = peer_node_id(),
+            Frame = macula_frame:sign(
+                      macula_frame:overlay_relay(
+                        #{peer => Target, payload => <<"irrelevant">>}),
+                      PeerKp),
+            Before = macula_station_peer_observer:overlay_relay_stats(),
+            Obs ! {macula_peering, frame, ConnPid, Frame},
+            wait_for(fun() ->
+                maps:get(target_not_connected,
+                         macula_station_peer_observer:overlay_relay_stats())
+                  =:= maps:get(target_not_connected, Before) + 1
+            end, 500),
+            After = macula_station_peer_observer:overlay_relay_stats(),
+            ?assertEqual(maps:get(relayed, Before), maps:get(relayed, After)),
+            ?assertEqual(maps:get(verify_failed, Before),
+                         maps:get(verify_failed, After))
+        end
+    end}.

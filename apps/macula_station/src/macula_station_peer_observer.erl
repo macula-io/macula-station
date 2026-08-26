@@ -42,7 +42,8 @@
     conns/1,
     conn_for/2,
     swim_verdicts/1,
-    station_view/1
+    station_view/1,
+    overlay_relay_stats/0
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -220,6 +221,20 @@
 %% without serializing against the observer's gen_server mailbox.
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
 
+%% Phase 3.5's overlay_relay path had zero counters until the incident
+%% this fixes: the relay silently failed on the real fleet while CI's
+%% local test-cluster suite stayed green, and there was nothing to read
+%% to tell "bad signature" from "target not connected" from outside a
+%% live trace. `counters' + `persistent_term' is the idiom
+%% `macula_station_event_dedup' and `macula_station_route_pubsub_frames'
+%% already use — bumps no-op when the array is absent, so instrumenting
+%% this never changes behaviour.
+-define(PT_OVERLAY_COUNTERS, {?MODULE, overlay_relay_counters}).
+-define(CTR_OVERLAY_RELAYED,               1).
+-define(CTR_OVERLAY_VERIFY_FAILED,         2).
+-define(CTR_OVERLAY_TARGET_NOT_CONNECTED,  3).
+-define(CTR_OVERLAY_SLOTS,                 3).
+
 %%==================================================================
 %% API
 %%==================================================================
@@ -289,6 +304,39 @@ conns(Pid) ->
 swim_verdicts(Pid) ->
     gen_server:call(Pid, swim_verdicts).
 
+%% @doc Phase 3.5 overlay_relay outcome counts since counters were
+%% installed. Deliberately NOT a `gen_server:call' — this file's own
+%% cascade history (see `station_view/1''s comment above) is exactly why
+%% a future Prometheus scrape must read this without touching the
+%% observer's mailbox.
+-spec overlay_relay_stats() -> #{relayed := non_neg_integer(),
+                                 verify_failed := non_neg_integer(),
+                                 target_not_connected := non_neg_integer()}.
+overlay_relay_stats() ->
+    overlay_stats_of(persistent_term:get(?PT_OVERLAY_COUNTERS, undefined)).
+
+overlay_stats_of(undefined) ->
+    #{relayed => 0, verify_failed => 0, target_not_connected => 0};
+overlay_stats_of(Ref) ->
+    #{relayed              => counters:get(Ref, ?CTR_OVERLAY_RELAYED),
+      verify_failed        => counters:get(Ref, ?CTR_OVERLAY_VERIFY_FAILED),
+      target_not_connected => counters:get(Ref, ?CTR_OVERLAY_TARGET_NOT_CONNECTED)}.
+
+install_overlay_counters() ->
+    install_overlay_counters(persistent_term:get(?PT_OVERLAY_COUNTERS, undefined)).
+
+install_overlay_counters(undefined) ->
+    persistent_term:put(?PT_OVERLAY_COUNTERS,
+                        counters:new(?CTR_OVERLAY_SLOTS, [write_concurrency]));
+install_overlay_counters(_Ref) ->
+    ok.
+
+bump_overlay(Slot) ->
+    bump_overlay_ref(persistent_term:get(?PT_OVERLAY_COUNTERS, undefined), Slot).
+
+bump_overlay_ref(undefined, _Slot) -> ok;
+bump_overlay_ref(Ref, Slot)        -> counters:add(Ref, Slot, 1).
+
 -spec conn_for(pid(), macula_identity:pubkey()) ->
     {ok, pid()} | error.
 conn_for(Pid, <<_:256>> = NodeId) ->
@@ -338,6 +386,7 @@ init(#{dht := Dht, swim := Swim} = Opts)
     %% pubsub_dispatcher) can write without checking whether the table
     %% exists. Idempotent.
     ok = macula_station_frame_telemetry:init(),
+    ok = install_overlay_counters(),
     State0 = #state{dht              = Dht,
                     swim             = Swim,
                     handler_registry = maps:get(handler_registry, Opts, undefined),
@@ -1023,9 +1072,14 @@ dispatch(other, Frame, ConnPid, NodeId, S) ->
 %% new state, no session/pairing bookkeeping, no cleanup on disconnect —
 %% `conns' and its `:DOWN' handling are exactly what CALL forwarding
 %% already uses (`on_remote_lookup/5' above), reused as-is. A target not
-%% currently connected here is a silent drop: HyParView is a soft-state
-%% gossip protocol whose own shuffle/retry timers are the recovery path,
-%% the same way they already have to tolerate ordinary packet loss.
+%% currently connected is DROPPED, not retried: HyParView is a
+%% soft-state gossip protocol whose own shuffle/retry timers are the
+%% recovery path, the same way they already have to tolerate ordinary
+%% packet loss. It is no longer SILENT, though — both this and a bad
+%% signature bump a counter (`overlay_relay_stats/0') and emit a
+%% structured event, added after this exact ambiguity (attack/bug vs.
+%% routine gossip loss, indistinguishable from outside a live trace)
+%% blocked diagnosing a real incident.
 dispatch_overlay(overlay_relay, Frame, _ConnPid, NodeId, #state{conns = C} = S) ->
     relay_overlay(macula_frame:verify(Frame, NodeId), NodeId, C),
     S;
@@ -1033,22 +1087,43 @@ dispatch_overlay(_Other, _Frame, _ConnPid, _NodeId, S) ->
     S.
 
 relay_overlay({ok, #{peer := Target, payload := Payload}}, Origin, C) ->
-    forward_overlay(primary_conn_lookup(maps:find(Target, C)), Origin, Payload);
-relay_overlay({error, _Reason}, _Origin, _C) ->
+    forward_overlay(primary_conn_lookup(maps:find(Target, C)), Origin, Target, Payload);
+relay_overlay({error, Reason}, Origin, _C) ->
     %% Envelope signature doesn't verify against the authenticated
     %% sender — never relayed, same trust posture as CALL/ADVERTISE.
+    %% `warning', not `info': unlike a routine unreachable-target drop
+    %% below, a bad signature here is either an attack or a real
+    %% protocol bug, and it was completely unobservable before this —
+    %% the exact ambiguity that blocked diagnosing the incident this
+    %% instrumentation exists to fix.
+    bump_overlay(?CTR_OVERLAY_VERIFY_FAILED),
+    catch macula_diagnostics:event(
+            warning, <<"_macula.overlay_relay.verify_failed">>,
+            #{origin => binary:encode_hex(binary:part(Origin, 0, 4)),
+              reason => Reason}),
     ok.
 
-forward_overlay({ok, TargetConn}, Origin, Payload) ->
+forward_overlay({ok, TargetConn}, Origin, _Target, Payload) ->
     %% The relayed copy always carries OUR OWN authenticated identity for
     %% the sender — Origin comes from this connection's own verified
     %% NodeId, never from anything the original frame claimed about
     %% itself, so the receiving end's `Meta.sender' can't be spoofed by
     %% the relayed peer.
+    bump_overlay(?CTR_OVERLAY_RELAYED),
     macula_peering:send_frame(
         TargetConn,
         macula_frame:overlay_relay(#{peer => Origin, payload => Payload}));
-forward_overlay(error, _Origin, _Payload) ->
+forward_overlay(error, Origin, Target, _Payload) ->
+    %% `info', not `warning': an unreachable target is the expected,
+    %% routine outcome of a soft-state gossip protocol (see this
+    %% function's own moduledoc above), not an anomaly — but it was
+    %% completely unobservable before this, indistinguishable from the
+    %% verify-failed branch above from outside a live trace.
+    bump_overlay(?CTR_OVERLAY_TARGET_NOT_CONNECTED),
+    catch macula_diagnostics:event(
+            <<"_macula.overlay_relay.target_not_connected">>,
+            #{origin => binary:encode_hex(binary:part(Origin, 0, 4)),
+              target => binary:encode_hex(binary:part(Target, 0, 4))}),
     ok.
 
 deliver_swim({ok, _}, Frame, NodeId, Swim) ->
