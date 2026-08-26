@@ -1,6 +1,6 @@
 # Hecate Station — production Dockerfile.
 #
-# Builds a self-contained OTP 27 release of macula-station and
+# Builds a self-contained OTP 28 release of macula-station and
 # packages it in a slim Debian runtime. The macula SDK includes a
 # Quinn-based QUIC NIF written in Rust, so the builder stage needs
 # the Rust toolchain alongside Erlang.
@@ -26,7 +26,7 @@
 #              "lat": 50.8503, "lng": 4.3517 }
 #   }
 
-ARG OTP_VERSION=27.1.2
+ARG OTP_VERSION=28.1
 ARG DEBIAN_VERSION=bookworm-20241016-slim
 ARG BUILDER_IMAGE="docker.io/library/erlang:${OTP_VERSION}-slim"
 ARG RUNNER_IMAGE="docker.io/library/debian:${DEBIAN_VERSION}"
