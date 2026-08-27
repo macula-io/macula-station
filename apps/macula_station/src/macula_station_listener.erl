@@ -480,10 +480,15 @@ replace_peer_entry(PeerNodeId, Ref, Pid, P) ->
 maybe_close_old_worker({ok, {_OldRef, OldPid}}, NewPid, PeerNodeId)
         when OldPid =/= NewPid ->
     macula_peering:close(OldPid, replaced_by_newer_handshake),
-    macula_diagnostics:event(<<"_macula.peering.duplicate_replaced">>, #{
-        peer_node_id_prefix =>
-            binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId)))
-    });
+    %% Plain `logger:warning/2', not `macula_diagnostics:event/2' — the
+    %% latter stamps `domain => [macula]', which the default handler's
+    %% filter chain silently drops on any release built with `sasl'.
+    %% Confirmed live on the fleet; see macula CHANGELOG [10.5.5].
+    logger:warning("[listener] duplicate_replaced old_pid=~p new_pid=~p "
+                   "peer_node_id_prefix=~s",
+                   [OldPid, NewPid,
+                    binary:encode_hex(
+                      binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId))))]);
 maybe_close_old_worker(_, _, _) ->
     ok.
 
