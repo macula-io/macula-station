@@ -430,18 +430,32 @@ handle_puzzle_decision(reject, Mode, Valid, PeerNodeId, Ref, Pid, HS, _C, _P, S)
 maybe_emit_puzzle_invalid(off, _Valid, _PeerNodeId) -> ok;
 maybe_emit_puzzle_invalid(_Mode, true, _PeerNodeId) -> ok;
 maybe_emit_puzzle_invalid(Mode, false, PeerNodeId) ->
-    macula_diagnostics:event(<<"_macula.peering.puzzle_invalid">>, #{
-        peer_node_id_prefix =>
-            binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId))),
-        mode => Mode
-    }).
+    %% Plain `logger:warning/2', not `macula_diagnostics:event/2' — the
+    %% latter stamps `domain => [macula]', which the default handler's
+    %% filter chain silently drops on any release built with `sasl'.
+    %% Confirmed live on the fleet during the overlay_relay incident;
+    %% see macula CHANGELOG [10.5.5]. This function exists specifically
+    %% so an operator can see rejection volume before flipping
+    %% `log_only' to `enforce' — a logging path that never reaches
+    %% `docker logs' defeats that purpose entirely.
+    logger:warning("[listener] puzzle_invalid peer_node_id_prefix=~s mode=~p",
+                   [binary:encode_hex(
+                      binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId)))),
+                    Mode]).
 
-%% Close via the same graceful mechanism used for a superseded
-%% handshake (`macula_peering:close/2') and drop the worker's
-%% `handshaking' slot without ever promoting it to `connected'.
+%% `macula_peering:reject/2', NOT `close/2' — a peer that failed the
+%% puzzle admission check was never trusted, so there is no legitimate
+%% session to grant `close/2''s 5s graceful drain window to. Using
+%% `close/2' here was a real, live incident: a puzzle-invalid peer's
+%% connection promotes to `connected' (the SDK's own state machine has
+%% no knowledge of this station's puzzle policy) before this async
+%% notification is even received, and `close/2''s `draining' state
+%% silently accepts and discards ANY inbound traffic for the whole 5s
+%% window by design — see macula CHANGELOG [10.5.9]/[10.9.0]. Drop the
+%% worker's `handshaking' slot without ever promoting it further.
 reject_handshake(error, _Pid, _HS, S) -> S;
 reject_handshake(Ref, Pid, HS, #state{handshaking = HS} = S) ->
-    macula_peering:close(Pid, puzzle_invalid),
+    macula_peering:reject(Pid, puzzle_invalid),
     S#state{handshaking = maps:remove(Ref, HS)}.
 
 %% `off' (default: today's behaviour, unchanged) | `log_only'
