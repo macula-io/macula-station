@@ -430,18 +430,18 @@ handle_puzzle_decision(reject, Mode, Valid, PeerNodeId, Ref, Pid, HS, _C, _P, S)
 maybe_emit_puzzle_invalid(off, _Valid, _PeerNodeId) -> ok;
 maybe_emit_puzzle_invalid(_Mode, true, _PeerNodeId) -> ok;
 maybe_emit_puzzle_invalid(Mode, false, PeerNodeId) ->
-    %% Plain `logger:warning/2', not `macula_diagnostics:event/2' — the
-    %% latter stamps `domain => [macula]', which the default handler's
-    %% filter chain silently drops on any release built with `sasl'.
-    %% Confirmed live on the fleet during the overlay_relay incident;
-    %% see macula CHANGELOG [10.5.5]. This function exists specifically
-    %% so an operator can see rejection volume before flipping
-    %% `log_only' to `enforce' — a logging path that never reaches
-    %% `docker logs' defeats that purpose entirely.
-    logger:warning("[listener] puzzle_invalid peer_node_id_prefix=~s mode=~p",
-                   [binary:encode_hex(
-                      binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId)))),
-                    Mode]).
+    %% `macula_diagnostics:event/3', not a bare `logger:warning/2': the
+    %% domain-filter bug that used to silently drop every `_macula.*'
+    %% event on any release is fixed at the source in macula 10.10.0
+    %% (`macula_diagnostics:install_domain_filter/0'). This function
+    %% exists specifically so an operator can see rejection volume
+    %% before flipping `log_only' to `enforce'.
+    macula_diagnostics:event(warning, <<"_macula.peering.puzzle_invalid">>, #{
+        peer_node_id_prefix => binary:encode_hex(
+                                  binary:part(PeerNodeId, 0,
+                                              min(8, byte_size(PeerNodeId)))),
+        mode => Mode
+    }).
 
 %% `macula_peering:reject/2', NOT `close/2' — a peer that failed the
 %% puzzle admission check was never trusted, so there is no legitimate
@@ -494,15 +494,15 @@ replace_peer_entry(PeerNodeId, Ref, Pid, P) ->
 maybe_close_old_worker({ok, {_OldRef, OldPid}}, NewPid, PeerNodeId)
         when OldPid =/= NewPid ->
     macula_peering:close(OldPid, replaced_by_newer_handshake),
-    %% Plain `logger:warning/2', not `macula_diagnostics:event/2' — the
-    %% latter stamps `domain => [macula]', which the default handler's
-    %% filter chain silently drops on any release built with `sasl'.
-    %% Confirmed live on the fleet; see macula CHANGELOG [10.5.5].
-    logger:warning("[listener] duplicate_replaced old_pid=~p new_pid=~p "
-                   "peer_node_id_prefix=~s",
-                   [OldPid, NewPid,
-                    binary:encode_hex(
-                      binary:part(PeerNodeId, 0, min(8, byte_size(PeerNodeId))))]);
+    %% `macula_diagnostics:event/3' — see `maybe_emit_puzzle_invalid/3'
+    %% above for why this is no longer a bare `logger:warning/2'.
+    macula_diagnostics:event(<<"_macula.peering.duplicate_replaced">>, #{
+        old_pid => OldPid,
+        new_pid => NewPid,
+        peer_node_id_prefix => binary:encode_hex(
+                                  binary:part(PeerNodeId, 0,
+                                              min(8, byte_size(PeerNodeId))))
+    });
 maybe_close_old_worker(_, _, _) ->
     ok.
 
