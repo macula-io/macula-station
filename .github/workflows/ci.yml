@@ -131,6 +131,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Busts the Dockerfile's deps-fetch layer (see its own comment)
+          # so `rebar3 upgrade --all` actually re-checks hex.pm every
+          # build instead of the check silently never running on a
+          # cache-hit. Without this, a published macula patch/minor
+          # release can sit un-picked-up indefinitely.
+          build-args: |
+            CACHEBUST=${{ github.sha }}
           cache-from: type=gha,scope=amd64
           cache-to: type=gha,scope=amd64,mode=max
           provenance: false
@@ -170,6 +177,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # See the amd64 build step's comment — same cache-busting need.
+          build-args: |
+            CACHEBUST=${{ github.sha }}
           cache-from: type=gha,scope=arm64
           cache-to: type=gha,scope=arm64,mode=max
           provenance: false

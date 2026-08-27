@@ -64,15 +64,22 @@ COPY rebar.config rebar.lock* ./
 
 # rebar.lock is deliberately gitignored (this repo floats on `~>` ranges,
 # not exact pins) and is never present in a fresh checkout, so this layer
-# is keyed on rebar.config's content alone. Docker's build cache
-# (cache-from/cache-to: type=gha in ci.yml) would otherwise reuse this
-# layer's fetched deps unchanged for as long as rebar.config's dependency
-# line stays the same text — silently shipping a stale hex release even
-# after a newer one satisfying the same constraint is published.
-# `upgrade` (not just `get-deps`) forces a real check against the current
-# hex.pm index every build. See ci.yml's matching fix for the same
-# staleness in the test job's actions/cache step.
-RUN rebar3 get-deps && rebar3 upgrade --all
+# is keyed on rebar.config's content alone. `upgrade` (not just
+# `get-deps`) is meant to force a real check against the current hex.pm
+# index every build — but that only happens if this RUN instruction
+# actually executes. Docker's build cache (cache-from/cache-to: type=gha
+# in ci.yml) skips re-running a RUN layer whenever its preceding layers
+# and its own command text are both unchanged, which they are for as
+# long as rebar.config's dependency line stays the same — so without the
+# CACHEBUST below, `upgrade`'s hex.pm check silently never ran on a
+# cache-hit build, shipping whatever hex release was fetched on the
+# FIRST such build forever after. Confirmed live: a published macula
+# patch release sat un-picked-up through a full rebuild+redeploy cycle
+# on 2026-08-27 because of exactly this. ci.yml passes a fresh value
+# (the commit SHA) on every build, so this layer's cache is genuinely
+# invalidated instead of merely appearing to be.
+ARG CACHEBUST=1
+RUN echo "cachebust=${CACHEBUST}" && rebar3 get-deps && rebar3 upgrade --all
 
 COPY apps   ./apps
 COPY config ./config
