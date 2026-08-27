@@ -986,49 +986,12 @@ direct_peer_spec(NodeId, Endpoints) when is_list(Endpoints) ->
 %%==================================================================
 
 on_frame(ConnPid, Frame, #state{peers = P} = S) ->
-    %% TEMP DIAGNOSTIC (overlay_relay WAN-only vanishing-frame incident)
-    %% — remove once root-caused. Both the `route/4' undefined-NodeId
-    %% branch and `dispatch_overlay/5''s catch-all are silent; this logs
-    %% every frame's actual wire frame_type + resolved category right
-    %% at the point of entry, before ANY branching, so a frame_type
-    %% value mismatch (e.g. atom round-trip) or a category
-    %% misclassification is directly visible instead of inferred.
-    %% Plain `logger:info/2', not `macula_diagnostics:event/2' — the
-    %% latter stamps `domain => [macula]', which the default handler's
-    %% filter chain silently drops on any release built with `sasl'
-    %% (`filter_default => stop' + only `[otp,sasl]'-domain and
-    %% no-domain events explicitly allowed). Confirmed live on the
-    %% fleet: see macula CHANGELOG [10.5.5].
-    logger:info("[peer_observer] on_frame conn_pid=~p node_id=~p "
-                "frame_type=~p category=~p",
-                [ConnPid, node_id_hex(frame_source(ConnPid, P)),
-                 macula_frame:frame_type(Frame), frame_category(Frame)]),
     route(Frame, ConnPid, frame_source(ConnPid, P), S).
-
-node_id_hex(undefined) -> undefined;
-node_id_hex(NodeId) -> binary:encode_hex(binary:part(NodeId, 0, 4)).
 
 frame_source(ConnPid, P) ->
     maps:get(ConnPid, P, undefined).
 
-route(Frame, ConnPid, undefined, S) ->
-    %% TEMP DIAGNOSTIC (overlay_relay WAN-only vanishing-frame incident)
-    %% — remove once root-caused. `ConnPid' has no entry in `peers', so
-    %% the frame is silently dropped here with NO log and NO counter —
-    %% this is the one unlogged branch in the entire dispatch path from
-    %% `{quic, Bin, Stream, Flags}' down to `dispatch_overlay/5', and
-    %% every diagnostic release so far (macula 10.5.1-10.5.3) proved the
-    %% frame is read correctly, delivered to the correct owner, and
-    %% enqueued into this process's mailbox intact — yet
-    %% overlay_relay_stats/0's three counters stay at zero, meaning
-    %% dispatch_overlay/5 is never reached at all. This is the only
-    %% remaining place in the whole path capable of explaining that.
-    %% Plain `logger:warning/2' — see `on_frame/3''s comment above:
-    %% `macula_diagnostics:event/2,3' is silently dropped by the default
-    %% handler's domain filter on any release built with `sasl'.
-    logger:warning("[peer_observer] frame_source_unresolved conn_pid=~p "
-                   "frame_type=~p",
-                   [ConnPid, macula_frame:frame_type(Frame)]),
+route(_Frame, _ConnPid, undefined, S) ->
     S;
 route(Frame, ConnPid, NodeId, S) ->
     dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S).
