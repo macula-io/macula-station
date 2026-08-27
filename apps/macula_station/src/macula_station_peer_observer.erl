@@ -995,14 +995,14 @@ on_frame(ConnPid, Frame, #state{peers = P} = S) ->
     %% misclassification is directly visible instead of inferred.
     catch macula_diagnostics:event(
             <<"_macula.peer_observer.on_frame">>,
-            #{conn_pid  => ConnPid,
-              node_id   => case frame_source(ConnPid, P) of
-                                undefined -> undefined;
-                                N -> binary:encode_hex(binary:part(N, 0, 4))
-                            end,
+            #{conn_pid   => ConnPid,
+              node_id    => node_id_hex(frame_source(ConnPid, P)),
               frame_type => macula_frame:frame_type(Frame),
               category   => frame_category(Frame)}),
     route(Frame, ConnPid, frame_source(ConnPid, P), S).
+
+node_id_hex(undefined) -> undefined;
+node_id_hex(NodeId) -> binary:encode_hex(binary:part(NodeId, 0, 4)).
 
 frame_source(ConnPid, P) ->
     maps:get(ConnPid, P, undefined).
