@@ -993,12 +993,16 @@ on_frame(ConnPid, Frame, #state{peers = P} = S) ->
     %% at the point of entry, before ANY branching, so a frame_type
     %% value mismatch (e.g. atom round-trip) or a category
     %% misclassification is directly visible instead of inferred.
-    catch macula_diagnostics:event(
-            <<"_macula.peer_observer.on_frame">>,
-            #{conn_pid   => ConnPid,
-              node_id    => node_id_hex(frame_source(ConnPid, P)),
-              frame_type => macula_frame:frame_type(Frame),
-              category   => frame_category(Frame)}),
+    %% Plain `logger:info/2', not `macula_diagnostics:event/2' — the
+    %% latter stamps `domain => [macula]', which the default handler's
+    %% filter chain silently drops on any release built with `sasl'
+    %% (`filter_default => stop' + only `[otp,sasl]'-domain and
+    %% no-domain events explicitly allowed). Confirmed live on the
+    %% fleet: see macula CHANGELOG [10.5.5].
+    logger:info("[peer_observer] on_frame conn_pid=~p node_id=~p "
+                "frame_type=~p category=~p",
+                [ConnPid, node_id_hex(frame_source(ConnPid, P)),
+                 macula_frame:frame_type(Frame), frame_category(Frame)]),
     route(Frame, ConnPid, frame_source(ConnPid, P), S).
 
 node_id_hex(undefined) -> undefined;
@@ -1019,9 +1023,12 @@ route(Frame, ConnPid, undefined, S) ->
     %% overlay_relay_stats/0's three counters stay at zero, meaning
     %% dispatch_overlay/5 is never reached at all. This is the only
     %% remaining place in the whole path capable of explaining that.
-    catch macula_diagnostics:event(
-            warning, <<"_macula.peer_observer.frame_source_unresolved">>,
-            #{conn_pid => ConnPid, frame_type => macula_frame:frame_type(Frame)}),
+    %% Plain `logger:warning/2' — see `on_frame/3''s comment above:
+    %% `macula_diagnostics:event/2,3' is silently dropped by the default
+    %% handler's domain filter on any release built with `sasl'.
+    logger:warning("[peer_observer] frame_source_unresolved conn_pid=~p "
+                   "frame_type=~p",
+                   [ConnPid, macula_frame:frame_type(Frame)]),
     S;
 route(Frame, ConnPid, NodeId, S) ->
     dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S).
