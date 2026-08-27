@@ -986,6 +986,22 @@ direct_peer_spec(NodeId, Endpoints) when is_list(Endpoints) ->
 %%==================================================================
 
 on_frame(ConnPid, Frame, #state{peers = P} = S) ->
+    %% TEMP DIAGNOSTIC (overlay_relay WAN-only vanishing-frame incident)
+    %% — remove once root-caused. Both the `route/4' undefined-NodeId
+    %% branch and `dispatch_overlay/5''s catch-all are silent; this logs
+    %% every frame's actual wire frame_type + resolved category right
+    %% at the point of entry, before ANY branching, so a frame_type
+    %% value mismatch (e.g. atom round-trip) or a category
+    %% misclassification is directly visible instead of inferred.
+    catch macula_diagnostics:event(
+            <<"_macula.peer_observer.on_frame">>,
+            #{conn_pid  => ConnPid,
+              node_id   => case frame_source(ConnPid, P) of
+                                undefined -> undefined;
+                                N -> binary:encode_hex(binary:part(N, 0, 4))
+                            end,
+              frame_type => macula_frame:frame_type(Frame),
+              category   => frame_category(Frame)}),
     route(Frame, ConnPid, frame_source(ConnPid, P), S).
 
 frame_source(ConnPid, P) ->
