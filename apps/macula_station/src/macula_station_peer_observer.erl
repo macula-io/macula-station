@@ -991,7 +991,21 @@ on_frame(ConnPid, Frame, #state{peers = P} = S) ->
 frame_source(ConnPid, P) ->
     maps:get(ConnPid, P, undefined).
 
-route(_Frame, _ConnPid, undefined, S) ->
+route(Frame, ConnPid, undefined, S) ->
+    %% TEMP DIAGNOSTIC (overlay_relay WAN-only vanishing-frame incident)
+    %% — remove once root-caused. `ConnPid' has no entry in `peers', so
+    %% the frame is silently dropped here with NO log and NO counter —
+    %% this is the one unlogged branch in the entire dispatch path from
+    %% `{quic, Bin, Stream, Flags}' down to `dispatch_overlay/5', and
+    %% every diagnostic release so far (macula 10.5.1-10.5.3) proved the
+    %% frame is read correctly, delivered to the correct owner, and
+    %% enqueued into this process's mailbox intact — yet
+    %% overlay_relay_stats/0's three counters stay at zero, meaning
+    %% dispatch_overlay/5 is never reached at all. This is the only
+    %% remaining place in the whole path capable of explaining that.
+    catch macula_diagnostics:event(
+            warning, <<"_macula.peer_observer.frame_source_unresolved">>,
+            #{conn_pid => ConnPid, frame_type => macula_frame:frame_type(Frame)}),
     S;
 route(Frame, ConnPid, NodeId, S) ->
     dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S).
