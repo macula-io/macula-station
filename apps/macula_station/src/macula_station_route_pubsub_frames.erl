@@ -47,6 +47,9 @@
 -export([start_link/1, stop/1]).
 -export([deliver_verified/5]).
 -export([delivery_stats/0]).
+%% TEMPORARY, see debug_fan_trace/5's own moduledoc comment — remove
+%% together with the rest of the 2026-08-29 multi-hop trace.
+-export([debug_fan_trace/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -605,14 +608,26 @@ bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
 %% investigation — scoped to the `acme/' test namespace specifically
 %% so it cannot fire on real mesh traffic (this fleet is busy enough
 %% that a counter-delta approach proved too noisy to isolate one test
-%% publish). Remove once the 2+-hop gap is root-caused.
+%% publish). Uses persistent_term, not logger: plain logger:info/2
+%% calls (string-format, not a report map) do not surface in this
+%% deployment's `docker logs' output at all -- confirmed against a
+%% pre-existing, known call site, not just this new one. Read back
+%% with `debug_fan_trace/0'. Remove once the 2+-hop gap is root-caused.
+-define(PT_FAN_TRACE, {?MODULE, debug_fan_trace}).
+-define(PT_EVENT_TRACE, {?MODULE, debug_event_trace}).
+
+debug_fan_trace() ->
+    {persistent_term:get(?PT_FAN_TRACE, undefined),
+     persistent_term:get(?PT_EVENT_TRACE, undefined)}.
+
 debug_fan_trace(<<"acme/", _/binary>> = Topic, Matched, Excluded,
                 BloomCandidates, PatternCandidates) ->
-    logger:info(
-      "[fan_trace] topic=~s matched=~p excluded=~p bloom_candidates=~p "
-      "pattern_candidates=~p",
-      [Topic, hex_list(Matched), hex_list(Excluded),
-       hex_list(BloomCandidates), hex_list(PatternCandidates)]);
+    persistent_term:put(?PT_FAN_TRACE,
+      #{topic => Topic, matched => hex_list(Matched),
+        excluded => hex_list(Excluded),
+        bloom_candidates => hex_list(BloomCandidates),
+        pattern_candidates => hex_list(PatternCandidates),
+        at => erlang:system_time(millisecond)});
 debug_fan_trace(_Topic, _Matched, _Excluded, _BloomCandidates, _PatternCandidates) ->
     ok.
 
@@ -623,10 +638,11 @@ hex_list(NodeIds) -> [short_hex(N) || N <- NodeIds].
 %% is even attempted, so a `drop' here (vs. a `deliver' that then
 %% finds zero fan candidates) is directly distinguishable.
 debug_event_trace(#{topic := <<"acme/", _/binary>> = Topic} = V, SourceNodeId, Disp) ->
-    logger:info(
-      "[event_trace] topic=~s source=~s publisher=~s has_publisher_sig=~p disposition=~p",
-      [Topic, short_hex(SourceNodeId), short_hex(maps:get(publisher, V, undefined)),
-       maps:is_key(publisher_sig, V), Disp]);
+    persistent_term:put(?PT_EVENT_TRACE,
+      #{topic => Topic, source => short_hex(SourceNodeId),
+        publisher => short_hex(maps:get(publisher, V, undefined)),
+        has_publisher_sig => maps:is_key(publisher_sig, V),
+        disposition => Disp, at => erlang:system_time(millisecond)});
 debug_event_trace(_Verified, _SourceNodeId, _Disp) ->
     ok.
 
