@@ -1,6 +1,9 @@
 # DESIGN: subscription lifecycle GC (the peering_router growth leak)
 
-**Status:** DESIGN gate, pre-implementation. No code. For adversary attack.
+**Status:** A implemented 2026-08-29 (`macula` 10.11.0 + macula-station
+`d90f0da`, not yet pushed — see §6). B (origin-scoping) not started; §6
+below re-derives that it is no longer believed necessary for correctness,
+only for propagation hygiene.
 **Date:** 2026-07-25
 **Foundational fix for:** the chronic, worsening-over-months fleet burn. The timer-leak
 fix (6eb28e5) capped the reconcile RATE; this addresses the reconcile COST, which grows
@@ -162,3 +165,76 @@ re-check for the race, + drop peer bloom entry (no new event, no new bookkeeping
 only after A, fleet-wide, with the origin CLASS plumbed and the latency regression
 accepted; (4) add bloom-layer origin-scoping as the joint fix with the multi-hop self-heal
 bug — same lifecycle disease, same cure, half the infra exists.
+
+---
+
+## 6. Implementation, 2026-08-29 — re-derived against current code, not this doc's
+
+The code this doc analyzed (2026-07-25) has since been refactored: the flat
+`hecate_pubsub` registry with `maps:keys(subscriptions)` this doc describes is now
+`hecate_pubsub_registry` (realm → `hecate_pubsub_server` pid) + `hecate_pubsub_server`
+(one gen_server per realm) + `hecate_pubsub` (the pure per-realm state, unchanged
+shape). Confirmed by reading the current source, not assumed: the router's actual
+mechanism (`macula_station_peering_router:local_realm_topics/1` →
+`hecate_pubsub_registry:list_realms/1` × `hecate_pubsub_server:topics/1`, then
+`desired_triples/2` = that × every connected peer, unfiltered by subscriber origin) is
+mechanically identical to what this doc diagnosed — §0's three facts still hold letter
+for letter, just spread across three modules instead of one. `on_disconnected/2` still
+purged SWIM/DHT/ADVERTISE/streams and skipped pubsub entirely, exactly as documented.
+
+**Shipped (A):** `hecate_pubsub:purge_subscriber/2`, `hecate_pubsub_server:purge_subscriber/2`,
+`hecate_pubsub_registry:purge_subscriber/2` (macula 10.11.0, fans out across every realm
+the registry holds). Wired into `macula_station_peer_observer:on_disconnected/2`,
+gated on isolation, deferred `?PUBSUB_PURGE_GRACE_MS` (8s) with isolation re-checked
+against current `conns` at fire time — closes adversary finding #2 (the reconnect race)
+without new per-subscription bookkeeping, per refinement #1. Tests: 9 new eunit cases in
+`macula`, 2 in `macula-station` (deferred-fire drops the topic; a reconnect before fire
+is skipped). Full suites green in both repos (`macula`: 58/58 relevant; `macula-station`:
+1076/1076).
+
+**Not shipped, and not bundled into A as originally suggested:** dropping the peer's
+`?PEER_BLOOMS_TABLE` entry on disconnect. `macula_station_bloom_exchange.erl`'s own
+`?PEER_BLOOM_TTL_MS` comment (added 2026-07-26, one day after this doc) already
+corrected that idea: the merge is transitive (each station's OUTGOING/merged filter,
+not a per-origin local one), so a bit set once propagates and gets re-absorbed via
+every neighbour forever — "the bit set is monotone non-decreasing under all
+conditions." Dropping one peer's cache entry bounds the ETS *entry count*, not the
+actual leaked bits. The real fix is routing on per-origin `_mesh.bloom.local` filters
+instead of merged ones (already on the wire) — that's item 5 below, tied to the open
+multi-hop bug, genuinely unbuilt, not a freebie.
+
+**Re-derived: does A alone bound growth, or is B still required (§2 Q2)?** Traced
+through the current router by hand rather than re-asserting the doc's own answer: once
+a topic's true origin (the subscriber A now purges) is gone, `hecate_pubsub_server`
+empties that topic → next `?TICK_MS` (2s) tick, `local_realm_topics` stops returning it
+→ `desired_triples` drops it → `drop_subs_not_in` sends UNSUBSCRIBE to every peer we'd
+been subscribing-on-peer for it. Each peer that receives that UNSUBSCRIBE runs the same
+`hecate_pubsub:unsubscribe` → `drop_or_keep` path, which cascades the same way one hop
+further on ITS next tick. This is an ordinary distance-vector retraction, not a livelock
+independent of the root — a topic transitively re-propagated via B's still-unfixed
+"subscribe for every local topic including peer-sourced ones" behavior still fully
+unwinds once A removes the one real subscriber, within a few `?TICK_MS` cycles times
+mesh diameter. **Item 4's "any dial-cycle sustains it forever" claim does not appear to
+hold against this architecture** — it may have been accurate against the pre-refactor
+code this doc analyzed, or the refactor incidentally fixed it. Not re-verified live on
+the fleet (Q6's own "measure, don't assume" standard applies to this correction too).
+B therefore remains a legitimate future EFFICIENCY improvement (stop the pointless
+peer-sourced re-subscribe chains from happening at all, faster convergence, less
+gossip) rather than a correctness requirement the leak depends on — downgraded from
+this doc's original sequencing, not dropped.
+
+**Not done:** Q6's live measurement (T, peer-sourced fraction) before shipping A, since
+A's mechanism and the isolation-purge pattern were already established/low-risk
+(mirrors the existing DHT-forget and advertise-purge paths on the exact same
+disconnect hook) and re-deriving the fix's correctness against current source stood in
+for it. A live before/after measurement of `hecate_pubsub_server:topic_count/1` and
+`macula_station_peering_router`'s `subs` map size across the fleet, before and ~1 tick-
+cycle after this ships, would confirm the re-derivation above rather than leave it
+argued-not-measured — worth doing once this is deployed, not blocking it.
+
+**Not pushed yet.** `macula` 10.11.0 is committed locally (`0e206f4`), not published to
+hex. `macula-station`'s wiring is committed locally (`d90f0da`), not pushed — pushing
+`main` here triggers `ci.yml`, which builds and pushes a ghcr image that watchtower
+rolls onto the live fleet automatically, and it depends on `macula ~> 10.11` which
+doesn't exist on hex yet. Order: publish `macula` 10.11.0 to hex first, then push
+`macula-station`.
