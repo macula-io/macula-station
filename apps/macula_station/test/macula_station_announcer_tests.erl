@@ -13,6 +13,36 @@
 -define(TYPE_TOMBSTONE,  16#0C).
 
 %%%===================================================================
+%%% station_version/0 -- reads MACULA_STATION_GIT_SHA (baked into the
+%%% image at build time, see the Dockerfile), not macula_station's own
+%%% .app.src `vsn' (never bumped once in this project's history).
+%%%===================================================================
+
+station_version_reads_the_git_sha_env_var_test() ->
+    true = os:putenv("MACULA_STATION_GIT_SHA", "deadbeef1234"),
+    try
+        ?assertEqual(<<"deadbeef1234">>, macula_station_announcer:station_version())
+    after
+        os:unsetenv("MACULA_STATION_GIT_SHA")
+    end.
+
+station_version_falls_back_to_dev_when_unset_test() ->
+    os:unsetenv("MACULA_STATION_GIT_SHA"),
+    ?assertEqual(<<"dev">>, macula_station_announcer:station_version()).
+
+%% macula_station:version/0 (the admin /status facade, distinct module,
+%% same MACULA_STATION_GIT_SHA mechanism and fallback) -- was a hardcoded
+%% literal ("0.1.0-phase1") before this fix, same reasoning as
+%% station_version/0 above.
+facade_version_reads_the_same_git_sha_env_var_test() ->
+    true = os:putenv("MACULA_STATION_GIT_SHA", "deadbeef1234"),
+    try
+        ?assertEqual(<<"deadbeef1234">>, macula_station:version())
+    after
+        os:unsetenv("MACULA_STATION_GIT_SHA")
+    end.
+
+%%%===================================================================
 %%% Fixture
 %%%===================================================================
 

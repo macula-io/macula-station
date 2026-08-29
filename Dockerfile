@@ -91,6 +91,17 @@ RUN rebar3 as prod release
 # =============================================================================
 FROM ${RUNNER_IMAGE}
 
+# The commit this image was built from. CI already computes this exact
+# value for CACHEBUST above; this is a second, purpose-named ARG rather
+# than reusing that one, so a reader doesn't have to know "cache-busting
+# value" and "build identity" happen to be the same thing. Baked in here
+# instead of relying on a manually-bumped app version: macula_station's
+# own .app.src `vsn` has never been bumped once in this project's history
+# (every commit ever built reports "0.1.0"), which is exactly the failure
+# mode a CI-computed value has no discipline to fall into. Read by
+# macula_station_announcer's heartbeat and macula_station:version/0.
+ARG GIT_SHA=unknown
+
 RUN apt-get update -y && \
     apt-get install -y \
     libstdc++6 \
@@ -127,6 +138,9 @@ ENV MACULA_STATION_CONFIG=/etc/macula-station/config.json
 # same host (e.g. network_mode: host with two containers per box).
 ENV MACULA_NODE_NAME=macula_station
 ENV RELX_REPLACE_OS_VARS=true
+
+# See the ARG GIT_SHA comment above the runtime stage's FROM.
+ENV MACULA_STATION_GIT_SHA=${GIT_SHA}
 
 # Expose QUIC port (UDP) + admin/health port (TCP).
 EXPOSE 4433/udp

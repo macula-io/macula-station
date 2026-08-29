@@ -32,6 +32,11 @@
 -behaviour(gen_server).
 
 -export([start_link/1, stop/1]).
+
+-ifdef(TEST).
+-export([station_version/0]).
+-endif.
+
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -334,10 +339,18 @@ add_bind_addr(Map, RecOpts) ->
         _                                            -> Map
     end.
 
+%% The commit this build was made from (`MACULA_STATION_GIT_SHA', baked
+%% into the image at build time -- see the Dockerfile's `ARG GIT_SHA'
+%% comment), NOT `macula_station.app.src''s `vsn': that field has never
+%% been bumped once across this project's history, so every station ever
+%% built reported the same literal "0.1.0" here regardless of what
+%% commit it was actually running -- indistinguishable from a genuinely
+%% stale rollout. A CI-computed value has no discipline to fall out of;
+%% a manually-maintained one demonstrably did.
 station_version() ->
-    case application:get_key(macula_station, vsn) of
-        {ok, Vsn} -> list_to_binary(Vsn);
-        undefined -> <<"dev">>
+    case os:getenv("MACULA_STATION_GIT_SHA") of
+        false -> <<"dev">>;
+        Sha    -> list_to_binary(Sha)
     end.
 
 %% Best-effort RAM total. /proc/meminfo on Linux; 0 elsewhere.

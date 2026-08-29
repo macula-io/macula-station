@@ -89,9 +89,14 @@ tombstones(Pid) ->
 swim_members(Pid) ->
     macula_station_server:swim_members(Pid).
 
+%% Was a hardcoded literal ("0.1.0-phase1", every build, forever) --
+%% same fix and same reasoning as `macula_station_announcer:station_version/0'.
 -spec version() -> binary().
 version() ->
-    <<"0.1.0-phase1">>.
+    case os:getenv("MACULA_STATION_GIT_SHA") of
+        false -> <<"dev">>;
+        Sha    -> list_to_binary(Sha)
+    end.
 
 %%------------------------------------------------------------------
 %% Sup-driven runtime accessors
