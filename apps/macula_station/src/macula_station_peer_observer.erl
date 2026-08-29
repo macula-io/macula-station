@@ -205,6 +205,22 @@
 %% before the timer fires.
 -define(STREAM_TTL_MS, 300_000).
 
+%% Grace window before purging a disconnected peer/daemon's pubsub
+%% subscriptions (`hecate_pubsub_registry:purge_subscriber/2').
+%%
+%% SUBSCRIBE frames route through `macula_station_route_pubsub_frames'
+%% (its own gen_server, its own mailbox); connection DOWN routes
+%% through this observer. The two are unordered relative to each
+%% other, so a fast reconnect's SUBSCRIBE replay can land before this
+%% observer even sees the DOWN. Purging immediately on DOWN risks
+%% wiping a subscription that a reconnect just re-established, with
+%% nothing to notice and re-send it — permanent silent drift.
+%% Deferring the purge and re-checking isolation at fire time
+%% (`handle_info({pubsub_purge, ...})') means a resubscribe that beat
+%% us here survives. See
+%% plans/DESIGN_SUBSCRIPTION_LIFECYCLE_GC.md (adversary finding #2).
+-define(PUBSUB_PURGE_GRACE_MS, 8_000).
+
 %% Conn-aging sweep cadence + idle threshold. A station-station
 %% peering_conn sees bloom + SWIM frames every few seconds;
 %% daemon-class peering_conn typically sees subscribe / publish /
@@ -592,6 +608,9 @@ handle_info({forwarded_timeout, CallId}, #state{forwarded = F} = S) ->
     {noreply, on_forwarded_timeout(maps:take(CallId, F), S)};
 handle_info({stream_timeout, Sid}, #state{streams = St} = S) ->
     {noreply, on_stream_timeout(maps:take(Sid, St), S)};
+handle_info({pubsub_purge, NodeId, Reg}, #state{conns = C} = S) ->
+    ok = maybe_purge_pubsub_now(NodeId, Reg, C),
+    {noreply, S};
 handle_info(conn_sweep, S) ->
     erlang:send_after(?CONN_SWEEP_INTERVAL_MS, self(), conn_sweep),
     {noreply, run_conn_sweep(S)};
@@ -1701,6 +1720,7 @@ on_disconnected(ConnPid, #state{dht = Dht, swim = Swim,
     %% (see docs/CASCADE_INVESTIGATION.md).
     maybe_forget_if_isolated(NodeId, NewConns, Dht, S#state.is_station),
     maybe_purge_advertise(R, ConnPid),
+    maybe_schedule_pubsub_purge(NodeId, NewConns, S#state.pubsub_registry),
     NewIsStation = drop_is_station_if_isolated(NodeId, NewConns, S#state.is_station),
     S1 = bump_if_resynced(Resynced, S),
     %% Dedicated QUIC streams don't self-clean like the shared control
@@ -1911,6 +1931,39 @@ maybe_purge_advertise(undefined, _ConnPid) ->
     ok;
 maybe_purge_advertise(R, ConnPid) ->
     macula_remote_advertise_registry:purge_conn(R, ConnPid).
+
+%% Schedule a deferred pubsub purge for `NodeId', only once isolation
+%% is reached (same isolation test `maybe_forget_if_isolated' already
+%% applies to DHT) — a NodeId with one direction still alive is still
+%% reachable and has done nothing wrong. The grace period + re-check
+%% at fire time is what makes this safe against the reconnect race;
+%% see `?PUBSUB_PURGE_GRACE_MS'.
+maybe_schedule_pubsub_purge(undefined, _NewConns, _Reg) ->
+    ok;
+maybe_schedule_pubsub_purge(_NodeId, _NewConns, undefined) ->
+    ok;
+maybe_schedule_pubsub_purge(NodeId, NewConns, Reg) ->
+    schedule_pubsub_purge(is_isolated(maps:find(NodeId, NewConns)), NodeId, Reg).
+
+schedule_pubsub_purge(false, _NodeId, _Reg) ->
+    ok;
+schedule_pubsub_purge(true, NodeId, Reg) ->
+    _ = erlang:send_after(?PUBSUB_PURGE_GRACE_MS, self(),
+                          {pubsub_purge, NodeId, Reg}),
+    ok.
+
+%% Fires after the grace window. Re-check isolation against the
+%% CURRENT `conns' (not the snapshot from when this was scheduled) —
+%% a reconnect in the meantime means NodeId is reachable again and
+%% this purge is stale, not due.
+maybe_purge_pubsub_now(NodeId, Reg, Conns) ->
+    purge_pubsub_now(is_isolated(maps:find(NodeId, Conns)), NodeId, Reg).
+
+purge_pubsub_now(false, _NodeId, _Reg) ->
+    ok;
+purge_pubsub_now(true, NodeId, Reg) ->
+    catch hecate_pubsub_registry:purge_subscriber(Reg, NodeId),
+    ok.
 
 maybe_remove(undefined, _Swim) -> ok;
 maybe_remove(NodeId,     Swim) -> macula_swim:remove_peer(Swim, NodeId).

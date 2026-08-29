@@ -380,6 +380,97 @@ publish_to_unknown_realm_is_dropped_test_() ->
     end}.
 
 %%==================================================================
+%% pubsub purge on peer/daemon disconnect — deferred, isolation
+%% re-checked at fire time. See ?PUBSUB_PURGE_GRACE_MS's own doc and
+%% plans/DESIGN_SUBSCRIPTION_LIFECYCLE_GC.md.
+%%==================================================================
+
+pubsub_purge_fires_after_grace_and_drops_the_topic_test_() ->
+    {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, reg := Reg, peer_kp := PeerKp} = Ctx,
+            NodeId = macula_identity:public(PeerKp),
+            Realm  = crypto:strong_rand_bytes(32),
+            Topic  = <<"t">>,
+            ConnPid = spawn_dummy(),
+            Obs ! {macula_peering, connected, ConnPid, NodeId},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =/= [] end, 500),
+            SubFrame = macula_frame:sign(macula_frame:subscribe(#{
+                topic      => Topic,
+                realm      => Realm,
+                subscriber => NodeId
+            }), PeerKp),
+            Obs ! {macula_peering, frame, ConnPid, SubFrame},
+            timer:sleep(50),
+            {ok, Server} = hecate_pubsub_registry:lookup(Reg, Realm),
+            ?assert(hecate_pubsub_server:is_subscribed(Server, Topic, NodeId)),
+
+            %% Isolate: the only connection for NodeId drops.
+            Obs ! {macula_peering, disconnected, ConnPid, peer_closed},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =:= [] end, 500),
+
+            %% Still subscribed right after disconnect — the purge is
+            %% deferred (?PUBSUB_PURGE_GRACE_MS), not immediate.
+            ?assert(hecate_pubsub_server:is_subscribed(Server, Topic, NodeId)),
+
+            %% Synthetic grace-timer fire — same idiom
+            %% `{forwarded_timeout, CallId}' uses above for
+            %% ?FORWARDED_TTL_MS: tests don't wait out the real delay.
+            Obs ! {pubsub_purge, NodeId, Reg},
+            wait_for(fun() ->
+                not hecate_pubsub_server:is_subscribed(Server, Topic, NodeId)
+            end, 500),
+            ?assertEqual([], hecate_pubsub_server:topics(Server))
+        end
+    end}.
+
+pubsub_purge_skips_a_peer_that_reconnected_before_it_fired_test_() ->
+    {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, reg := Reg, peer_kp := PeerKp} = Ctx,
+            NodeId = macula_identity:public(PeerKp),
+            Realm  = crypto:strong_rand_bytes(32),
+            Topic  = <<"t">>,
+            ConnPid1 = spawn_dummy(),
+            Obs ! {macula_peering, connected, ConnPid1, NodeId},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =/= [] end, 500),
+            SubFrame = macula_frame:sign(macula_frame:subscribe(#{
+                topic      => Topic,
+                realm      => Realm,
+                subscriber => NodeId
+            }), PeerKp),
+            Obs ! {macula_peering, frame, ConnPid1, SubFrame},
+            timer:sleep(50),
+            {ok, Server} = hecate_pubsub_registry:lookup(Reg, Realm),
+
+            %% Disconnect — schedules a deferred purge for NodeId.
+            Obs ! {macula_peering, disconnected, ConnPid1, peer_closed},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =:= [] end, 500),
+
+            %% Reconnect (fresh conn, same NodeId) BEFORE the grace
+            %% timer fires — the race `?PUBSUB_PURGE_GRACE_MS' exists
+            %% to survive.
+            ConnPid2 = spawn_dummy(),
+            Obs ! {macula_peering, connected, ConnPid2, NodeId},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =/= [] end, 500),
+
+            %% The stale purge fires now. It re-checks isolation
+            %% against CURRENT conns, sees NodeId is reachable again,
+            %% and must skip rather than wipe the live subscription.
+            Obs ! {pubsub_purge, NodeId, Reg},
+            timer:sleep(50),
+            ?assert(hecate_pubsub_server:is_subscribed(Server, Topic, NodeId))
+        end
+    end}.
+
+%%==================================================================
 %% Fixture
 %%==================================================================
 
