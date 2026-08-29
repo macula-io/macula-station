@@ -21,6 +21,14 @@
 %%   <li><b>kill_detection</b> — after the meet, kill one peer VM
 %%       (`peer:stop'); assert the survivor's SWIM marks the dead
 %%       node `confirmed_failed' within the plan's 10 s budget.</li>
+%%   <li><b>pubsub_purge_after_peer_disconnect</b> — seeds local pubsub
+%%       interest on one peer, waits for the peering router to
+%%       propagate it to the other as a real wire SUBSCRIBE, kills
+%%       the seeding peer's VM outright, and asserts the survivor's
+%%       copy is deferred-purged (still present right after the kill,
+%%       gone once `?PUBSUB_PURGE_GRACE_MS' elapses and isolation is
+%%       re-confirmed) — see
+%%       `plans/DESIGN_SUBSCRIPTION_LIFECYCLE_GC.md'.</li>
 %% </ul>
 %%
 %% The bigger 4-node / partition / heal scenarios from the plan §8.8
@@ -41,7 +49,8 @@
 
 -export([
     cold_boot_and_meet/1,
-    kill_detection/1
+    kill_detection/1,
+    pubsub_purge_after_peer_disconnect/1
 ]).
 
 %%==================================================================
@@ -49,7 +58,7 @@
 %%==================================================================
 
 all() ->
-    [cold_boot_and_meet, kill_detection].
+    [cold_boot_and_meet, kill_detection, pubsub_purge_after_peer_disconnect].
 
 init_per_suite(Config) ->
     %% `peer:start_link/1' with default connection requires Erlang
@@ -70,7 +79,11 @@ needs_distribution() ->
     end.
 
 prepare_suite(Config) ->
-    {ok, _} = application:ensure_all_started(macula_peering),
+    %% `macula_peering' is a MODULE inside the unified `macula'
+    %% application, not an application of its own (the SDK folded its
+    %% separate apps into one `macula.app.src' — see macula's own
+    %% CHANGELOG.md). This suite predates that consolidation.
+    {ok, _} = application:ensure_all_started(macula),
     PrivDir = ?config(priv_dir, Config),
     {Cert, Key} = generate_test_cert(PrivDir),
     %% Tight SWIM timings keep the kill-detection bar inside a CT
@@ -128,6 +141,43 @@ kill_detection(Config) ->
              10_000),
     ok.
 
+%% End-to-end proof of `hecate_pubsub_registry:purge_subscriber/2'
+%% (macula 10.11.0) wired into `on_disconnected' — real wire-level
+%% propagation across two independent BEAM VMs, not a mocked registry
+%% or a single-VM unit test. See
+%% `plans/DESIGN_SUBSCRIPTION_LIFECYCLE_GC.md'.
+pubsub_purge_after_peer_disconnect(Config) ->
+    [P1, P2] = ?config(peers, Config),
+    connect_meshed(P1, P2),
+    Realm = crypto:strong_rand_bytes(32),
+    Topic = <<"e2e.pubsub_purge_test.v1">>,
+
+    %% Seed local interest on P2 — the peering router only propagates
+    %% topics it has a local reason to want.
+    ok = seed_local_interest(P2, Realm, Topic),
+
+    %% The router ticks every 2s (?TICK_MS in
+    %% macula_station_peering_router) — wait for it to propagate P2's
+    %% fresh local interest to P1 as a real wire SUBSCRIBE.
+    ok = fleet_chaos:wait_until(
+             fun() -> topic_present(P1, Realm, Topic) end, 10_000),
+
+    %% Kill P2's VM outright — same mechanism as kill_detection above.
+    %% P1 observes a real connection loss, not a simulated one.
+    ok = fleet_chaos:stop_peer(maps:get(ctl, P2)),
+
+    %% Immediately after: still present. The purge is deferred
+    %% (?PUBSUB_PURGE_GRACE_MS on P1), not synchronous with disconnect
+    %% — this is what survives the reconnect race (adversary finding
+    %% #2 in the design doc).
+    ?assert(topic_present(P1, Realm, Topic)),
+
+    %% Once the grace window elapses and isolation is re-confirmed,
+    %% P1's copy is gone.
+    ok = fleet_chaos:wait_until(
+             fun() -> not topic_present(P1, Realm, Topic) end, 15_000),
+    ok.
+
 %%==================================================================
 %% Peer lifecycle
 %%==================================================================
@@ -162,9 +212,19 @@ start_one_peer(Case, Tag, Cert, Key, SwimOpts) ->
 %% Configure + start the application inside the peer via rpc.
 boot_station(Node, Port, Cert, Key, DataDir, SwimOpts) ->
     {ok, _} = rpc_call(Node, application, ensure_all_started,
-                       [macula_peering]),
+                       [macula]),
     ok = set_station_env(Node, Port, Cert, Key, DataDir, SwimOpts),
     set_stub_bootstrap_env(Node),
+    %% Each peer needs its OWN content store — `macula_content' falls
+    %% back to a fixed system path (`/var/lib/hecate/content') when
+    %% unset, which two peer VMs on the same machine would collide on
+    %% (and which a non-root test run can't create in the first
+    %% place). This isn't covered by `set_station_env' because
+    %% `macula_content' is a separate application, started
+    %% transitively as a `macula_station' dependency below.
+    ok = rpc_call(Node, application, set_env,
+                  [macula_content, store_dir,
+                   filename:join(DataDir, "content")]),
     {ok, _Started} = rpc_call(Node, application, ensure_all_started,
                               [macula_station]),
     ok.
@@ -182,14 +242,22 @@ set_station_env(Node, Port, Cert, Key, DataDir, _SwimOpts) ->
     ok.
 
 set_stub_bootstrap_env(Node) ->
-    %% Inject a stub tier via application env so the cascade
+    %% Inject a stub discoverer via application env so the cascade
     %% completes with at least one synthetic peer. The test stub
     %% module needs to be loadable from the peer's code path.
+    %%
+    %% Env key is `discoverers', not `tiers' — `macula_bootstrap:run/0'
+    %% (apps/macula_bootstrap/src/macula_bootstrap.erl) reads
+    %% `application:get_env(macula_bootstrap, discoverers, [])`; `tiers`
+    %% predates that rename and was silently read as unset, always
+    %% landing on `{error, no_tiers}` regardless of what this function
+    %% set. The value shape (`discoverer_spec() :: {module(), opts()}`)
+    %% is unchanged.
     Stub = macula_station_stub_tier,
     _ = ensure_loaded_on_peer(Node, Stub),
     Peer = Stub:stub_peer(<<123:256>>),
     ok = rpc_call(Node, application, set_env,
-        [macula_bootstrap, tiers, [{Stub, #{peers => [Peer]}}]]),
+        [macula_bootstrap, discoverers, [{Stub, #{peers => [Peer]}}]]),
     ok = rpc_call(Node, application, set_env,
         [macula_bootstrap, cascade_opts,
          #{min_peers => 1, timeout_ms => 2_000}]).
@@ -244,12 +312,54 @@ remote_member_state(#{node := Node}, NodeId) ->
     {ok, Swim} = rpc_call(Node, macula_station, swim, []),
     rpc_call(Node, fleet_chaos, member_state, [Swim, NodeId]).
 
+%% Register a realm + subscribe a fresh synthetic identity directly
+%% against the peer's own pubsub registry — the same two calls
+%% `hecate_pubsub_registry_tests.erl' uses, just across an RPC
+%% boundary. This is what gives the peer a real reason for its own
+%% `macula_station_peering_router' to propagate the topic outward;
+%% the synthetic identity itself is never inspected by the test, only
+%% (Realm, Topic)'s presence on the OTHER peer.
+seed_local_interest(#{node := Node}, Realm, Topic) ->
+    Reg = pubsub_registry_of(Node),
+    Kp  = rpc_call(Node, macula_identity, generate, []),
+    Sub = rpc_call(Node, macula_identity, public, [Kp]),
+    {ok, Server} = rpc_call(Node, hecate_pubsub_registry, register,
+                            [Reg, Realm, Kp]),
+    ok = rpc_call(Node, hecate_pubsub_server, subscribe,
+                  [Server, Topic, Sub]),
+    ok.
+
+%% Whether Node's own pubsub registry currently has ANY subscriber for
+%% (Realm, Topic) — true both for the seeding peer's own local
+%% interest and for a peer that learned it via wire-level SUBSCRIBE
+%% propagation.
+topic_present(#{node := Node}, Realm, Topic) ->
+    Reg = pubsub_registry_of(Node),
+    topic_present_for(rpc_call(Node, hecate_pubsub_registry, lookup, [Reg, Realm]),
+                      Node, Topic).
+
+topic_present_for({error, not_found}, _Node, _Topic) ->
+    false;
+topic_present_for({ok, Server}, Node, Topic) ->
+    lists:member(Topic, rpc_call(Node, hecate_pubsub_server, topics, [Server])).
+
+%% The registry has no registered name (Phase 2 multi-identity —
+%% every identity owns its own anonymous registry pid), so the only
+%% way to reach it is through the peer observer's own state, exactly
+%% as `macula_station_peer_observer_tests.erl' does locally. Index 5
+%% is `pubsub_registry' in `#state{}' — see that module's own record
+%% definition; `dht'=2, `swim'=3, `handler_registry'=4 precede it.
+pubsub_registry_of(Node) ->
+    {ok, ObsPid} = rpc_call(Node, macula_station, observer, []),
+    State = rpc_call(Node, sys, get_state, [ObsPid]),
+    element(5, State).
+
 %%==================================================================
 %% Generic utilities
 %%==================================================================
 
 rpc_call(Node, M, F, A) ->
-    rpc:call(Node, M, F, A, 5_000).
+    rpc:call(Node, M, F, A, 20_000).
 
 free_port() ->
     {ok, S} = gen_udp:open(0, [{reuseaddr, true}]),
