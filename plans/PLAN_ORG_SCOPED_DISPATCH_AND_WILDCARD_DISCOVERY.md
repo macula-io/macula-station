@@ -615,6 +615,33 @@ live station in `test_live/`, excluded from the default CI gate):
   wildcard-pattern) against one publisher, confirming both correct delivery
   and no over-delivery to the exact-match subscriber.
 
+## Slice 11 — NEW, found 2026-08-29: no way to verify a rollout — DONE
+
+Trying to verify slice 7/10's actual fleet rollout surfaced a real, separate gap:
+nothing about a station's mesh-facing identity revealed what code it was
+actually running. `macula_station.app.src`'s `vsn` had never been bumped once
+in this project's history (every build ever reported `"0.1.0"`); `macula_station:version/0`
+was a hardcoded literal (`"0.1.0-phase1"`); and `macula_record:read_node_record/1`
+silently dropped the `version` field the announcer's heartbeat already carried,
+so no consumer — including `hecate-stations` — could ever read a station's own
+reported build back out even if it had been real.
+
+Fixed by baking the commit SHA into the Docker image at build time (CI already
+computed it for cache-busting) and wiring it through the EXISTING heartbeat
+field end to end: macula (`read_node_record/1` now extracts `version`,
+10.13.2) → macula-station (`GIT_SHA` build-arg, `station_version()` +
+`macula_station:version/0` both read it) → hecate-stations (`station_read_model`
+captures it, `list_stations` needed no changes since it already passes the
+whole doc through).
+
+**Live-verified fleet-wide, 7/7 stations, all reporting the identical commit
+SHA `24884c398594a204cf10c3e9ac19ae7ee8c388ef`**: 4 via `hecate_stations.list_stations`
+over the mesh, 3 (falkenstein, helsinki, stockholm — absent from that
+particular read-model snapshot, a separate node_record-merge gap, not a
+rollout failure) via each station's own admin `/status` endpoint directly.
+This is also now the standing mechanism for verifying any future
+macula-station rollout — no more SSH-and-guess.
+
 ## Success criteria
 
 - [x] `org_scoped_call_reaches_only_the_targeted_org_test_` passes live — **2026-08-29**
@@ -635,6 +662,7 @@ live station in `test_live/`, excluded from the default CI gate):
 - [x] `read_model_services.md` correctly attributes the discovery ceiling — **2026-08-29**
 - [ ] hexdocs Kademlia page matches the settled, live architecture
 - [x] Second sequential `call_station` on one pool root-caused and fixed
-      (slice 10) — **2026-08-29, live-verified against real hex 10.13.1**
-- [ ] **NEW** — second sequential `call_station` on one pool root-caused and
+      (slice 10) — **2026-08-29, live-verified against real hex 10.13.1, and
+      again against the deployed fleet (all 7 stations) after the 10.13.2
+      publish and macula-station rollout**
       fixed (slice 10)
