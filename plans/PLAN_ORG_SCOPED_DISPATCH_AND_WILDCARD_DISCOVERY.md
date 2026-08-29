@@ -41,7 +41,7 @@ size. Cheap to veto.
 | 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
 | 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
 | 4 | Org capability browse (redesigned — see below) | 3 | hecate-om | **DONE, live-verified 2026-08-29 — macula 10.13.1 published, hecate-om upgraded** |
-| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **DONE, both scopes — 2026-08-29. Scope (a) station-local: macula 10.13.0. Scope (b) mesh-wide: macula 10.14.0 (`patterns/1`) + macula-station `df8f57f` (fixed a real peer-subscription bug found live — see dedicated note below), live-verified cross-station (helsinki subscriber, falkenstein publisher, correct match + no over-delivery)** |
+| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **PARTIALLY DONE — 2026-08-29. Scope (a) station-local: DONE, macula 10.13.0. Scope (b) mesh-wide: 1-hop DONE (macula 10.14.0 `patterns/1` + macula-station `df8f57f` fixed a real peer-subscription bug found live, cross-station delivery verified). 2+-hop confirmed NOT working despite converged gossip state — separate, not-yet-root-caused gap, see dedicated note below** |
 | 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
 | 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
 | 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula-station | **DONE 2026-08-29 — hexdocs page is frozen (hex 1-hour edit window, long since closed) and describes an architecture that has since moved out of macula entirely; superseded by a new, source-verified guide at `macula-station/docs/KADEMLIA_DHT_ARCHITECTURE.md` (commit `6eb874d`), not an edit to the old page** |
@@ -736,15 +736,21 @@ same link, storing both subrefs; an entry only lands in `Subs` when both
 succeed. Full suite (1096 tests) + dialyzer clean; live-verified after
 fleet redeploy (see success criteria below).
 
-**Separate, unrelated finding, NOT fixed this session**: `macula-station-nuremberg`
-restarts every several minutes on its own (`docker events` shows repeated
-`container die` (exitCode=0, clean) / `container start` pairs seconds apart,
-independent of any CI push or manual action), while every other checked
-station stayed stable for the whole session. No CRASH REPORT or exception in
-its app logs — looks healthcheck- or supervisor-driven, not an app crash.
-Confirmed NOT self-inflicted (see the `remote_console`/`q()` note below) by
-checking `RestartCount` before/after probes that omitted `q()`. Worth a
-dedicated look; out of scope here.
+**Nuremberg's apparent restart-loop — resolved, self-inflicted, not a bug.**
+Looked independent at the time (repeated clean `exitCode=0` die/start pairs
+seconds apart, no CRASH REPORT, `RestartCount` climbing even on checks that
+omitted the `remote_console` `q()` self-inflict below). Root cause found
+after the fact by cross-referencing ghcr image push timestamps against
+`docker events`: this session pushed 5 macula-station commits within about
+20 minutes while chasing the pattern-gossip fix (`2e8ec35` 15:27,
+`b5cc215`/`56c5785` 16:10, `df8f57f` 16:34 UTC). Each push triggers
+watchtower to pull and recreate every station; nuremberg happened to catch
+several of those recreates close enough together that some landed before
+the previous one had cleared its 90s healthcheck `StartPeriod`, producing
+what looked like an independent crash-loop. Confirmed resolved: the last
+push of the session (`0e26caa`, 17:08:34 UTC) triggered one clean recreate
+at 17:09:09, and nuremberg has been stable since (`RestartCount=0`, healthy,
+1h36m+ uptime at last check) — no bug to fix, no dedicated look needed.
 
 **Process note**: early attempts to diagnose the above were badly confounded
 by a genuinely separate, self-inflicted mistake — every diagnostic script
@@ -775,15 +781,18 @@ never end a piped `remote_console` script with `q()`.
       station, direct peer), `delivered_via: "direct"`, correct payload;
       a publish to `other/thing` from the same station produced zero
       events (no over-delivery). Found and fixed a real bug on the way —
-      see the dedicated note below. A 2+-hop attempt via nuremberg was
-      abandoned mid-test: nuremberg turned out to have its own pre-existing,
-      unrelated restart-loop (clean exitCode=0 restarts roughly every
-      several minutes, cause not investigated — flagged, not fixed, out of
-      this slice's scope) that kept resetting its gossip state mid-test.
-      1-hop delivery is verified live; multi-hop is the same mechanism
-      applied transitively (same reasoning the Bloom's own convergence
-      analysis already relies on) but has not itself been live-observed
-      end-to-end.
+      see the dedicated note below. 1-hop delivery is live-verified and
+      correct.
+      **2+-hop delivery does NOT work, confirmed 2026-08-29 after the fleet
+      settled** (nuremberg → falkenstein → helsinki, nuremberg is not a
+      direct peer of helsinki): `peer_patterns` at nuremberg confirmed fully
+      converged (7 matches) via direct query immediately before publishing,
+      yet the watcher on helsinki received nothing. This is a SEPARATE gap
+      from the peer-subscription bug fixed in `df8f57f` — gossip convergence
+      itself works multi-hop (confirmed directly), so the break is somewhere
+      in the intermediate hop's own forward-on-EVENT fan-out decision, not
+      in gossip propagation. Not yet root-caused. Flagged for the user
+      before spending more time on it.
 - [x] `macula_dht_lookup.erl` corrected — turned out to be a real bug (not
       just stale docs), fixed with dependency-injected dialing — **2026-08-29**
 - [x] `read_model_services.md` correctly attributes the discovery ceiling — **2026-08-29**
