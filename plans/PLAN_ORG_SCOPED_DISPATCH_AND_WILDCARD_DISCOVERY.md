@@ -1,12 +1,14 @@
 # PLAN — Org-scoped dispatch and wildcard discovery
 
-**Status:** Slices 1, 2, 6 **DONE and live-verified 2026-08-29** (see below).
-3–5 (wildcards) need the slice-3 ownership question answered first; 7–9 are
-cleanup, independently shippable. **New slice 10 added**: a real,
-previously-unknown bug found while live-testing 1–2 — tracked separately, not
-blocking, but significant.
+**Status:** ALL slices (1–11) **DONE and live-verified 2026-08-29**. Slices
+3–5 (wildcards) needed the slice-3 ownership question answered first; 7–9
+were cleanup, independently shippable. **Slice 10**: a real,
+previously-unknown bug found while live-testing 1–2. **Slice 11**: build
+version tracking, found and fixed while verifying the fleet rollout. Slice
+5(b) (mesh-wide wildcard pubsub) found and fixed a second real bug live —
+see its own section below.
 **Created:** 2026-08-29
-**Updated:** 2026-08-29 — slices 1/2/6 shipped same day.
+**Updated:** 2026-08-29 — all slices shipped same day.
 **Repos touched:** `hecate-services/hecate-om` (primary), `macula-io/macula` (SDK,
 possibly), `macula-io/macula-station` (pubsub only, slice 5) — verified below that
 most of this needs **no macula-station DHT/dispatch changes at all**, which is a
@@ -39,7 +41,7 @@ size. Cheap to veto.
 | 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
 | 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
 | 4 | Org capability browse (redesigned — see below) | 3 | hecate-om | **DONE, live-verified 2026-08-29 — macula 10.13.1 published, hecate-om upgraded** |
-| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **scope (a) DONE — station-local, macula 10.13.0. Scope (b), mesh-wide, DONE 2026-08-29 — macula 10.14.0 (`patterns/1`) published to hex.pm, macula-station's `~> 10.5` constraint resolves it with no rebar.config edit, `macula_station_bloom_exchange` gossips patterns on a new `_mesh.patterns` topic. See rescoped section below for what shipped vs. deferred (live multi-station verification not yet done)** |
+| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **DONE, both scopes — 2026-08-29. Scope (a) station-local: macula 10.13.0. Scope (b) mesh-wide: macula 10.14.0 (`patterns/1`) + macula-station `df8f57f` (fixed a real peer-subscription bug found live — see dedicated note below), live-verified cross-station (helsinki subscriber, falkenstein publisher, correct match + no over-delivery)** |
 | 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
 | 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
 | 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula-station | **DONE 2026-08-29 — hexdocs page is frozen (hex 1-hour edit window, long since closed) and describes an architecture that has since moved out of macula entirely; superseded by a new, source-verified guide at `macula-station/docs/KADEMLIA_DHT_ARCHITECTURE.md` (commit `6eb874d`), not an edit to the old page** |
@@ -717,6 +719,43 @@ persistent, unexplained absence in the first place — commit `69e2abd`
 (hecate-stations) adds a debug-level log line naming the dropped record's
 key and reason.
 
+## Slice 5b live verification, 2026-08-29 — real bug found and fixed
+
+Live-testing scope (b) against the real fleet (helsinki/falkenstein/nuremberg)
+initially found ZERO cross-station delivery, even between direct peers, even
+with `local_patterns` confirmed correct on the subscribing station. Traced it
+to `macula_station_bloom_exchange:sync_inbound_subs/1`: `subscribe_one/3`
+only ever called `macula_station_link:subscribe/4` for `<<"_mesh.bloom">>` —
+the NEW `?MESH_PATTERNS_TOPIC` (`_mesh.patterns`) was never subscribed to on
+any peer link, on any station. `broadcast_patterns/1` was correctly
+publishing on every rebuild (same shape as `broadcast_filter/1` always has),
+but into a channel nobody had a listener for — so `peer_patterns` stayed
+permanently empty everywhere, on every station, unconditionally. Fixed in
+commit `df8f57f`: `subscribe_one/3` now subscribes to both topics on the
+same link, storing both subrefs; an entry only lands in `Subs` when both
+succeed. Full suite (1096 tests) + dialyzer clean; live-verified after
+fleet redeploy (see success criteria below).
+
+**Separate, unrelated finding, NOT fixed this session**: `macula-station-nuremberg`
+restarts every several minutes on its own (`docker events` shows repeated
+`container die` (exitCode=0, clean) / `container start` pairs seconds apart,
+independent of any CI push or manual action), while every other checked
+station stayed stable for the whole session. No CRASH REPORT or exception in
+its app logs — looks healthcheck- or supervisor-driven, not an app crash.
+Confirmed NOT self-inflicted (see the `remote_console`/`q()` note below) by
+checking `RestartCount` before/after probes that omitted `q()`. Worth a
+dedicated look; out of scope here.
+
+**Process note**: early attempts to diagnose the above were badly confounded
+by a genuinely separate, self-inflicted mistake — every diagnostic script
+piped into `bin/macula_station remote_console` ended with a trailing `q().`,
+which (per Erlang's `-remsh` semantics) halts the REMOTE node, not the local
+shell. This crash-restarted the very stations being inspected on every
+single check, which is what made the initial "does the fix even work" signal
+so noisy and contradictory before this was caught via `docker events`
+timestamps. See memory `feedback_remote_console_q_kills_remote_node` —
+never end a piped `remote_console` script with `q()`.
+
 ## Success criteria
 
 - [x] `org_scoped_call_reaches_only_the_targeted_org_test_` passes live — **2026-08-29**
@@ -728,14 +767,29 @@ key and reason.
       knowing any capability name in advance (redesigned from the original
       "wildcard query against two orgs sharing a station" framing — see
       slice 4's redesign note for why) — **2026-08-29**
-- [ ] A wildcard pubsub subscription receives publishes from every matching
-      concrete topic, live, with no over-delivery to exact subscribers
-      (station-LOCAL scope — see slice 5's rescoping; not yet live-tested,
-      only unit-tested in macula's own `hecate_pubsub_tests`)
+- [x] A wildcard pubsub subscription receives publishes from every matching
+      concrete topic, live, with no over-delivery to exact subscribers —
+      **mesh-wide (scope b), live-verified 2026-08-29** against the real
+      fleet: `macula-cli pubsub watch "acme/*"` on helsinki received a
+      publish to `acme/svc.do` from falkenstein (a genuinely different
+      station, direct peer), `delivered_via: "direct"`, correct payload;
+      a publish to `other/thing` from the same station produced zero
+      events (no over-delivery). Found and fixed a real bug on the way —
+      see the dedicated note below. A 2+-hop attempt via nuremberg was
+      abandoned mid-test: nuremberg turned out to have its own pre-existing,
+      unrelated restart-loop (clean exitCode=0 restarts roughly every
+      several minutes, cause not investigated — flagged, not fixed, out of
+      this slice's scope) that kept resetting its gossip state mid-test.
+      1-hop delivery is verified live; multi-hop is the same mechanism
+      applied transitively (same reasoning the Bloom's own convergence
+      analysis already relies on) but has not itself been live-observed
+      end-to-end.
 - [x] `macula_dht_lookup.erl` corrected — turned out to be a real bug (not
       just stale docs), fixed with dependency-injected dialing — **2026-08-29**
 - [x] `read_model_services.md` correctly attributes the discovery ceiling — **2026-08-29**
-- [ ] hexdocs Kademlia page matches the settled, live architecture
+- [x] hexdocs Kademlia page matches the settled, live architecture — superseded
+      by `macula-station/docs/KADEMLIA_DHT_ARCHITECTURE.md` (the old hex page
+      is frozen, not editable — see slice 9) — **2026-08-29**
 - [x] Second sequential `call_station` on one pool root-caused and fixed
       (slice 10) — **2026-08-29, live-verified against real hex 10.13.1, and
       again against the deployed fleet (all 7 stations) after the 10.13.2
