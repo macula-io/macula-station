@@ -440,6 +440,7 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %%==================================================================
 
 handle_pubsub_frame({error, Reason}, NodeId, Frame, _S) ->
+    debug_dispatch_trace(Frame, verify_failed, Reason),
     logger:warning(
       "[pubsub_dispatcher] verify failed: ~p type=~p topic=~s "
       "realm=~s peer_node_id=~s publisher=~s has_publisher_sig=~p",
@@ -454,6 +455,7 @@ handle_pubsub_frame({error, Reason}, NodeId, Frame, _S) ->
 handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
                     #state{pubsub_registry = Reg,
                            conns_table     = CT}) ->
+    debug_dispatch_trace(Verified, verified, macula_frame:frame_type(Verified)),
     Realm = maps:get(realm, Verified),
     Topic = maps:get(topic, Verified, undefined),
     Type  = macula_frame:frame_type(Verified),
@@ -615,10 +617,12 @@ bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
 %% with `debug_fan_trace/0'. Remove once the 2+-hop gap is root-caused.
 -define(PT_FAN_TRACE, {?MODULE, debug_fan_trace}).
 -define(PT_EVENT_TRACE, {?MODULE, debug_event_trace}).
+-define(PT_DISPATCH_TRACE, {?MODULE, debug_dispatch_trace}).
 
 debug_fan_trace() ->
     {persistent_term:get(?PT_FAN_TRACE, undefined),
-     persistent_term:get(?PT_EVENT_TRACE, undefined)}.
+     persistent_term:get(?PT_EVENT_TRACE, undefined),
+     persistent_term:get(?PT_DISPATCH_TRACE, undefined)}.
 
 debug_fan_trace(<<"acme/", _/binary>> = Topic, Matched, Excluded,
                 BloomCandidates, PatternCandidates) ->
@@ -644,6 +648,18 @@ debug_event_trace(#{topic := <<"acme/", _/binary>> = Topic} = V, SourceNodeId, D
         has_publisher_sig => maps:is_key(publisher_sig, V),
         disposition => Disp, at => erlang:system_time(millisecond)});
 debug_event_trace(_Verified, _SourceNodeId, _Disp) ->
+    ok.
+
+%% Same TEMPORARY investigation — traces every pubsub frame arrival at
+%% the dispatcher for the `acme/' namespace, verified or not. Answers
+%% "did the relayed frame even reach this station's dispatcher at
+%% all" independent of the event/fan-out traces above, which only fire
+%% once a frame has already passed verify.
+debug_dispatch_trace(#{topic := <<"acme/", _/binary>> = Topic}, Kind, Detail) ->
+    persistent_term:put(?PT_DISPATCH_TRACE,
+      #{topic => Topic, kind => Kind, detail => Detail,
+        at => erlang:system_time(millisecond)});
+debug_dispatch_trace(_Frame, _Kind, _Detail) ->
     ok.
 
 %% An empty bloom result means no downstream peer is known to want this
