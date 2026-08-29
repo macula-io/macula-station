@@ -47,9 +47,6 @@
 -export([start_link/1, stop/1]).
 -export([deliver_verified/5]).
 -export([delivery_stats/0]).
-%% TEMPORARY, see debug_fan_trace/5's own moduledoc comment — remove
-%% together with the rest of the 2026-08-29 multi-hop trace.
--export([debug_fan_trace/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -440,7 +437,6 @@ code_change(_Old, S, _Extra) -> {ok, S}.
 %%==================================================================
 
 handle_pubsub_frame({error, Reason}, NodeId, Frame, _S) ->
-    debug_dispatch_trace(Frame, verify_failed, Reason),
     logger:warning(
       "[pubsub_dispatcher] verify failed: ~p type=~p topic=~s "
       "realm=~s peer_node_id=~s publisher=~s has_publisher_sig=~p",
@@ -455,7 +451,6 @@ handle_pubsub_frame({error, Reason}, NodeId, Frame, _S) ->
 handle_pubsub_frame({ok, Verified}, NodeId, _Frame,
                     #state{pubsub_registry = Reg,
                            conns_table     = CT}) ->
-    debug_dispatch_trace(Verified, verified, macula_frame:frame_type(Verified)),
     Realm = maps:get(realm, Verified),
     Topic = maps:get(topic, Verified, undefined),
     Type  = macula_frame:frame_type(Verified),
@@ -488,7 +483,6 @@ deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
 %% receiver kills further loops.
 deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     Disp = event_dedup_disposition(Verified),
-    debug_event_trace(Verified, NodeId, Disp),
     case Disp of
         drop ->
             ok;
@@ -600,67 +594,9 @@ bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
 %% unioned and deduped only at the very end, after each has had its
 %% own chance to report "found nothing".
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
-    BloomCandidates = bloom_fan_candidates(Topic, Matched, Excluded, CT),
-    PatternCandidates = pattern_fan_candidates(Topic, Matched, Excluded, CT),
-    debug_fan_trace(Topic, Matched, Excluded, BloomCandidates, PatternCandidates),
     lists:usort(
-      count_bloom_match(BloomCandidates) ++ count_pattern_match(PatternCandidates)).
-
-%% TEMPORARY diagnostic for the 2026-08-29 multi-hop wildcard pubsub
-%% investigation — scoped to the `acme/' test namespace specifically
-%% so it cannot fire on real mesh traffic (this fleet is busy enough
-%% that a counter-delta approach proved too noisy to isolate one test
-%% publish). Uses persistent_term, not logger: plain logger:info/2
-%% calls (string-format, not a report map) do not surface in this
-%% deployment's `docker logs' output at all -- confirmed against a
-%% pre-existing, known call site, not just this new one. Read back
-%% with `debug_fan_trace/0'. Remove once the 2+-hop gap is root-caused.
--define(PT_FAN_TRACE, {?MODULE, debug_fan_trace}).
--define(PT_EVENT_TRACE, {?MODULE, debug_event_trace}).
--define(PT_DISPATCH_TRACE, {?MODULE, debug_dispatch_trace}).
-
-debug_fan_trace() ->
-    {persistent_term:get(?PT_FAN_TRACE, undefined),
-     persistent_term:get(?PT_EVENT_TRACE, undefined),
-     persistent_term:get(?PT_DISPATCH_TRACE, undefined)}.
-
-debug_fan_trace(<<"acme/", _/binary>> = Topic, Matched, Excluded,
-                BloomCandidates, PatternCandidates) ->
-    persistent_term:put(?PT_FAN_TRACE,
-      #{topic => Topic, matched => hex_list(Matched),
-        excluded => hex_list(Excluded),
-        bloom_candidates => hex_list(BloomCandidates),
-        pattern_candidates => hex_list(PatternCandidates),
-        at => erlang:system_time(millisecond)});
-debug_fan_trace(_Topic, _Matched, _Excluded, _BloomCandidates, _PatternCandidates) ->
-    ok.
-
-hex_list(NodeIds) -> [short_hex(N) || N <- NodeIds].
-
-%% Same TEMPORARY 2026-08-29 investigation, same `acme/' scoping —
-%% traces the dedup disposition an inbound EVENT gets before fan-out
-%% is even attempted, so a `drop' here (vs. a `deliver' that then
-%% finds zero fan candidates) is directly distinguishable.
-debug_event_trace(#{topic := <<"acme/", _/binary>> = Topic} = V, SourceNodeId, Disp) ->
-    persistent_term:put(?PT_EVENT_TRACE,
-      #{topic => Topic, source => short_hex(SourceNodeId),
-        publisher => short_hex(maps:get(publisher, V, undefined)),
-        has_publisher_sig => maps:is_key(publisher_sig, V),
-        disposition => Disp, at => erlang:system_time(millisecond)});
-debug_event_trace(_Verified, _SourceNodeId, _Disp) ->
-    ok.
-
-%% Same TEMPORARY investigation — traces every pubsub frame arrival at
-%% the dispatcher for the `acme/' namespace, verified or not. Answers
-%% "did the relayed frame even reach this station's dispatcher at
-%% all" independent of the event/fan-out traces above, which only fire
-%% once a frame has already passed verify.
-debug_dispatch_trace(#{topic := <<"acme/", _/binary>> = Topic}, Kind, Detail) ->
-    persistent_term:put(?PT_DISPATCH_TRACE,
-      #{topic => Topic, kind => Kind, detail => Detail,
-        at => erlang:system_time(millisecond)});
-debug_dispatch_trace(_Frame, _Kind, _Detail) ->
-    ok.
+      count_bloom_match(bloom_fan_candidates(Topic, Matched, Excluded, CT))
+      ++ count_pattern_match(pattern_fan_candidates(Topic, Matched, Excluded, CT))).
 
 %% An empty bloom result means no downstream peer is known to want this
 %% topic. Legitimate at a leaf, but also what a not-yet-gossiped bloom
