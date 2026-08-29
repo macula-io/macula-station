@@ -32,18 +32,29 @@ size. Cheap to veto.
 
 ## Phase map
 
-| # | Slice | Depends on | Repo(s) |
-|---|-------|-----------|---------|
-| 1 | Org-qualified wire-level procedure names | — | hecate-om |
-| 2 | Thread key-format through resolve → dial | 1 | hecate-om |
-| 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om |
-| 3 | Shared segment/wildcard-matching primitive | — | macula and/or macula-station (decide) |
-| 4 | Composite-key wildcard capability **discovery** | 3 | hecate-om, macula (usage only) |
-| 5 | Wildcard pubsub topic **subscription** | 3 | macula-station (+ macula SDK client surface) |
-| 7 | Retire or fix `macula_dht_lookup.erl`'s stale docs | — | macula-station |
-| 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om |
-| 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula |
-| 10 | **NEW** — second sequential `call_station` on one pool fails | — | macula (likely `macula_client`'s pool/link reuse) |
+| # | Slice | Depends on | Repo(s) | Status |
+|---|-------|-----------|---------|--------|
+| 1 | Org-qualified wire-level procedure names | — | hecate-om | **DONE 2026-08-29** |
+| 2 | Thread key-format through resolve → dial | 1 | hecate-om | **DONE, live-verified** |
+| 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
+| 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
+| 4 | Composite-key wildcard capability **discovery** | 3 | hecate-om, macula (usage only) | **BLOCKED — needs macula published ≥10.13.0 to hex; hecate-om has no `_checkouts` override** |
+| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`) | **scope (a) DONE — station-local, macula 10.13.0. Scope (b), mesh-wide, not started — see rescoped section below** |
+| 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
+| 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
+| 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula | not started, deliberately deferred |
+| 10 | **NEW** — second sequential `call_station` on one pool fails | — | macula (`macula_client`'s pool/link reuse) | **DONE, live-verified 2026-08-29** |
+
+**Publish status, 2026-08-29 end of session**: macula is at **10.13.0 locally** (commits
+`1f5da74`, `8ca2863`, `97ebc1a`, plus the earlier `10.11.1` fix), hex.pm still serves
+**10.11.0**. `macula-station` and `hecate-om` both build correctly against local macula
+right now (macula-station via `_checkouts`, hecate-om NOT — see slice 4). **A hex publish
+of macula (10.13.0, or at minimum ≥10.11.1 for the ttl_ms fix) is needed before**: (a)
+hecate-om's slice 4 work can proceed, (b) any of this session's fixes take effect for a
+consumer that isn't running from this exact local checkout, (c) the demo fleet's actual
+running macula-station image reflects any of tonight's fixes — that image is built and
+deployed separately (ghcr push + watchtower), not something publishing to hex alone
+achieves.
 
 Slices 1–2 are the direct fix for the bug the live test found and should go
 first. 6 is a two-line addition to the same function 1 already touches — do it
@@ -326,29 +337,73 @@ test) resolves `realm/*/app/domain/name_v1` (any org) to *both* providers, and
 issuing more than one `find_records` round-trip per concrete/prefix segment
 combination actually present in the pattern.
 
-### Slice 5 — Wildcard pubsub topic subscription (B2)
+### Slice 5 — Wildcard pubsub topic subscription (B2) — RESCOPED 2026-08-29 after reading the real fan-out engine
 
-**What:** genuinely different from slice 4 — this is relay-side fan-out
-matching, not DHT lookup. Needs investigation into the actual current
-subscription/fan-out path (`macula-station`'s pubsub routing —
-`macula_station_route_pubsub_frames` per prior-session notes, plus whatever
-`hecate_pubsub`/`hecate_pubsub_server`/`hecate_pubsub_registry` in the `macula`
-SDK, shipped 10.11.0 this session, actually do) before designing further. At
-minimum: a subscriber registering a pattern (containing `*`) needs the
-station's topic registry to hold it as a pattern, not an exact string; on
-PUBLISH, in addition to the existing O(1) exact-match lookup, check registered
-patterns against the concrete published topic using slice 3's primitive.
-Given the number of *distinct patterns* actually registered is expected to be
-small relative to publish volume, a linear scan of registered patterns
-(bounded, not per-message-expensive at any realistic subscription count) is
-probably sufficient — don't build a trie/index for this prematurely; revisit
-only if a live test or real traffic shows it matters.
+**Read in full**: `macula-station/apps/macula_station/src/macula_station_route_pubsub_frames.erl`
+(835 lines). This is not a simple topic-string registry — it's a heavily
+torture-tested (100k-event runs, per-branch loss counters added specifically
+because "months of 'multi-hop feels flaky' produced no evidence") dispatcher
+with two DISTINCT matching mechanisms:
 
-**DONE-WHEN:** a subscriber registered on `realm/*/app/domain/name_v1`
+1. **Local exact-match**: `hecate_pubsub_registry`/`hecate_pubsub_server` —
+   subscribers directly connected to THIS station, matched by exact topic
+   string.
+2. **Cross-station transitive gossip**: `macula_station_bloom_exchange` — each
+   station gossips a **Bloom filter** summarizing the topics its downstream
+   subscribers (direct + further transitive) care about. A publish fans out
+   to peer stations whose Bloom filter tests positive for the topic, without
+   needing exact subscriber-list knowledge at every hop — this is what makes
+   the mesh scale without O(mesh-size) traffic for every publish.
+
+**The complication**: a Bloom filter tests exact-string membership via
+k hash functions — the SAME fundamental incompatibility with wildcards that a
+SHA-256 DHT key has (found in slice 4's own background research). There is no
+single string to hash for a pattern like `realm/*/app/domain/name_v1`.
+Making a wildcard subscription work **locally** (station the subscriber is
+directly connected to) is the straightforward part already scoped below.
+Making it work **mesh-wide** — a wildcard subscriber on station A correctly
+receiving a publish that originates on station C, several hops away — needs
+the Bloom-gossip layer itself to somehow represent "downstream wants anything
+matching pattern P," which a standard Bloom filter cannot do. Two honest
+options, not yet decided:
+
+- **(a) Scope wildcard subscriptions to local-only for now**: a wildcard
+  subscriber only ever sees publishes from publishers on the SAME station.
+  Real, useful, honestly documented as a limitation — NOT silently shipped as
+  if it were mesh-wide.
+- **(b) Extend the gossip protocol** to carry registered patterns alongside
+  (or instead of) the Bloom summary for topics a downstream wants via
+  wildcard — bigger, touches `macula_station_bloom_exchange`'s wire format
+  and gossip cadence, risks the performance properties that whole subsystem
+  was hard-won for (the 100k-event torture numbers in its own comments).
+
+**Recommendation**: (a) first, shipped and clearly labeled as station-local
+only, with (b) as an explicit, separately-scoped follow-up if mesh-wide
+wildcard subscription turns out to be needed in practice — don't build (b)
+speculatively against a system this performance-sensitive without a real use
+case driving it. This mirrors the plan's own smell test: ship the smaller
+thing, see if anyone needs more.
+
+**What (a) actually requires**: a subscriber registering a pattern (containing
+`*`) needs the station's LOCAL topic registry (`hecate_pubsub_registry`/
+`hecate_pubsub_server`) to hold it as a pattern, not an exact string; on a
+LOCAL publish (`deliver_typed(publish, ...)`/`deliver_typed(event, ...)`), in
+addition to the existing O(1) exact-match lookup, check registered patterns
+against the concrete published topic using `macula_topic_pattern:matches/2`
+(slice 3, already shipped in macula 10.12.0 — needs macula-station's own
+`macula` dep bumped once published). Given the number of *distinct patterns*
+actually registered is expected to be small relative to publish volume, a
+linear scan of registered patterns is probably sufficient — don't build a
+trie/index prematurely.
+
+**DONE-WHEN (scope a)**: a subscriber registered on `realm/*/app/domain/name_v1`
 receives a publish to `realm/acme/app/domain/name_v1` **and** one to
-`realm/contoso/app/domain/name_v1`, live, and a subscriber on the exact string
-still only receives its own exact topic (no regression on existing exact-match
-subscribers).
+`realm/contoso/app/domain/name_v1` from a publisher on the SAME station, live,
+and a subscriber on the exact string still only receives its own exact topic
+(no regression on existing exact-match subscribers). Explicitly test and
+document that a wildcard subscriber does NOT receive a publish that only
+reaches this station via bloom-gossip from a peer — that gap is scope (a)'s
+known, accepted boundary, not a bug to chase in this slice.
 
 ---
 
@@ -480,14 +535,17 @@ pool per call rather than one shared pool making two sequential calls,
 sidestepping the issue for what that test is actually meant to prove (org
 isolation, not connection-reuse robustness).
 
-**DONE-WHEN**: root cause identified (macula pool link-reuse logic vs.
-macula-station connection policy, or something else) and either fixed, or
-determined to be intended behavior with `hecate_om_capabilities`'s own usage
-pattern needing to change (e.g., cache/reuse the resolved `Url` per station
-rather than re-resolving and re-dialing on every call). A NEW live test
-(one pool, two sequential `call_capability` calls, no org-scoping involved at
-all — the minimal repro) should be written first, to pin this down
-independently of everything else in this plan.
+**DONE — 2026-08-29.** Root cause confirmed by reading `macula_client.erl`
+directly: `ensure_link/3` keys its link table by the literal `Station` seed
+STRING, not by the station's actual identity. Fixed via `expected_node_id`-
+based reuse on a literal-key miss (macula 10.13.1, commit `bea89e7`) — see
+its own CHANGELOG entry for the full writeup. Live-verified twice against
+`station-de-frankfurt.macula.io` via a temporary local `_checkouts/macula`
+symlink (removed after verification — hecate-om's real dependency is still
+hex `~> 10.0`, unpublished past 10.11.0 as of this session): the org-scoped
+live test now reliably passes with ONE shared consumer pool making two
+sequential `call_capability` calls, reverted from the two-pool workaround
+that shipped alongside slices 1–2.
 
 ---
 
