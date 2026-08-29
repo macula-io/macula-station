@@ -134,10 +134,10 @@
     %% stopped gossiping entirely is equally stale for both.
     peer_seen       :: #{binary() => integer()},
     %% Active subscriptions on each peer's station_link for inbound
-    %% `_mesh.bloom' events. Keyed by peer hostname so we don't
-    %% double-subscribe when peer_links reports the same connection
-    %% twice across resync ticks.
-    subs            :: #{binary() => {pid(), reference()}},
+    %% `_mesh.bloom' AND `_mesh.patterns' events (one subref each, same
+    %% link). Keyed by peer hostname so we don't double-subscribe when
+    %% peer_links reports the same connection twice across resync ticks.
+    subs            :: #{binary() => {pid(), reference(), reference()}},
     timer_ref       :: reference() | undefined,
     %% Token for an in-flight debounced rebuild. `undefined' means no
     %% rebuild is pending; any binding means a `{debounced_rebuild,
@@ -767,8 +767,9 @@ drop_stale_subs(Subs, Active) ->
 
 keep_sub(true, _Sub) ->
     true;
-keep_sub(false, {LinkPid, SubRef}) ->
-    catch macula_station_link:unsubscribe(LinkPid, SubRef),
+keep_sub(false, {LinkPid, BloomSubRef, PatternSubRef}) ->
+    catch macula_station_link:unsubscribe(LinkPid, BloomSubRef),
+    catch macula_station_link:unsubscribe(LinkPid, PatternSubRef),
     false.
 
 subscribe_new_peers(Subs, Active) ->
@@ -785,12 +786,40 @@ subscribe_peer(false, Acc, Host, LinkPid) -> subscribe_one(Acc, Host, LinkPid).
 %% not — returns `{error, unknown_call}'). The wildcard `of'
 %% clause is mandatory: `try_clause' from a missing `of' pattern
 %% is NOT caught by the `catch' below.
+%%
+%% Subscribes to BOTH `_mesh.bloom' and `_mesh.patterns' on the same
+%% link — an entry only lands in `Subs' when both succeed, so a host
+%% is either "fully wired" or absent and retried whole on the next
+%% tick. This was the actual bug behind mesh-wide wildcard pubsub
+%% never converging (found live 2026-08-29, verifying slice 5b): only
+%% `_mesh.bloom' was ever subscribed here, so `broadcast_patterns/1'
+%% published `_mesh.patterns' into a channel nobody had subscribed to
+%% receive — every station's `peer_patterns' stayed permanently empty,
+%% including a DIRECT peer of a station with an active local pattern.
 subscribe_one(Acc, Host, LinkPid) ->
-    try macula_station_link:subscribe(LinkPid, ?MESH_REALM,
-                                       <<"_mesh.bloom">>, self()) of
-        {ok, SubRef} -> Acc#{Host => {LinkPid, SubRef}};
-        _Other       -> Acc
-    catch _:_ -> Acc
+    subscribe_bloom(Acc, Host, LinkPid, subscribe_link(LinkPid, <<"_mesh.bloom">>)).
+
+subscribe_bloom(Acc, Host, LinkPid, {ok, BloomSubRef}) ->
+    subscribe_patterns(Acc, Host, LinkPid, BloomSubRef,
+                       subscribe_link(LinkPid, ?MESH_PATTERNS_TOPIC));
+subscribe_bloom(Acc, _Host, _LinkPid, _Other) ->
+    Acc.
+
+subscribe_patterns(Acc, Host, LinkPid, BloomSubRef, {ok, PatternSubRef}) ->
+    Acc#{Host => {LinkPid, BloomSubRef, PatternSubRef}};
+subscribe_patterns(Acc, _Host, LinkPid, BloomSubRef, _Other) ->
+    %% Pattern subscribe failed after bloom succeeded — roll the bloom
+    %% subscription back rather than leaving it orphaned and unretried
+    %% (an entry in `Subs' is the only thing that stops a retry on the
+    %% next tick, so a half-subscribed host must not get one).
+    catch macula_station_link:unsubscribe(LinkPid, BloomSubRef),
+    Acc.
+
+subscribe_link(LinkPid, Topic) ->
+    try macula_station_link:subscribe(LinkPid, ?MESH_REALM, Topic, self()) of
+        {ok, SubRef} -> {ok, SubRef};
+        Other        -> Other
+    catch _:_ -> {error, subscribe_failed}
     end.
 
 hostname_of(<<"quic://", Rest/binary>>) -> strip_port(Rest);
