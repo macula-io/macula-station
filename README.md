@@ -1,73 +1,177 @@
 # Macula Station
 
-**Macula V2 reference station.** Private repository. Design phase — not yet usable.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Erlang/OTP](https://img.shields.io/badge/Erlang%2FOTP-28-brightgreen)](https://www.erlang.org)
+[![Container](https://img.shields.io/badge/ghcr.io-macula--station-blue?logo=docker)](https://github.com/macula-io/macula-station/pkgs/container/macula-station)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow.svg)](https://buymeacoffee.com/rlefever)
 
-> **Renamed from `hecate-social/hecate-station`** on 2026-04-30. Repository transferred to `macula-io/macula-station`. Erlang application names follow the rename: `hecate_*` (eight in-scope sub-apps) became `macula_*`. Two transitional sub-apps (`hecate_overlay` and `hecate_realm`) keep the `hecate_` prefix until they migrate to the realm-service repository.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-station-full-dark.svg">
+    <img src="assets/macula-station-full-light.svg" alt="Macula Station" width="320">
+  </picture>
+</p>
+
+<p align="center">
+  <strong>The relay station for the Macula mesh</strong>
+</p>
+
+---
+
+## What is a station?
+
+A station is a **realm-agnostic relay** — one process, one Ed25519 identity,
+peering outbound with other stations over QUIC to form a mesh. Clients
+(the [Macula SDK](https://github.com/macula-io/macula), and anything built
+on it — daemons, apps, services) connect outbound to a station; the station
+routes their RPC calls, fans out their pub/sub events, relays their content
+transfers and streams, and answers DHT queries on their behalf. No open
+inbound ports on the client side, no VPN, no central broker any one
+operator controls.
+
+A station never joins a realm itself and holds no application data —
+realm membership and identity belong to the daemons that attach through it.
+Run one station and it's an island; give it `outbound_peers` (or let
+another station dial it) and it's part of the mesh.
+
+**What a station does, concretely:**
+
+- **DHT** — Kademlia routing table, signed TTL'd records (advertisements,
+  endpoints, presence facts), multi-round iterative lookup.
+- **SWIM-Lifeguard** liveness — direct + indirect probing, failure
+  detection, membership gossip.
+- **PubSub** — per-realm topic/subscriber registries, cross-station EVENT
+  relay (bloom-filtered fan-out so interest doesn't flood the whole mesh).
+- **RPC relay** — CALL/RESULT routing to whichever station a provider is
+  actually advertised on, including multi-hop (a call can cross two
+  stations with no direct peering edge between them).
+- **Streaming RPC relay** — the same routing for `STREAM_OPEN`/`DATA`/
+  `END`, dedicated QUIC streams per session.
+- **Content transfer** — content-addressed block/manifest store (MCID,
+  BLAKE3), chunked put/get, discovery.
+- **Overlay** (HyParView + Plumtree) — bounded partial-view membership and
+  epidemic broadcast trees, absorbed from the standalone
+  `macula-hyparview`/`macula-plumtree` packages.
+- **Bootstrap cascade** — ordered peer-discovery strategies for a station
+  joining the mesh cold.
+
+The station server itself is Erlang/OTP; it consumes the
+[Macula SDK](https://github.com/macula-io/macula) for identity, the wire
+protocol, and the QUIC transport (a Rust NIF), the same SDK every client
+uses — a station and a daemon speak the identical wire format because
+they're built on the identical codec.
 
 ---
 
 ## Status
 
-| Phase | State | Description |
-|-------|-------|-------------|
-| **Design** | ✅ Complete (2026-04-14) | ROOT + 9 Parts authored. 39 open questions tracked. |
-| **Phase 0 — Repo bootstrap** | 🏗️ In progress | This repo. Empty skeleton that compiles. |
-| **Phase 1 — Walking skeleton** | ⏳ Pending | Two stations, signed `node_record` exchange, tombstone on stop. |
-| Phase 2–8 | ⏳ Pending | See `plans/PLAN_MACULA_V2_PART7_IMPLEMENTATION.md`. |
+**In production, not versioned yet.** This has been under continuous
+development since 2026-04-14 (500+ commits) and runs live today on a real
+multi-station fleet — the DHT, SWIM, pub/sub relay, RPC relay, streaming
+relay, and content transfer are all exercised against real traffic, not
+just tests. What it does *not* have yet is a formal release line: sub-apps
+are still tagged `0.1.0`, and the deployable unit is a container image
+(`:main`/`:<sha>` off every commit, `:vX.Y.Z`/`:latest` off a real tag —
+see the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md)), not a hex package.
+If you need the exact behavior a given box is running, the image tag is
+the source of truth, not a version number in this repo.
+
+The full architecture plans (`plans/PLAN_MACULA_V2_*`) predate the current
+state and describe design intent, not current status — treat them as
+background, not as a phase tracker; there is no "Phase N" this repo is
+currently "in."
 
 ---
 
-## What is this?
+## Quick start
 
-Macula Station is the reference implementation of a **Macula V2** node. Macula is a federated relay/mesh protocol for sovereign, end-to-end-encrypted application networks. A *station* is the unit of deployment — a single process that provides identity, peering, DHT participation, SWIM liveness, source-routing, bootstrap, and overlay services to consumers of the Macula SDK.
+```bash
+docker pull ghcr.io/macula-io/macula-station:latest
+```
 
-See the architecture plans for full context:
+A station needs three things to boot: a config file, a certificate
+**derived from its own identity** (this is the part that trips people up —
+see the Deployment Guide before you improvise one), and a place to persist
+its identity and cache.
 
-- [`plans/PLAN_MACULA_V2_ROOT.md`](plans/PLAN_MACULA_V2_ROOT.md) — index + overview
-- [`plans/PLAN_MACULA_V2_PART1_FOUNDATIONS.md`](plans/PLAN_MACULA_V2_PART1_FOUNDATIONS.md) — goals, six pillars, terminology
-- [`plans/PLAN_MACULA_V2_PART2_TOPOLOGY.md`](plans/PLAN_MACULA_V2_PART2_TOPOLOGY.md) — topology + roles
-- [`plans/PLAN_MACULA_V2_PART3_DISCOVERY.md`](plans/PLAN_MACULA_V2_PART3_DISCOVERY.md) — DHT + PKARR records
-- [`plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md`](plans/PLAN_MACULA_V2_PART4_LIFECYCLE.md) — peer lifecycle + SWIM
-- [`plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md`](plans/PLAN_MACULA_V2_PART5_BOOTSTRAP.md) — bootstrap cascade
-- [`plans/PLAN_MACULA_V2_PART6_PROTOCOL.md`](plans/PLAN_MACULA_V2_PART6_PROTOCOL.md) — wire protocol
-- [`plans/PLAN_MACULA_V2_PART7_IMPLEMENTATION.md`](plans/PLAN_MACULA_V2_PART7_IMPLEMENTATION.md) — this phase plan
-- [`plans/PLAN_MACULA_V2_PART8_VERIFICATION.md`](plans/PLAN_MACULA_V2_PART8_VERIFICATION.md) — testing strategy
-- [`plans/PLAN_MACULA_V2_PART9_OPEN.md`](plans/PLAN_MACULA_V2_PART9_OPEN.md) — 39 open questions (O1–O39)
-- [`plans/THREAT_MODEL_MACULA.md`](plans/THREAT_MODEL_MACULA.md) — threat model
+```bash
+docker run --network=host \
+  -e MACULA_STATION_CONFIG=/etc/macula-station/config.json \
+  -v ./config.json:/etc/macula-station/config.json:ro \
+  -v ./certs:/certs:ro \
+  -v station_data:/var/lib/macula/station \
+  ghcr.io/macula-io/macula-station:latest
+```
+
+**Read [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) before running
+this for real** — it covers the full config schema, the certificate/identity
+bootstrap sequence (a station's cert has to be self-signed from its own
+Ed25519 key, not an arbitrary one — the wrong kind of cert boots fine and
+then silently fails every `Trust::Pinned` connection), docker-compose +
+watchtower, Podman + Quadlet, and a Kubernetes manifest.
+
+---
+
+## Architecture
+
+Nine sub-applications under one umbrella:
+
+| App | Role |
+|---|---|
+| `macula_station` | Core: server, peer/connection observer, config loader, station identity, peering router. Everything else plugs into this. |
+| `macula_dht` | Kademlia DHT — routing table, signed record storage, iterative lookup. |
+| `macula_swim` | SWIM-Lifeguard failure detector — liveness probing, membership. |
+| `macula_routing` | Path computation over the routing-table graph (Dijkstra + iterative-greedy). |
+| `macula_bootstrap` | Ordered peer-discovery cascade for cold start. |
+| `macula_content` | Content-addressed block/manifest store — MCID, BLAKE3, chunking. |
+| `macula_handler` | Station-level RPC procedure registry — local handlers + remote-advertise tracking that makes multi-hop CALL routing possible. |
+| `macula_transport` | Adapter over the SDK's `macula_quic` (Rust NIF) transport. |
+| `hecate_realm` | Transitional placeholder — realm-adjacent functionality still migrating to its own service repo. |
+
+---
+
+## Build & test
+
+```bash
+rebar3 compile
+rebar3 eunit
+```
+
+1076 tests, no CT/live-fleet dependency for the standard suite. Dialyzer is
+part of CI (`.github/workflows/ci.yml`).
+
+---
+
+## Documentation
+
+| Guide | Description |
+|---|---|
+| [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) | Config schema, the certificate/identity bootstrap, Docker + watchtower, Podman + Quadlet, Kubernetes |
+| [Cascade Investigation](docs/CASCADE_INVESTIGATION.md) | A real production incident (fleet-wide restart cascade) — root cause and fix |
+| [PubSub Resign Loop Lesson](docs/PUBSUB_RESIGN_LOOP_LESSON.md) | Why a specific warning log line is load-bearing, and what regressed four times trying to remove it |
+| [Subscribe Records Gap](docs/SUBSCRIBE_RECORDS_GAP.md) | A topic-name mismatch between SDK and station that silently broke a callback — resolved |
+| [DHT Find Flake Attempt](docs/DHT_FIND_FLAKE_ATTEMPT.md) | Two attempts at a cross-station DHT lookup flake, what the first one broke, what the second one fixed |
+| [`plans/`](plans/) | Original design documents (`PLAN_MACULA_V2_ROOT.md` onward) — architecture intent, not current-status tracking |
 
 ---
 
 ## Relationship to other repos
 
 | Repo | Role |
-|------|------|
-| `macula-io/macula` | SDK consumed by applications. V1 on `v1.x`; V2 develops on `main`. |
-| `macula-io/macula-station` (this) | Reference station server implementation. V2 only. |
-| `macula-io/macula-relay` | **Archived.** V1 codebase. Superseded by this repo. |
-| `hecate-social/hecate-daemon` | User-facing Hecate runtime. Consumes Macula SDK. |
-| `macula-io/macula-realm` | Realm server. Will consume V2 from Phase 7+. |
-
----
-
-## Build (skeleton)
-
-```
-rebar3 compile
-```
-
-Nothing runs yet. This is Phase 0 — acceptance is "empty umbrella compiles + CI green."
-
----
-
-## Operational lessons
-
-- [`docs/PUBSUB_RESIGN_LOOP_LESSON.md`](docs/PUBSUB_RESIGN_LOOP_LESSON.md) — why the `[peer_observer] pubsub frame verify failed: signature_invalid` warning is load-bearing, what four protocol-side fixes regressed, and what a Phase 2 publisher-end-to-end signature attempt needs to know. Read before touching the relay path.
-- [`docs/CASCADE_INVESTIGATION.md`](docs/CASCADE_INVESTIGATION.md) — root-cause investigation of the e2e torture cascade. Confirmed mechanism (sync `gen_server:call` from `peer_observer` to `macula_dht:observe` times out under accumulated daemon-conn state, peer_observer dies, supervisor restart drops named ETS, fleet-wide cascade). Tactical fix shipped in commit `b0340b7`; conn-aging follow-up scoped from data.
-- [`docs/SUBSCRIBE_RECORDS_GAP.md`](docs/SUBSCRIBE_RECORDS_GAP.md) — `macula:subscribe_records/3` (SDK) subscribes to `_dht.records.<type>.stored`; `macula_station_record_fanout` (substrate) publishes to `_mesh.station.announced_v1` etc. Different topics, callback never fires. Surfaced by the e2e probes `subscribe_records_local` / `subscribe_records_cross_station`. Affects DNS-over-mesh slice's cache-invalidation PM design. **RESOLVED** in macula `v4.2.9` + commit `57f4c8d`.
-- [`docs/DHT_FIND_FLAKE_ATTEMPT.md`](docs/DHT_FIND_FLAKE_ATTEMPT.md) — investigation of the cross-station DHT find ~60% flake. Attempt 1 (commit `c08ef8d`, reverted in `4bccf1c`) tried to filter daemon entries out of the routing table by observing only outbound peers; collapsed routing tables to ~3 entries each, regressed hit rate from 2/5 to 0/5. Attempt 2 (`macula_station_dht_dialer` + a multi-round Kademlia walk, `2c62e1a`/`214890f`/`2ab879b`) shipped 2026-08-20 and is verified live; a follow-on bug in the dialer itself (dropped every non-handshake frame on connections it dialed) was found and fixed 2026-08-21 in `02ba687`.
+|---|---|
+| [`macula-io/macula`](https://github.com/macula-io/macula) | The SDK every client (and this station) is built on — identity, wire protocol, QUIC transport. |
+| `macula-io/macula-station` (this) | The relay station server. |
+| `macula-io/macula-realm` | Realm identity + certificate authority service. |
+| [`macula-io/macula-demo`](https://github.com/macula-io/macula-demo) | Live example deployments, including the reference no-DNS station setup the Deployment Guide's certificate section points to. |
 
 ---
 
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE).
+
+---
+
+<p align="center">
+  <sub>Built with the BEAM</sub>
+</p>
