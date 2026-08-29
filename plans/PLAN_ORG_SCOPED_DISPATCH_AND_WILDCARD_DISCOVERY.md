@@ -41,7 +41,7 @@ size. Cheap to veto.
 | 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
 | 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
 | 4 | Org capability browse (redesigned — see below) | 3 | hecate-om | **DONE, live-verified 2026-08-29 — macula 10.13.1 published, hecate-om upgraded** |
-| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **PARTIALLY DONE — 2026-08-29. Scope (a) station-local: DONE, macula 10.13.0. Scope (b) mesh-wide: 1-hop DONE (macula 10.14.0 `patterns/1` + macula-station `df8f57f` fixed a real peer-subscription bug found live, cross-station delivery verified). 2+-hop confirmed NOT working despite converged gossip state — separate, not-yet-root-caused gap, see dedicated note below** |
+| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station, macula-go-sdk, macula-cli | **DONE, all scopes — 2026-08-29. Scope (a) station-local: macula 10.13.0. Scope (b) mesh-wide, 1-hop and 2+-hop both live-verified: macula-station `df8f57f` (peer-subscription bug), macula-go-sdk `e03abb8` (`publisher_sig`, the end-to-end signature multi-hop relay needs) + `a2365b1` (a real `Session.Close` data-loss race, found while verifying this). Three independent bugs across three repos, all real, all fixed, all confirmed via a genuine nuremberg->falkenstein->helsinki live delivery. See dedicated note below for the full chain.** |
 | 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
 | 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
 | 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula-station | **DONE 2026-08-29 — hexdocs page is frozen (hex 1-hour edit window, long since closed) and describes an architecture that has since moved out of macula entirely; superseded by a new, source-verified guide at `macula-station/docs/KADEMLIA_DHT_ARCHITECTURE.md` (commit `6eb874d`), not an edit to the old page** |
@@ -736,6 +736,67 @@ same link, storing both subrefs; an entry only lands in `Subs` when both
 succeed. Full suite (1096 tests) + dialyzer clean; live-verified after
 fleet redeploy (see success criteria below).
 
+**2+-hop delivery — two more real bugs, both in macula-go-sdk, neither in
+macula-station.** 1-hop (falkenstein publishing, helsinki subscribing
+directly to it) worked cleanly with the fix above. nuremberg → falkenstein
+→ helsinki (nuremberg not a direct peer of helsinki) did not, even with
+`peer_patterns` at nuremberg confirmed fully converged via direct query
+immediately before publishing. A station-side trace
+(`macula_station_route_pubsub_frames:debug_fan_trace/0`, added temporarily
+and since removed) showed falkenstein's fan-out candidate computation
+correctly included helsinki, but helsinki's own frame dispatch never fired
+at all — the relayed EVENT was failing signature verification before
+reaching that far. Root cause: a per-hop `signature` only verifies against
+whichever station forwarded a frame, which is only ever the origin one hop
+out — surviving further hops needs the separate end-to-end `publisher_sig`
+field, which `macula-go-sdk` had never implemented (`frame/pubsub.go`'s own
+comment: "not implemented yet"). Confirmed live (`macula-cli` doesn't
+sign correctly with `-identity`/publisher_sig anywhere) that this predates
+this session — this was a genuine, previously-unbuilt piece of the wire
+spec, not a regression.
+
+Implemented `publisher_sig` in `macula-go-sdk` (commit `e03abb8`): Ed25519
+over `(topic, realm, publisher, seq, payload)`, domain
+`"macula-v2-event-pub\0"`, ported from the Erlang reference
+(`macula_frame.erl:sign_publisher/2`) and checked byte-for-byte against a
+signature generated live from that same Erlang code — matched on the first
+try. `connection.Session.Publish` now attaches it automatically, matching
+the Erlang SDK's own default (`pubsub_emit_publisher_sig`, true since
+macula 4.6.0).
+
+That alone did not fix live delivery — publishing still silently vanished,
+even for the simple 1-hop case that had worked minutes earlier. Chased what
+looked like a native NIF crash in the Erlang CBOR decoder (a real scare:
+`rebar3 shell --eval` was printing nothing and terminating on ANY input,
+including a bare `io:format` + `init:stop()` — a tooling artifact in this
+environment, not a real crash; a proper `rebar3 eunit` test proved both the
+old and new Go-encoded frame shapes decode perfectly against the real
+Erlang decoder). The actual cause: `Session.Close`'s `CloseWithError` is
+abrupt and doesn't wait for outstanding stream data to be delivered;
+quic-go's `Stream.Write`/`Close` both just queue data for a background
+sender and return before it's on the wire. A PUBLISH sent immediately
+before Close — exactly the shape every one-shot CLI command uses — could
+lose that race. A manually inserted delay before `Close` fixed it every
+time, confirming the diagnosis. This bug is NOT specific to `publisher_sig`
+or to PUBLISH; the larger publisher_sig-carrying frame just widened an
+existing timing window enough to hit it consistently instead of
+intermittently. Fixed in `macula-go-sdk` commit `a2365b1`: `Session.Close`
+now closes the stream gracefully and gives quic-go's background sender a
+bounded 250ms window (mirroring the Erlang reference's own bounded
+`draining` state, `macula_peering.erl`'s 5s upper bound) before hard-closing
+the connection. `TestLivePublishSurvivesImmediateClose`, a new live
+regression test using two independent sessions specifically so the
+publisher's `Close` isn't incidentally delayed by anything the subscriber
+does, is the test that would have caught this — the existing
+`TestLivePubSubRoundTrip` couldn't, because it keeps reading (and blocking)
+on the same session that published, so its own deferred `Close` never runs
+early enough to race.
+
+`macula-cli` bumped to pick up both fixes (`584e15f` then `7107cf1`), no
+CLI-side code change needed either time. Final live test, clean: nuremberg
+→ falkenstein → helsinki delivery confirmed, `delivered_via: "direct"`,
+correct payload, and a same-run non-matching publish produced zero events.
+
 **Nuremberg's apparent restart-loop — resolved, self-inflicted, not a bug.**
 Looked independent at the time (repeated clean `exitCode=0` die/start pairs
 seconds apart, no CRASH REPORT, `RestartCount` climbing even on checks that
@@ -773,26 +834,17 @@ never end a piped `remote_console` script with `q()`.
       knowing any capability name in advance (redesigned from the original
       "wildcard query against two orgs sharing a station" framing — see
       slice 4's redesign note for why) — **2026-08-29**
-- [~] A wildcard pubsub subscription receives publishes from every matching
+- [x] A wildcard pubsub subscription receives publishes from every matching
       concrete topic, live, with no over-delivery to exact subscribers —
-      **1-hop DONE, 2+-hop NOT working — 2026-08-29** against the real
-      fleet: `macula-cli pubsub watch "acme/*"` on helsinki received a
-      publish to `acme/svc.do` from falkenstein (a genuinely different
-      station, direct peer), `delivered_via: "direct"`, correct payload;
-      a publish to `other/thing` from the same station produced zero
-      events (no over-delivery). Found and fixed a real bug on the way —
-      see the dedicated note below. 1-hop delivery is live-verified and
-      correct.
-      **2+-hop delivery does NOT work, confirmed 2026-08-29 after the fleet
-      settled** (nuremberg → falkenstein → helsinki, nuremberg is not a
-      direct peer of helsinki): `peer_patterns` at nuremberg confirmed fully
-      converged (7 matches) via direct query immediately before publishing,
-      yet the watcher on helsinki received nothing. This is a SEPARATE gap
-      from the peer-subscription bug fixed in `df8f57f` — gossip convergence
-      itself works multi-hop (confirmed directly), so the break is somewhere
-      in the intermediate hop's own forward-on-EVENT fan-out decision, not
-      in gossip propagation. Not yet root-caused. Flagged for the user
-      before spending more time on it.
+      **DONE, 1-hop AND 2+-hop, 2026-08-29**, against the real fleet:
+      `macula-cli pubsub watch "acme/*"` on helsinki received a publish to
+      `acme/svc.do` from **nuremberg** (2+ hops away via falkenstein, not a
+      direct peer of helsinki), `delivered_via: "direct"`, correct payload;
+      a same-run publish to `other/thing` produced zero events (no
+      over-delivery). Three independent, real bugs found and fixed to get
+      here — see the dedicated note below for the full chain. 1-hop was
+      confirmed working first; 2+-hop needed two more fixes in
+      macula-go-sdk before it did too.
 - [x] `macula_dht_lookup.erl` corrected — turned out to be a real bug (not
       just stale docs), fixed with dependency-injected dialing — **2026-08-29**
 - [x] `read_model_services.md` correctly attributes the discovery ceiling — **2026-08-29**
