@@ -483,6 +483,7 @@ deliver_typed(publish, Realm, NodeId, Verified, Reg, CT) ->
 %% receiver kills further loops.
 deliver_typed(event, Realm, NodeId, Verified, Reg, CT) ->
     Disp = event_dedup_disposition(Verified),
+    debug_event_trace(Verified, NodeId, Disp),
     case Disp of
         drop ->
             ok;
@@ -594,9 +595,40 @@ bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
 %% unioned and deduped only at the very end, after each has had its
 %% own chance to report "found nothing".
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
+    BloomCandidates = bloom_fan_candidates(Topic, Matched, Excluded, CT),
+    PatternCandidates = pattern_fan_candidates(Topic, Matched, Excluded, CT),
+    debug_fan_trace(Topic, Matched, Excluded, BloomCandidates, PatternCandidates),
     lists:usort(
-      count_bloom_match(bloom_fan_candidates(Topic, Matched, Excluded, CT))
-      ++ count_pattern_match(pattern_fan_candidates(Topic, Matched, Excluded, CT))).
+      count_bloom_match(BloomCandidates) ++ count_pattern_match(PatternCandidates)).
+
+%% TEMPORARY diagnostic for the 2026-08-29 multi-hop wildcard pubsub
+%% investigation — scoped to the `acme/' test namespace specifically
+%% so it cannot fire on real mesh traffic (this fleet is busy enough
+%% that a counter-delta approach proved too noisy to isolate one test
+%% publish). Remove once the 2+-hop gap is root-caused.
+debug_fan_trace(<<"acme/", _/binary>> = Topic, Matched, Excluded,
+                BloomCandidates, PatternCandidates) ->
+    logger:info(
+      "[fan_trace] topic=~s matched=~p excluded=~p bloom_candidates=~p "
+      "pattern_candidates=~p",
+      [Topic, hex_list(Matched), hex_list(Excluded),
+       hex_list(BloomCandidates), hex_list(PatternCandidates)]);
+debug_fan_trace(_Topic, _Matched, _Excluded, _BloomCandidates, _PatternCandidates) ->
+    ok.
+
+hex_list(NodeIds) -> [short_hex(N) || N <- NodeIds].
+
+%% Same TEMPORARY 2026-08-29 investigation, same `acme/' scoping —
+%% traces the dedup disposition an inbound EVENT gets before fan-out
+%% is even attempted, so a `drop' here (vs. a `deliver' that then
+%% finds zero fan candidates) is directly distinguishable.
+debug_event_trace(#{topic := <<"acme/", _/binary>> = Topic} = V, SourceNodeId, Disp) ->
+    logger:info(
+      "[event_trace] topic=~s source=~s publisher=~s has_publisher_sig=~p disposition=~p",
+      [Topic, short_hex(SourceNodeId), short_hex(maps:get(publisher, V, undefined)),
+       maps:is_key(publisher_sig, V), Disp]);
+debug_event_trace(_Verified, _SourceNodeId, _Disp) ->
+    ok.
 
 %% An empty bloom result means no downstream peer is known to want this
 %% topic. Legitimate at a leaf, but also what a not-yet-gossiped bloom
