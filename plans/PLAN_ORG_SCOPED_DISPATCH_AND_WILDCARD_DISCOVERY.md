@@ -693,6 +693,30 @@ rollout failure) via each station's own admin `/status` endpoint directly.
 This is also now the standing mechanism for verifying any future
 macula-station rollout — no more SSH-and-guess.
 
+**Node_record-merge gap investigated and closed, 2026-08-29 — not a bug.**
+Found `hecate-stations` actually running on `beam03.lab` (not on the demo
+fleet itself; deployed separately, seeded via `station-de-frankfurt.macula.io`,
+consumes mesh-wide DHT records regardless of which realm it authenticates
+as, per `hecate_om/CLAUDE.md`'s "realm joins mesh, not stations"). Drove its
+live node directly via `remote_console` (NOT `eval` — that boots a
+throwaway instance against a release, see
+`reference_elixir_release_eval_vs_rpc`) and confirmed: `find_records_by_type/2`
+called fresh does find every station's `node_record`/`station_endpoint`,
+including falkenstein/helsinki/stockholm; one caught a record mid-flight
+right at its expiry boundary (`macula_record:verify/1` returned
+`{error, expired}`), and a second query moments later found the same
+station's record `valid` again. A follow-up read-model dump minutes later
+showed all 3 present with correct hostnames. This is eventual-consistency
+convergence in a snapshot-then-subscribe design (`ingest_node_records`'s own
+moduledoc names the pattern) — the announcer refreshes at 75% of its 10-min
+TTL, so worst case for a station to reappear after being caught mid-refresh
+is one refresh interval, not a permanent gap. **Real, fixed defect found
+along the way**: `ingest_node_records.erl` swallowed every `verify/1`
+failure with zero logging, which is what made this benign race look like a
+persistent, unexplained absence in the first place — commit `69e2abd`
+(hecate-stations) adds a debug-level log line naming the dropped record's
+key and reason.
+
 ## Success criteria
 
 - [x] `org_scoped_call_reaches_only_the_targeted_org_test_` passes live — **2026-08-29**
