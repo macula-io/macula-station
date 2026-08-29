@@ -39,10 +39,10 @@ size. Cheap to veto.
 | 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
 | 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
 | 4 | Org capability browse (redesigned — see below) | 3 | hecate-om | **DONE, live-verified 2026-08-29 — macula 10.13.1 published, hecate-om upgraded** |
-| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`) | **scope (a) DONE — station-local, macula 10.13.0. Scope (b), mesh-wide, not started — see rescoped section below** |
+| 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`), macula-station | **scope (a) DONE — station-local, macula 10.13.0. Scope (b), mesh-wide, DONE 2026-08-29 — macula 10.14.0 (`patterns/1`) published to hex.pm, macula-station's `~> 10.5` constraint resolves it with no rebar.config edit, `macula_station_bloom_exchange` gossips patterns on a new `_mesh.patterns` topic. See rescoped section below for what shipped vs. deferred (live multi-station verification not yet done)** |
 | 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
 | 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
-| 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula | not started, deliberately deferred |
+| 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula-station | **DONE 2026-08-29 — hexdocs page is frozen (hex 1-hour edit window, long since closed) and describes an architecture that has since moved out of macula entirely; superseded by a new, source-verified guide at `macula-station/docs/KADEMLIA_DHT_ARCHITECTURE.md` (commit `6eb874d`), not an edit to the old page** |
 | 10 | **NEW** — second sequential `call_station` on one pool fails | — | macula (`macula_client`'s pool/link reuse) | **DONE, live-verified 2026-08-29** |
 
 **Publish status, 2026-08-29, updated**: macula **10.13.1 published to hex.pm** (confirmed
@@ -432,6 +432,57 @@ and a subscriber on the exact string still only receives its own exact topic
 document that a wildcard subscriber does NOT receive a publish that only
 reaches this station via bloom-gossip from a peer — that gap is scope (a)'s
 known, accepted boundary, not a bug to chase in this slice.
+
+**Scope (b) — what actually shipped, 2026-08-29:**
+
+Went with option (b) from the two above, decided by direct instruction rather
+than re-litigating the tradeoff — the "needs a real use case" caveat had
+already been satisfied by having this concrete slice in hand.
+
+- **New `patterns/1` export** on `hecate_pubsub`/`hecate_pubsub_server`
+  (macula 10.14.0, published to hex.pm) — the same list `subscribe/3` was
+  already building locally for scope (a), just handed out separately from
+  `topics/1`.
+- **Patterns are NOT folded into the Bloom.** A Bloom filter can only test
+  exact-string membership; a `*`-bearing pattern can't be usefully
+  compressed into one. Instead gossiped as a raw set of pattern strings
+  (`term_to_binary/1`) on a brand new `_mesh.patterns` topic — completely
+  separate wire topic, state fields, ETS mirror table
+  (`macula_station_peer_patterns`), and delivery counter
+  (`?CTR_NO_PATTERN_MATCH`) from the existing Bloom machinery in
+  `macula_station_bloom_exchange`. Reuses the SAME rebuild tick (30s),
+  debounce (2s), and peer-staleness TTL (600s) — same `peer_seen` clock,
+  since a peer that stopped gossiping is equally stale for both channels.
+- **Matching is O(patterns) per publish** (`macula_topic_pattern:matches/2`
+  against each gossiped pattern), not O(1) like the Bloom — accepted, since
+  the number of distinct patterns actually registered mesh-wide is expected
+  to stay small, same assumption the scope-(a) design already made about
+  local pattern counts.
+- **Fan-out**: `macula_station_route_pubsub_frames:bloom_fan_extras_for_topic/4`
+  now unions candidates from both channels (bloom-fan ∪ pattern-fan),
+  deduped, each independently counted so "no bloom match" and "no pattern
+  match" never conflate into one signal — the module's own established
+  discipline (see `?CTR_UNAUTH_EVENT`/`?CTR_UNAUTH_ORIGIN`'s comment for the
+  precedent this follows).
+- **Security**: the `_mesh.patterns` payload is attacker-influenceable wire
+  data from a peer station, decoded with `binary_to_term(_, [safe])` (no new
+  atoms, no funs/pids) inside try/catch, verified with a dedicated test that
+  a malformed/hostile payload is dropped, not crashed, and never poisons
+  `peer_patterns`.
+- **Tests**: 10 new cases in `macula_station_bloom_exchange_tests.erl`
+  (merge/union semantics, debounce scheduling on peer-pattern change and on
+  inbound `_mesh.patterns` events, the malformed-payload safety property,
+  `peer_patterns/1` + `pattern_matches_ets/1` end-to-end) and a new
+  `macula_station_route_pubsub_frames_tests.erl` (this module previously had
+  ZERO test coverage — scoped narrowly to the new bloom-fan/pattern-fan union
+  and its independent counters, not a wholesale backfill). Full macula-station
+  suite (1096 tests) and dialyzer both clean; macula SDK suite (1618 tests,
+  one known-flaky `call_stream` timing test excluded, passes in isolation)
+  and dialyzer both clean.
+- **NOT done**: live multi-station verification (the fleet-level check this
+  session used for the org-dispatch and connection-reuse fixes earlier) has
+  not been run against the real demo fleet yet. Unit/property coverage only
+  so far.
 
 ---
 

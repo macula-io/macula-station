@@ -14,6 +14,25 @@
 %%% The peering forwarder consults `peer_blooms/1' to skip publishes
 %%% to peers whose filter doesn't match — preventing the cross-relay
 %%% flooding that would otherwise hit O(N^2) topics × peers.
+%%%
+%%% == Wildcard patterns (2026-08-29) — a SEPARATE gossip, not folded
+%%% into the Bloom ==
+%%%
+%%% A Bloom filter tests exact-string membership; a `*'-bearing pattern
+%%% cannot be usefully summarized into one (see `hecate_pubsub''s own
+%%% moduledoc). Patterns are expected to be FEW relative to exact
+%%% topics — no station is expected to accumulate thousands of
+%%% wildcard subscriptions the way it might exact ones — so instead of
+%%% inventing a pattern-aware Bloom variant, the raw pattern SET
+%%% (`hecate_pubsub_server:patterns/1', transitively unioned with every
+%%% peer's own gossiped set, same shape as the Bloom merge) is gossiped
+%%% directly on its own `_mesh.patterns' topic, on the SAME rebuild
+%%% tick and debounce as the Bloom. `pattern_matches_ets/1' is the
+%%% publish-time counterpart to `peer_matches_ets/1': for a concrete
+%%% topic, which peers (by NodeId) hold a pattern that matches it —
+%%% checked via `macula_topic_pattern:matches/2' per pattern, not a
+%%% single Bloom test, which is the acceptable cost of "few patterns,
+%%% checked rarely" the design leans on.
 -module(macula_station_bloom_exchange).
 -behaviour(gen_server).
 
@@ -23,6 +42,8 @@
          notify_local_change/1,
          get_local_bloom/1, peer_blooms/1, peer_matches/2,
          peer_matches_ets/1]).
+-export([receive_peer_patterns/3, get_local_patterns/1, peer_patterns/1,
+         pattern_matches_ets/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -35,6 +56,20 @@
 %% a per-station bottleneck under sustained pubsub load. Same
 %% pattern as `macula_station_peer_observer_conns' (commit d0f0c8a).
 -define(PEER_BLOOMS_TABLE, macula_station_peer_blooms).
+
+%% Same ETS-bypass shape as ?PEER_BLOOMS_TABLE, for patterns. Kept as a
+%% SEPARATE table (not folded into the same rows) since the two are
+%% independently sized, independently gossiped, and a consumer wanting
+%% only exact-match Bloom fan-out (the overwhelmingly common case)
+%% should not pay for scanning pattern entries it never needed.
+-define(PEER_PATTERNS_TABLE, macula_station_peer_patterns).
+
+%% Wire topic for pattern gossip — deliberately separate from
+%% `_mesh.bloom' (see moduledoc): a fixed-size Bloom binary and a
+%% variable-length pattern list are different payload shapes, and
+%% mixing them would break every existing `_mesh.bloom' consumer's
+%% `byte_size(Bin) =:= 1024' assumption.
+-define(MESH_PATTERNS_TOPIC, <<"_mesh.patterns">>).
 
 %% Push-on-change debounce. When a peer's bloom CHANGES (new publisher
 %% or a different filter from the same publisher), schedule an
@@ -91,7 +126,12 @@
     identity        :: macula_identity:key_pair(),
     local_bloom     :: binary(),
     peer_blooms     :: #{binary() => binary()},
-    %% Key => last time we saw this peer's bloom (monotonic ms).
+    local_patterns  :: [binary()],
+    peer_patterns   :: #{binary() => [binary()]},
+    %% Key => last time we saw this peer's bloom OR pattern set
+    %% (monotonic ms) — ONE staleness clock for both, since they are
+    %% gossiped on the same tick from the same peer; a peer that has
+    %% stopped gossiping entirely is equally stale for both.
     peer_seen       :: #{binary() => integer()},
     %% Active subscriptions on each peer's station_link for inbound
     %% `_mesh.bloom' events. Keyed by peer hostname so we don't
@@ -194,6 +234,54 @@ peer_matches_ets(Topic) when is_binary(Topic) ->
         error:badarg -> []
     end.
 
+%% @doc Cache an incoming peer pattern set. Called by whatever handler
+%% routes inbound `_mesh.patterns' events to this manager — see
+%% `receive_peer_bloom/3', same shape.
+-spec receive_peer_patterns(pid(), binary(), [binary()]) -> ok.
+receive_peer_patterns(Pid, PeerHostname, Patterns)
+  when is_binary(PeerHostname), is_list(Patterns) ->
+    gen_server:cast(Pid, {peer_patterns, PeerHostname, Patterns}).
+
+%% @doc Snapshot of the current local pattern set.
+-spec get_local_patterns(pid()) -> [binary()].
+get_local_patterns(Pid) ->
+    try gen_server:call(Pid, get_local_patterns, 500)
+    catch _:_ -> []
+    end.
+
+%% @doc Snapshot of all known peer pattern sets.
+-spec peer_patterns(pid()) -> #{binary() => [binary()]}.
+peer_patterns(Pid) ->
+    try gen_server:call(Pid, peer_patterns, 500)
+    catch _:_ -> #{}
+    end.
+
+%% @doc ETS-bypass: peer NodeIds holding a pattern that matches `Topic'.
+%% The pattern-fan counterpart to `peer_matches_ets/1' — see moduledoc
+%% for why this is a per-pattern `macula_topic_pattern:matches/2' scan
+%% rather than a single Bloom test, and why that is an acceptable cost.
+%% Same transitive-reach caveat as `peer_matches_ets/1': callers MUST
+%% intersect with their direct-peer conn set before sending.
+-spec pattern_matches_ets(binary()) -> [<<_:256>>].
+pattern_matches_ets(Topic) when is_binary(Topic) ->
+    TopicSegments = binary:split(Topic, <<"/">>, [global]),
+    try ets:tab2list(?PEER_PATTERNS_TABLE) of
+        Entries ->
+            [NodeId
+             || {NodeId, Patterns} <- Entries,
+                is_list(Patterns),
+                lists:any(fun(P) -> pattern_matches(P, TopicSegments) end,
+                         Patterns)]
+    catch
+        error:badarg -> []
+    end.
+
+pattern_matches(Pattern, TopicSegments) when is_binary(Pattern) ->
+    macula_topic_pattern:matches(binary:split(Pattern, <<"/">>, [global]),
+                                 TopicSegments);
+pattern_matches(_NotABinary, _TopicSegments) ->
+    false.
+
 %% @doc Live filter saturation. `count_bits_set/1' and
 %% `estimated_elements/1' have been exported from `macula_station_bloom'
 %% all along and called NOWHERE in this application, so the only fill
@@ -237,11 +325,14 @@ from_bin(Bin) -> macula_station_bloom:from_binary(Bin).
 init(#{pubsub_registry := Reg, identity := Kp}) ->
     process_flag(trap_exit, true),
     ensure_peer_blooms_table(),
+    ensure_peer_patterns_table(),
     State = #state{
         pubsub_registry = Reg,
         identity        = Kp,
         local_bloom     = empty_bloom_bin(),
         peer_blooms     = #{},
+        local_patterns  = [],
+        peer_patterns   = #{},
         peer_seen       = #{},
         subs            = #{},
         debounce_ref    = undefined
@@ -261,6 +352,16 @@ ensure_peer_blooms_table() ->
             ?PEER_BLOOMS_TABLE
     end.
 
+%% Same idempotent-recreate shape as `ensure_peer_blooms_table/0'.
+ensure_peer_patterns_table() ->
+    case ets:whereis(?PEER_PATTERNS_TABLE) of
+        undefined ->
+            ets:new(?PEER_PATTERNS_TABLE,
+                    [named_table, public, set, {read_concurrency, true}]);
+        _ ->
+            ?PEER_PATTERNS_TABLE
+    end.
+
 handle_call(get_local_bloom, _From, #state{local_bloom = LB} = S) ->
     {reply, LB, S};
 handle_call(peer_blooms, _From, #state{peer_blooms = PB} = S) ->
@@ -276,6 +377,10 @@ handle_call({peer_matches, Topic}, _From, #state{peer_blooms = PB} = S) ->
                   macula_station_bloom:check(
                     Topic, macula_station_bloom:from_binary(BloomBin))],
     {reply, Matches, S};
+handle_call(get_local_patterns, _From, #state{local_patterns = LP} = S) ->
+    {reply, LP, S};
+handle_call(peer_patterns, _From, #state{peer_patterns = PP} = S) ->
+    {reply, PP, S};
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
@@ -285,6 +390,11 @@ handle_cast({peer_bloom, Host, BloomBin}, #state{peer_blooms = PB} = S)
   when byte_size(BloomBin) =:= 1024 ->
     {noreply, record_peer_bloom(Host, BloomBin, PB, S)};
 handle_cast({peer_bloom, _, _}, S) ->
+    {noreply, S};
+handle_cast({peer_patterns, Host, Patterns}, #state{peer_patterns = PP} = S)
+  when is_list(Patterns) ->
+    {noreply, record_peer_patterns(Host, Patterns, PP, S)};
+handle_cast({peer_patterns, _, _}, S) ->
     {noreply, S};
 handle_cast(local_change, S) ->
     %% Cheap to schedule even if topics haven't actually changed
@@ -338,8 +448,50 @@ handle_info({macula_event, _SubRef, <<"_mesh.bloom">>, _Payload, _Meta}, S) ->
     %% Missing publisher field, wrong-sized payload, or other malformed
     %% event — drop silently.
     {noreply, S};
+%% `_mesh.patterns' — same publisher-keyed, self-echo-dropping shape as
+%% `_mesh.bloom' above, decoding the variable-length payload instead of
+%% pattern-matching a fixed size.
+handle_info({macula_event, _SubRef, ?MESH_PATTERNS_TOPIC, Payload,
+             #{publisher := Publisher}},
+            #state{identity = Kp, peer_patterns = PP} = S)
+  when is_binary(Payload), is_binary(Publisher), byte_size(Publisher) =:= 32 ->
+    case Publisher =:= macula_identity:public(Kp) of
+        true  -> {noreply, S};
+        false -> on_decoded_patterns(safe_decode_patterns(Payload),
+                                     Publisher, PP, S)
+    end;
+handle_info({macula_event, _SubRef, ?MESH_PATTERNS_TOPIC, _Payload, _Meta}, S) ->
+    {noreply, S};
 handle_info(_Info, S) ->
     {noreply, S}.
+
+on_decoded_patterns({ok, Patterns}, Publisher, PP, S) ->
+    {noreply, record_peer_patterns(Publisher, Patterns, PP, S)};
+on_decoded_patterns({error, _Reason}, _Publisher, _PP, S) ->
+    {noreply, S}.
+
+%% try/catch deviation (see this repo's CLAUDE.md): `Payload' is
+%% attacker-influenceable wire data from a peer station, not a value
+%% this process constructed — `binary_to_term/2' genuinely raises on
+%% malformed input, and there is no pattern-match substitute for
+%% "parse this variable-length blob" the way `_mesh.bloom' can lean on
+%% a fixed `byte_size =:= 1024' guard. `[safe]' additionally refuses to
+%% create new atoms or reconstruct funs/pids from the wire, so a
+%% malicious peer cannot use this path to grow the atom table.
+safe_decode_patterns(Payload) ->
+    try binary_to_term(Payload, [safe]) of
+        Patterns -> validated_patterns(Patterns)
+    catch
+        _:_ -> {error, undecodable}
+    end.
+
+validated_patterns(Patterns) when is_list(Patterns) ->
+    case lists:all(fun is_binary/1, Patterns) of
+        true  -> {ok, Patterns};
+        false -> {error, not_all_binaries}
+    end;
+validated_patterns(_NotAList) ->
+    {error, not_a_list}.
 
 terminate(_Reason, _S) -> ok.
 
@@ -359,10 +511,23 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %% would collapse to local-only, killing transitive interest with no crash and
 %% no log. Same for the `peer_blooms/1' accessor's `#{binary() => binary()}'
 %% contract. Keeping the stored shape untouched keeps both correct.
+%% Also evicts stale entries from `peer_patterns' -- same `peer_seen'
+%% clock (see that field's own comment: gossiped together, equally
+%% stale together).
 evict_stale_peer_blooms(#state{peer_blooms = PB, peer_seen = Seen} = S) ->
     Cutoff = now_ms() - ?PEER_BLOOM_TTL_MS,
     Stale  = [K || K <- maps:keys(PB), maps:get(K, Seen, 0) < Cutoff],
-    evicted(Stale, S).
+    evicted(Stale, evict_stale_peer_patterns(Cutoff, S)).
+
+evict_stale_peer_patterns(Cutoff, #state{peer_patterns = PP, peer_seen = Seen} = S) ->
+    Stale = [K || K <- maps:keys(PP), maps:get(K, Seen, 0) < Cutoff],
+    evicted_patterns(Stale, S).
+
+evicted_patterns([], S) ->
+    S;
+evicted_patterns(Stale, #state{peer_patterns = PP} = S) ->
+    [catch ets:delete(?PEER_PATTERNS_TABLE, K) || K <- Stale],
+    S#state{peer_patterns = maps:without(Stale, PP)}.
 
 evicted([], S) ->
     S;
@@ -375,7 +540,8 @@ evicted(Stale, #state{peer_blooms = PB, peer_seen = Seen} = S) ->
 
 now_ms() -> erlang:monotonic_time(millisecond).
 
-do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB} = S) ->
+do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB,
+                  peer_patterns = PP} = S) ->
     %% Local bloom = topics this station's pubsub_registry holds
     %% subscribers for. Direct interest only.
     Topics = safe_topics(Reg),
@@ -401,7 +567,14 @@ do_rebuild(#state{pubsub_registry = Reg, peer_blooms = PB} = S) ->
     %% (the "I subscribed here, watch it propagate" demo). Bandwidth
     %% is +1KB per rebuild per station — negligible.
     broadcast_local_filter(LocalBin),
-    S#state{local_bloom = LocalBin}.
+    %% Same transitive-union shape as the bloom above, just a set
+    %% union instead of a bitwise OR — see moduledoc for why patterns
+    %% are gossiped raw rather than Bloom-summarized. Same loop-kill
+    %% (event_dedup) and convergence reasoning applies identically.
+    LocalPatterns = safe_patterns(Reg),
+    OutgoingPatterns = merge_patterns_with_peers(LocalPatterns, PP),
+    broadcast_patterns(OutgoingPatterns),
+    S#state{local_bloom = LocalBin, local_patterns = LocalPatterns}.
 
 %% Bitwise-OR the local bloom with every peer bloom we've cached.
 %% Both inputs are 1024-byte filters; `macula_station_bloom:merge/2'
@@ -418,6 +591,18 @@ merge_with_peers(LocalBin, PeerBlooms) ->
                 Acc
         end, Local, PeerBlooms),
     macula_station_bloom:to_binary(Merged).
+
+%% Set-union equivalent of `merge_with_peers/2' for patterns — local
+%% patterns OR every peer's gossiped set, deduped. No 1024-byte shape
+%% to guard on, so malformed peer entries are guarded structurally
+%% instead (a non-list-of-binaries never got stored — see
+%% `record_peer_patterns/4' and `validated_patterns/1').
+merge_patterns_with_peers(LocalPatterns, PeerPatterns) when map_size(PeerPatterns) =:= 0 ->
+    lists:usort(LocalPatterns);
+merge_patterns_with_peers(LocalPatterns, PeerPatterns) ->
+    lists:usort(
+      lists:foldl(fun(Peer, Acc) -> Peer ++ Acc end,
+                 LocalPatterns, maps:values(PeerPatterns))).
 
 %% Union of every locally-registered realm's topic set. The bloom is
 %% used by the cross-station forwarder to decide "does this peer care
@@ -449,6 +634,30 @@ topics_for_lookup({ok, Server}) ->
 topics_for_lookup(_) ->
     [].
 
+%% Same realm-iteration shape as `safe_topics/1', reading each realm's
+%% registered PATTERNS instead of its exact topics. Same realm-blind
+%% reasoning applies (see that function's own comment): a station's
+%% outgoing pattern gossip must cover every local realm's wildcard
+%% subscribers, not just the mesh realm.
+safe_patterns(Reg) ->
+    Realms = try hecate_pubsub_registry:list_realms(Reg)
+             catch _:_ -> []
+             end,
+    lists:flatmap(fun(Realm) -> patterns_for_realm(Reg, Realm) end, Realms).
+
+patterns_for_realm(Reg, Realm) ->
+    Lookup = try hecate_pubsub_registry:lookup(Reg, Realm)
+             catch _:_ -> error
+             end,
+    patterns_for_lookup(Lookup).
+
+patterns_for_lookup({ok, Server}) ->
+    try hecate_pubsub_server:patterns(Server)
+    catch _:_ -> []
+    end;
+patterns_for_lookup(_) ->
+    [].
+
 %% Broadcast `_mesh.bloom' to every active outbound station_link.
 %% No-op when no live connections — peer caches are updated on the
 %% next rebuild tick once outbound dialers reconnect.
@@ -476,6 +685,23 @@ broadcast_local_filter(LocalBin) ->
       Conns),
     ok.
 
+%% Broadcast `_mesh.patterns' to every active outbound station_link.
+%% Same no-op-with-no-connections shape as `broadcast_filter/1'.
+%% `term_to_binary/1' (not CBOR): this is a purely internal,
+%% station-to-station protocol detail, not a public wire format —
+%% `safe_decode_patterns/1' on the receiving end guards it with
+%% `binary_to_term(_, [safe])'.
+broadcast_patterns(Patterns) ->
+    Payload = term_to_binary(Patterns),
+    Conns = macula_station_peer_links:connections(),
+    lists:foreach(
+      fun({_Url, LinkPid}) ->
+              catch macula_station_link:publish(
+                      LinkPid, ?MESH_REALM, ?MESH_PATTERNS_TOPIC, Payload)
+      end,
+      Conns),
+    ok.
+
 empty_bloom_bin() ->
     macula_station_bloom:to_binary(macula_station_bloom:new()).
 
@@ -491,6 +717,18 @@ record_peer_bloom(Key, BloomBin, PB, #state{peer_seen = Seen} = S) ->
     catch ets:insert(?PEER_BLOOMS_TABLE, {Key, BloomBin}),
     S1 = S#state{peer_blooms = PB#{Key => BloomBin},
                  peer_seen   = Seen#{Key => now_ms()}},
+    case Changed of
+        true  -> schedule_debounced_rebuild(S1);
+        false -> S1
+    end.
+
+%% Same shape as `record_peer_bloom/4' for patterns — see that
+%% function's own comments.
+record_peer_patterns(Key, Patterns, PP, #state{peer_seen = Seen} = S) ->
+    Changed = maps:get(Key, PP, undefined) =/= Patterns,
+    catch ets:insert(?PEER_PATTERNS_TABLE, {Key, Patterns}),
+    S1 = S#state{peer_patterns = PP#{Key => Patterns},
+                 peer_seen     = Seen#{Key => now_ms()}},
     case Changed of
         true  -> schedule_debounced_rebuild(S1);
         false -> S1

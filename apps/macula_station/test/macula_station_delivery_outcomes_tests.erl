@@ -50,8 +50,9 @@ stats_expose_every_slot(_) ->
         Stats = stats(),
         Expected = [bloom_conn_dead, bloom_not_neighbour, dup_dropped,
                     dup_dropped_pre, forwarded, mesh_topic, no_bloom_match,
-                    no_live_conn, no_targets, no_topic, relay_publish_err,
-                    send_refused, unauth_event, unauth_origin],
+                    no_live_conn, no_pattern_match, no_targets, no_topic,
+                    relay_publish_err, send_refused, unauth_event,
+                    unauth_origin],
         ?assertEqual(Expected, lists:sort(maps:keys(Stats))),
         ?assert(lists:all(fun(V) -> is_integer(V) andalso V >= 0 end,
                           maps:values(Stats)))

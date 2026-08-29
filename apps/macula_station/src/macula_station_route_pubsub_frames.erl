@@ -66,6 +66,11 @@
 %% Dedup disposition + origin seeding, so the publisher-attestation rule
 %% can be driven directly against the cache.
 -export([event_dedup_disposition/1, record_origin_seq/2]).
+%% Bloom-fan / pattern-fan union, so the two channels' independent
+%% counting and de-duped merge can be driven directly against a real
+%% bloom_exchange + a locally-built conns table, without standing up
+%% the whole dispatcher gen_server.
+-export([bloom_fan_extras/4]).
 -endif.
 
 -define(CONNS_TABLE, macula_station_peer_observer_conns).
@@ -128,7 +133,15 @@
 %% The two reasons a bloom candidate is unreachable mean OPPOSITE things.
 -define(CTR_BLOOM_NOT_NEIGHBOUR, 13).  %% transitive bloom named a non-peer
 -define(CTR_BLOOM_CONN_DEAD,     14).  %% we held a conn to it and it died
--define(CTR_SLOTS,            14).
+%% Pattern-fan (2026-08-29) is a SEPARATE interest channel from the
+%% Bloom, and gets its own counter rather than being folded into
+%% `?CTR_NO_BLOOM_MATCH' -- deliberately, matching this module's own
+%% established discipline (see the `?CTR_UNAUTH_EVENT'/`?CTR_UNAUTH_ORIGIN'
+%% split above): conflating "no bloom match" with "no pattern match"
+%% would make it impossible to tell which gossip channel is actually
+%% failing to converge from the counters alone.
+-define(CTR_NO_PATTERN_MATCH, 15).  %% no peer pattern matched the topic
+-define(CTR_SLOTS,            15).
 
 -record(state, {
     pubsub_registry :: atom() | pid() | undefined,
@@ -186,6 +199,7 @@ stats_of(Ref) ->
       no_targets         => counters:get(Ref, ?CTR_NO_TARGETS),
       no_live_conn       => counters:get(Ref, ?CTR_NO_LIVE_CONN),
       no_bloom_match     => counters:get(Ref, ?CTR_NO_BLOOM_MATCH),
+      no_pattern_match   => counters:get(Ref, ?CTR_NO_PATTERN_MATCH),
       relay_publish_err  => counters:get(Ref, ?CTR_RELAY_PUBLISH_ERR),
       unauth_event       => counters:get(Ref, ?CTR_UNAUTH_EVENT),
       unauth_origin      => counters:get(Ref, ?CTR_UNAUTH_ORIGIN),
@@ -575,9 +589,14 @@ bloom_fan_extras(EventFrame, Matched, Excluded, CT) ->
             bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT)
     end.
 
+%% Bloom fan and pattern fan are two SEPARATE, independently-counted
+%% interest channels (see `?CTR_NO_PATTERN_MATCH''s own comment) —
+%% unioned and deduped only at the very end, after each has had its
+%% own chance to report "found nothing".
 bloom_fan_extras_for_topic(Topic, Matched, Excluded, CT) ->
-    count_bloom_match(
-      bloom_fan_candidates(Topic, Matched, Excluded, CT)).
+    lists:usort(
+      count_bloom_match(bloom_fan_candidates(Topic, Matched, Excluded, CT))
+      ++ count_pattern_match(pattern_fan_candidates(Topic, Matched, Excluded, CT))).
 
 %% An empty bloom result means no downstream peer is known to want this
 %% topic. Legitimate at a leaf, but also what a not-yet-gossiped bloom
@@ -589,6 +608,15 @@ count_bloom_match([]) ->
 count_bloom_match(Candidates) ->
     Candidates.
 
+%% Same "found nothing" ambiguity as `count_bloom_match/1', for the
+%% pattern channel — legitimate (no wildcard subscriber anywhere cares)
+%% or not-yet-gossiped (same 30s/2s cadence, shared with the bloom).
+count_pattern_match([]) ->
+    bump(?CTR_NO_PATTERN_MATCH),
+    [];
+count_pattern_match(Candidates) ->
+    Candidates.
+
 bloom_fan_candidates(Topic, Matched, Excluded, CT) ->
     %% ETS-bypass: read the peer_blooms mirror directly. Avoids the
     %% per-event `gen_server:call' to bloom_exchange that would
@@ -596,6 +624,15 @@ bloom_fan_candidates(Topic, Matched, Excluded, CT) ->
     %% sustained load (torture observed pubsub_dispatcher mailbox
     %% backing up to 25k+ when this used the gen_server path).
     Candidates = macula_station_bloom_exchange:peer_matches_ets(Topic),
+    filter_fan_candidates(Candidates, Matched, Excluded, CT).
+
+%% Same ETS-bypass shape as `bloom_fan_candidates/4`, reading the
+%% pattern mirror instead. Reuses `filter_fan_candidates/4' unchanged —
+%% the same "already matched / excluded source / no live conn"
+%% filtering applies identically regardless of which channel a
+%% candidate was found through.
+pattern_fan_candidates(Topic, Matched, Excluded, CT) ->
+    Candidates = macula_station_bloom_exchange:pattern_matches_ets(Topic),
     filter_fan_candidates(Candidates, Matched, Excluded, CT).
 
 filter_fan_candidates(Candidates, Matched, Excluded, CT) ->

@@ -65,6 +65,135 @@ malformed_peer_bloom_is_skipped_not_crash_test() ->
     ?assert(macula_station_bloom:check(<<"topic.local">>, BF)).
 
 %%------------------------------------------------------------------
+%% Wildcard pattern gossip (2026-08-29) — separate from the Bloom,
+%% see the module's own moduledoc for why: patterns are gossiped raw
+%% (no Bloom-summarization) on their own `_mesh.patterns' topic, same
+%% transitive-union shape as the Bloom just as a set union instead of
+%% a bitwise OR.
+%%------------------------------------------------------------------
+
+%% `merge_patterns_with_peers/2' is private; re-derived here the same
+%% way `direct_merge/2' re-derives the Bloom merge above, for the same
+%% reason (reaching a private function via `sys:get_state' tricks
+%% would be brittle).
+direct_merge_patterns(LocalPatterns, PeerPatterns) ->
+    lists:usort(
+      lists:foldl(fun(Peer, Acc) -> Peer ++ Acc end,
+                 LocalPatterns, maps:values(PeerPatterns))).
+
+merge_patterns_with_peers_unions_every_peer_set_test() ->
+    Merged = direct_merge_patterns(
+               [<<"local/*">>],
+               #{<<1, 0:248>> => [<<"acme/*">>, <<"shared/*">>],
+                 <<2, 0:248>> => [<<"contoso/*">>, <<"shared/*">>]}),
+    ?assertEqual(lists:sort([<<"local/*">>, <<"acme/*">>, <<"contoso/*">>,
+                            <<"shared/*">>]),
+                 lists:sort(Merged)).
+
+merge_patterns_with_peers_dedupes_test() ->
+    Merged = direct_merge_patterns([<<"a/*">>], #{<<1, 0:248>> => [<<"a/*">>]}),
+    ?assertEqual([<<"a/*">>], Merged).
+
+merge_patterns_with_peers_empty_peers_falls_back_to_local_test() ->
+    ?assertEqual([<<"local/*">>], direct_merge_patterns([<<"local/*">>], #{})).
+
+%% Same shape as `peer_bloom_change_schedules_debounce_test' /
+%% `duplicate_peer_bloom_does_not_reschedule_test' above, for patterns.
+peer_patterns_change_schedules_debounce_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        ?assertEqual(undefined, debounce_ref_of(Pid)),
+        ok = macula_station_bloom_exchange:receive_peer_patterns(
+               Pid, <<"peer-a">>, [<<"acme/*">>]),
+        Ref = debounce_ref_of(Pid),
+        ?assert(is_reference(Ref))
+    after
+        stop_exchange(Pid)
+    end.
+
+duplicate_peer_patterns_does_not_reschedule_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        Patterns = [<<"acme/*">>],
+        ok = macula_station_bloom_exchange:receive_peer_patterns(
+               Pid, <<"peer-a">>, Patterns),
+        Ref1 = debounce_ref_of(Pid),
+        ?assert(is_reference(Ref1)),
+        ok = macula_station_bloom_exchange:receive_peer_patterns(
+               Pid, <<"peer-a">>, Patterns),
+        ?assertEqual(Ref1, debounce_ref_of(Pid))
+    after
+        stop_exchange(Pid)
+    end.
+
+%% peer_patterns/1 + pattern_matches_ets/1 -- the actual publish-time
+%% surface `route_pubsub_frames' consumes.
+receive_peer_patterns_is_queryable_and_matches_test() ->
+    {Pid, _Kp} = start_exchange(),
+    try
+        ok = macula_station_bloom_exchange:receive_peer_patterns(
+               Pid, <<7, 0:248>>, [<<"realm/*/app/domain/name_v1">>]),
+        _ = sys:get_state(Pid),
+        ?assertEqual(#{<<7, 0:248>> => [<<"realm/*/app/domain/name_v1">>]},
+                     macula_station_bloom_exchange:peer_patterns(Pid)),
+        ?assertEqual([<<7, 0:248>>],
+                     macula_station_bloom_exchange:pattern_matches_ets(
+                       <<"realm/acme/app/domain/name_v1">>)),
+        ?assertEqual([],
+                     macula_station_bloom_exchange:pattern_matches_ets(
+                       <<"realm/acme/app/domain/other_v1">>))
+    after
+        stop_exchange(Pid)
+    end.
+
+%% Inbound `_mesh.patterns' EVENT -- same shape as
+%% `macula_event_change_schedules_debounce_test' above.
+macula_event_patterns_change_schedules_debounce_test() ->
+    {Pid, Kp} = start_exchange(),
+    try
+        Publisher = other_pubkey(Kp),
+        Payload = term_to_binary([<<"acme/*">>]),
+        Pid ! {macula_event, ignored_sub_ref, <<"_mesh.patterns">>,
+               Payload, #{publisher => Publisher}},
+        _ = sys:get_state(Pid),
+        ?assert(is_reference(debounce_ref_of(Pid)))
+    after
+        stop_exchange(Pid)
+    end.
+
+%% The actual security property `safe_decode_patterns/1' exists for:
+%% a malformed / hostile payload on `_mesh.patterns' must not crash
+%% the gen_server, must not poison `peer_patterns', and — since
+%% `binary_to_term(_, [safe])' is what's used — must never grow the
+%% atom table. Driven through the message interface, matching this
+%% file's own convention of not exporting private internals for test.
+malformed_mesh_patterns_payload_is_dropped_not_crash_test() ->
+    {Pid, Kp} = start_exchange(),
+    try
+        Publisher = other_pubkey(Kp),
+        %% Not a term_to_binary'd list at all -- garbage bytes.
+        Pid ! {macula_event, ignored_sub_ref, <<"_mesh.patterns">>,
+               <<"not-a-valid-term">>, #{publisher => Publisher}},
+        _ = sys:get_state(Pid),  % gen_server still alive -> didn't crash
+        ?assertEqual(#{}, macula_station_bloom_exchange:peer_patterns(Pid)),
+
+        %% A validly-encoded term, but not a list-of-binaries.
+        Pid ! {macula_event, ignored_sub_ref, <<"_mesh.patterns">>,
+               term_to_binary(#{unexpected => a_map}), #{publisher => Publisher}},
+        _ = sys:get_state(Pid),
+        ?assertEqual(#{}, macula_station_bloom_exchange:peer_patterns(Pid)),
+
+        %% A valid list, but not all binaries.
+        Pid ! {macula_event, ignored_sub_ref, <<"_mesh.patterns">>,
+               term_to_binary([<<"ok/*">>, not_a_binary]),
+               #{publisher => Publisher}},
+        _ = sys:get_state(Pid),
+        ?assertEqual(#{}, macula_station_bloom_exchange:peer_patterns(Pid))
+    after
+        stop_exchange(Pid)
+    end.
+
+%%------------------------------------------------------------------
 %% Push-on-change debounce — Item 1 (2026-05-15)
 %%
 %% On a peer_bloom CHANGE (new entry, or different bytes for an
