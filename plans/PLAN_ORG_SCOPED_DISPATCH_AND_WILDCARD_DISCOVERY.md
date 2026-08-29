@@ -773,9 +773,9 @@ never end a piped `remote_console` script with `q()`.
       knowing any capability name in advance (redesigned from the original
       "wildcard query against two orgs sharing a station" framing — see
       slice 4's redesign note for why) — **2026-08-29**
-- [x] A wildcard pubsub subscription receives publishes from every matching
+- [~] A wildcard pubsub subscription receives publishes from every matching
       concrete topic, live, with no over-delivery to exact subscribers —
-      **mesh-wide (scope b), live-verified 2026-08-29** against the real
+      **1-hop DONE, 2+-hop NOT working — 2026-08-29** against the real
       fleet: `macula-cli pubsub watch "acme/*"` on helsinki received a
       publish to `acme/svc.do` from falkenstein (a genuinely different
       station, direct peer), `delivered_via: "direct"`, correct payload;
