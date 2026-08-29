@@ -86,6 +86,14 @@ ingest(Dht, Peers) ->
 %% it learns as a side effect, so the routing table fills whether or not
 %% anyone reads the result.
 %%
+%% `dial => fun macula_station_dht_dialer:ensure_dialed/3' (2026-08-29):
+%% without it, a peer learned mid-walk (round >= 1, only ever named in a
+%% NODES reply, never a round-0 seed we already hold a connection to)
+%% could not actually be reached — `macula_dht_lookup''s own moduledoc
+%% has the full history. This is what makes THIS self-lookup genuinely
+%% multi-hop instead of discovering-but-never-reaching peers beyond the
+%% station's initial seed set.
+%%
 %% Boot must not wait on the network. This runs in
 %% `macula_station_app:start/2' before SWIM comes up, and a walk costs
 %% up to `overall_timeout_ms' (15s default). A station that cannot
@@ -100,5 +108,9 @@ ingest(Dht, Peers) ->
 self_lookup(_Dht, #{observed := 0}) ->
     ok;
 self_lookup(Dht, _Summary) ->
-    _ = spawn(fun() -> catch macula_dht:lookup_nodes(Dht, macula_dht:self_id(Dht)) end),
+    _ = spawn(fun() ->
+        catch macula_dht:lookup_nodes(
+                Dht, macula_dht:self_id(Dht),
+                #{dial => fun macula_station_dht_dialer:ensure_dialed/3})
+    end),
     ok.

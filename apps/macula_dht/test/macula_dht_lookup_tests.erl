@@ -169,6 +169,110 @@ disjoint_paths_do_not_double_query_test() ->
     ?assertEqual(1, FindNodesToD),
     stop_network(Net).
 
+%%---------------------------------------------------------------------
+%% Dial injection (2026-08-29) — a peer learned mid-walk (only ever
+%% named in a NODES reply, never a round-0 seed) is dialed via the
+%% injected `dial' option, with its real addresses, before being
+%% queried. Proven directly: the router above reaches every network
+%% member unconditionally regardless of dial state (it is a routing
+%% table, not a connection-aware transport), so the tests above cannot
+%% exercise this wiring on their own — absence of regression there
+%% proves the DEFAULT (`no_dial') is unchanged, not that `dial' fires
+%% correctly when supplied.
+%%---------------------------------------------------------------------
+
+dial_is_invoked_for_peers_learned_mid_walk_test() ->
+    Net = start_network([a, b]),
+    #{a := {A, _}, b := {B, KpB}} = Net,
+    BId = macula_identity:public(KpB),
+    CId = <<77:256>>,
+    CEndpoints = [#{host => <<"c.example">>, port => 4433}],
+
+    %% A knows B (round-0 seed). B knows C, with real endpoints -- A
+    %% only ever learns of C via B's NODES reply, mid-walk.
+    admitted = macula_dht:observe(A, spec(BId)),
+    admitted = macula_dht:observe(B, spec(CId, CEndpoints)),
+
+    Collector = spawn_dial_collector(),
+    Dial = fun(PeerId, Addresses, _TimeoutMs) ->
+        Collector ! {dialed, PeerId, Addresses},
+        ok
+    end,
+
+    {ok, Refs} = macula_dht:lookup_nodes(A, CId,
+                                         short_opts(#{dial => Dial})),
+    Ids = [maps:get(node_id, R) || R <- Refs],
+    ?assert(lists:member(CId, Ids)),
+
+    %% C was actually dialed, with its real endpoints -- not just
+    %% discovered and silently never reached.
+    ?assert(lists:member({CId, CEndpoints}, collected(Collector))),
+    stop_network(Net).
+
+%% A `dial' that always refuses still lets the walk finish cleanly
+%% (dial_then_find_node/5's `{error, _}' clause) -- it just cannot
+%% actually QUERY anything beyond round-0 seeds, proving the gate is
+%% genuinely a gate, not decorative. NOT provable via "is C in the
+%% final result": C is DISCOVERED (added to the shortlist) the moment
+%% B's NODES reply names it, regardless of whether A ever successfully
+%% dials and queries C directly -- `finalise/1' returns shortlist
+%% membership, not query success (see `lookup_honours_overall_timeout_test'
+%% above, whose own seeded-but-never-responding peer is "still reported").
+%% The only way to observe a blocked QUERY is a peer known ONLY to C:
+%% D is discoverable at all solely via a NODES reply FROM C, which
+%% requires A to have actually reached C -- refusing that dial must
+%% therefore keep D undiscovered even though C itself still shows up.
+dial_refusal_blocks_querying_the_refused_peer_test() ->
+    Net = start_network([a, b, c]),
+    #{a := {A, _}, b := {B, KpB}, c := {C, KpC}} = Net,
+    BId = macula_identity:public(KpB),
+    CId = macula_identity:public(KpC),
+    DId = <<88:256>>,
+    admitted = macula_dht:observe(A, spec(BId)),
+    admitted = macula_dht:observe(B, spec(CId, [#{host => <<"c.example">>,
+                                                  port => 4433}])),
+    admitted = macula_dht:observe(C, spec(DId, [#{host => <<"d.example">>,
+                                                  port => 4433}])),
+
+    %% Refuses ONLY C -- B must still succeed (in production, `dial'
+    %% is a no-op for an already-connected round-0 seed like B; a
+    %% blanket refusal would also block A's very first query to B,
+    %% and then B's own NODES reply naming C would never arrive
+    %% either, which was this test's first, wrong version).
+    RefuseOnly = fun(PeerId, _Addresses, _TimeoutMs) ->
+        refuse_if(PeerId =:= CId)
+    end,
+    {ok, Refs} = macula_dht:lookup_nodes(A, DId,
+                                         short_opts(#{dial => RefuseOnly})),
+    Ids = [maps:get(node_id, R) || R <- Refs],
+    %% C is discovered (named in B's NODES reply) even though dialing
+    %% it was refused -- discovery and query success are different
+    %% things, by design (see the comment above).
+    ?assert(lists:member(CId, Ids)),
+    %% D is known ONLY to C. Reaching it requires A to have actually
+    %% QUERIED C, which the refused dial made impossible -- so D is
+    %% never discovered at all.
+    ?assertNot(lists:member(DId, Ids)),
+    stop_network(Net).
+
+refuse_if(true)  -> {error, refused};
+refuse_if(false) -> ok.
+
+spawn_dial_collector() ->
+    spawn(fun() -> dial_collector_loop([]) end).
+
+dial_collector_loop(Acc) ->
+    receive
+        {dialed, PeerId, Addresses} ->
+            dial_collector_loop([{PeerId, Addresses} | Acc]);
+        {get, Caller} ->
+            Caller ! {dials, Acc}
+    end.
+
+collected(Collector) ->
+    Collector ! {get, self()},
+    receive {dials, D} -> D after 1_000 -> exit(dial_collector_timeout) end.
+
 %%=====================================================================
 %% Router harness — one router per network routes signed frames
 %% between DHT servers by NodeId.
@@ -237,6 +341,14 @@ router_stats() ->
 
 spec(NodeId) ->
     #{node_id => NodeId, asn => 64512, country => <<"BE">>, tier => t1}.
+
+%% As spec/1, with real endpoints -- the dial-injection tests need a
+%% learned peer's `station_ref' to carry non-empty `addresses' (what
+%% `entry_to_station_ref/2' actually propagates since the 2026-07-27
+%% fix), otherwise `send_query/3' would call `Dial' with `[]' regardless
+%% of what is being tested here.
+spec(NodeId, Endpoints) ->
+    (spec(NodeId))#{endpoints => Endpoints}.
 
 %% Tight timeouts so eunit's default 5-second per-test ceiling is
 %% never in play. 200 ms per request × up to 3 parallel requests =

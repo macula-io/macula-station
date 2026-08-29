@@ -62,13 +62,28 @@
 -define(DEFAULT_ALPHA,                    3).
 -define(DEFAULT_PER_REQUEST_TIMEOUT_MS, 5_000).
 -define(DEFAULT_OVERALL_TIMEOUT_MS,    15_000).
+-define(DEFAULT_DIAL_TIMEOUT_MS,        3_000).
+
+%% Dial a peer learned mid-walk before querying it. `macula_dht' (this
+%% app) has no dependency on `macula_station' (the app that actually
+%% knows how to dial — `macula_station_dht_dialer'), so the walk cannot
+%% call it directly without a circular app dependency; this is the same
+%% dependency-inversion shape `macula_dht_server' already uses for
+%% `send_frame' (injected by `macula_station_app' at boot, not called by
+%% name from inside `macula_dht'). Default is a no-op — see `no_dial/3'
+%% — so every existing caller (including this module's own tests) keeps
+%% its current behaviour unless it opts in.
+-type dial_fun() :: fun((macula_identity:pubkey(), [map()], pos_integer()) ->
+                        ok | {error, term()}).
 
 -type opts() :: #{
     target_count           => pos_integer(),
     paths                  => pos_integer(),
     alpha                  => pos_integer(),
     per_request_timeout_ms => pos_integer(),
-    overall_timeout_ms     => pos_integer()
+    overall_timeout_ms     => pos_integer(),
+    dial_timeout_ms        => pos_integer(),
+    dial                   => dial_fun()
 }.
 
 -type result() :: {ok, [macula_frame:station_ref()]}.
@@ -90,6 +105,8 @@
     target_count := pos_integer(),
     alpha        := pos_integer(),
     per_req      := pos_integer(),
+    dial         := dial_fun(),
+    dial_timeout := pos_integer(),
     deadline     := integer()
 }.
 
@@ -117,6 +134,8 @@ build_state(Dht, Key, Opts) ->
     A       = maps:get(alpha,                  Opts, ?DEFAULT_ALPHA),
     PerReq  = maps:get(per_request_timeout_ms, Opts, ?DEFAULT_PER_REQUEST_TIMEOUT_MS),
     Overall = maps:get(overall_timeout_ms,     Opts, ?DEFAULT_OVERALL_TIMEOUT_MS),
+    DialMs  = maps:get(dial_timeout_ms,        Opts, ?DEFAULT_DIAL_TIMEOUT_MS),
+    Dial    = maps:get(dial,                   Opts, fun no_dial/3),
     Self    = macula_dht:self_id(Dht),
     Seeds   = seed_refs(Dht, Key, N * D, Self),
     Claimed = sets:from_list([Self | [id_of(R) || R <- Seeds]]),
@@ -129,8 +148,17 @@ build_state(Dht, Key, Opts) ->
         target_count => N,
         alpha        => A,
         per_req      => PerReq,
+        dial         => Dial,
+        dial_timeout => DialMs,
         deadline     => erlang:monotonic_time(millisecond) + Overall
     }.
+
+%% Default: unchanged current behaviour — no dial, rely solely on
+%% whatever connections already exist (round-0 seeds only). A caller
+%% that wants a genuinely multi-hop walk supplies `dial =>
+%% fun macula_station_dht_dialer:ensure_dialed/3' (or equivalent).
+-spec no_dial(macula_identity:pubkey(), [map()], pos_integer()) -> ok.
+no_dial(_PeerId, _Addresses, _TimeoutMs) -> ok.
 
 -spec seed_refs(macula_dht:dht(), macula_dht_xor:id(), pos_integer(),
                 macula_identity:pubkey()) ->
@@ -217,22 +245,39 @@ scan_unqueried([Ref | Rest], Q) ->
 resume_scan(true,  _Ref, Rest, Q) -> scan_unqueried(Rest, Q);
 resume_scan(false, Ref,  _Rest, _Q) -> {ok, Ref}.
 
+%% Dials `Ref' first (a no-op for an already-connected round-0 seed, and
+%% for any caller that left `dial' at its default `no_dial/3' — see
+%% moduledoc) before querying it. This is what makes a peer LEARNED
+%% mid-walk (round >= 1, arriving only in a NODES reply, never a round-0
+%% seed) actually reachable: `macula_dht_server''s injected `send_frame'
+%% resolves a NodeId only through an EXISTING connection and never dials
+%% on its own, so an undialed newly-learned peer would answer with
+%% `no_route' no matter how correct its `station_ref' addresses are.
 -spec send_query(macula_frame:station_ref(), path(), state()) -> path().
 send_query(Ref, Path, State) ->
-    PathId = maps:get(id, Path),
-    PeerId = id_of(Ref),
-    Parent = self(),
-    Dht    = maps:get(dht, State),
-    Key    = maps:get(key, State),
-    PerReq = maps:get(per_req, State),
+    PathId    = maps:get(id, Path),
+    PeerId    = id_of(Ref),
+    Addresses = maps:get(addresses, Ref, []),
+    Parent    = self(),
+    Dht       = maps:get(dht, State),
+    Key       = maps:get(key, State),
+    PerReq    = maps:get(per_req, State),
+    Dial      = maps:get(dial, State),
+    DialMs    = maps:get(dial_timeout, State),
     spawn(fun() ->
-        Result = macula_dht:find_node(Dht, Key, PeerId, PerReq),
+        Result = dial_then_find_node(Dial(PeerId, Addresses, DialMs),
+                                     Dht, Key, PeerId, PerReq),
         Parent ! {lookup_result, PathId, PeerId, Result}
     end),
     Path#{
         queried   := sets:add_element(PeerId, maps:get(queried, Path)),
         in_flight := sets:add_element(PeerId, maps:get(in_flight, Path))
     }.
+
+dial_then_find_node(ok, Dht, Key, PeerId, PerReq) ->
+    macula_dht:find_node(Dht, Key, PeerId, PerReq);
+dial_then_find_node({error, Reason}, _Dht, _Key, _PeerId, _PerReq) ->
+    {error, {no_route, Reason}}.
 
 %%---------------------------------------------------------------------
 %% Termination check
@@ -323,16 +368,28 @@ merge_fresh(State, PathId, Refs) ->
 %% bootstrap seed while a self-lookup happily returned 20 peers it then
 %% discarded.
 %%
-%% ⚠ WHAT THIS DOES NOT BUY. `macula_dht_protocol:entry_to_station_ref/2'
-%% hardcodes `addresses => []', so every ref arriving in a NODES reply is
-%% ADDRESS-LESS and the specs built below always carry `endpoints => []'.
-%% `macula_station_dht_transport:send_frame/2' resolves a node only
-%% through `peer_observer:conn_for/2' — an existing connection — and
-%% never dials. So a learned entry raises `dht:size/1' but is not
-%% reachable, and the "iterative" walk is one hop wide: every follow-up
-%% query to a newly learned peer returns `no_route'. Fixing that needs
-%% real addresses on the wire AND a dialling transport; until then treat
-%% a rising table as bookkeeping, not as routing capability.
+%% ⚠ WHAT THIS USED TO NOT BUY, fixed 2026-08-29. Two separate gaps had
+%% to close for a learned entry to become genuinely reachable, not just
+%% bookkeeping raising `dht:size/1':
+%%
+%%   1. `macula_dht_protocol:entry_to_station_ref/2' used to hardcode
+%%      `addresses => []', so every ref arriving in a NODES reply was
+%%      ADDRESS-LESS. Fixed 2026-07-27 (see that function's own comment;
+%%      guarded by `macula_dht_endpoint_propagation_tests').
+%%   2. Real addresses alone were still not enough: `macula_dht_server''s
+%%      injected `send_frame' (`macula_station_dht_transport:send_frame/2')
+%%      resolves a node only through an EXISTING connection and never
+%%      dials, so a newly-learned peer answered `no_route' regardless of
+%%      whether its addresses were populated. `macula_dht' (this app)
+%%      has no dependency on `macula_station' (home of the actual
+%%      dialer, `macula_station_dht_dialer'), so this walk could not call
+%%      it directly. Fixed via dependency injection — an optional `dial'
+%%      callback in `opts()' (default a no-op, so any existing caller
+%%      that does not pass one keeps exactly its old one-hop-wide
+%%      behaviour) — the same shape `send_frame' itself is injected with
+%%      at `macula_station_app' boot. `macula_station_bootstrap_runner'
+%%      (the one production caller, via a station's own self-lookup at
+%%      boot) now passes `dial => fun macula_station_dht_dialer:ensure_dialed/3'.
 %%
 %% `observe_async' deliberately, not `observe': this runs on the lookup
 %% coordinator, which may be the DHT process itself, and a synchronous
