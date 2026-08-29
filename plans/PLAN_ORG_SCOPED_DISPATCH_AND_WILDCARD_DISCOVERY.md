@@ -38,23 +38,26 @@ size. Cheap to veto.
 | 2 | Thread key-format through resolve → dial | 1 | hecate-om | **DONE, live-verified** |
 | 6 | Fold in the TTL fix while touching `advertise_one` | 1 | hecate-om | **DONE in code; live effect needs macula hex ≥10.11.1** |
 | 3 | Shared segment/wildcard-matching primitive | — | macula (resolved: macula-station DOES dep on macula, `~> 10.5`) | **DONE — `macula_topic_pattern`, macula 10.12.0** |
-| 4 | Composite-key wildcard capability **discovery** | 3 | hecate-om, macula (usage only) | **BLOCKED — needs macula published ≥10.13.0 to hex; hecate-om has no `_checkouts` override** |
+| 4 | Org capability browse (redesigned — see below) | 3 | hecate-om | **DONE, live-verified 2026-08-29 — macula 10.13.1 published, hecate-om upgraded** |
 | 5 | Wildcard pubsub topic **subscription** | 3 | macula (`hecate_pubsub`) | **scope (a) DONE — station-local, macula 10.13.0. Scope (b), mesh-wide, not started — see rescoped section below** |
 | 7 | Fix `macula_dht_lookup.erl` — turned out to be a real bug, not just stale docs | — | macula-station | **DONE 2026-08-29** |
 | 8 | Correct `read_model_services.md`'s discovery-ceiling claim | — | hecate-om | **DONE** |
 | 9 | Correct the `kademlia_dht_architecture.html` hexdocs page | after 1–5 land | macula | not started, deliberately deferred |
 | 10 | **NEW** — second sequential `call_station` on one pool fails | — | macula (`macula_client`'s pool/link reuse) | **DONE, live-verified 2026-08-29** |
 
-**Publish status, 2026-08-29 end of session**: macula is at **10.13.0 locally** (commits
-`1f5da74`, `8ca2863`, `97ebc1a`, plus the earlier `10.11.1` fix), hex.pm still serves
-**10.11.0**. `macula-station` and `hecate-om` both build correctly against local macula
-right now (macula-station via `_checkouts`, hecate-om NOT — see slice 4). **A hex publish
-of macula (10.13.0, or at minimum ≥10.11.1 for the ttl_ms fix) is needed before**: (a)
-hecate-om's slice 4 work can proceed, (b) any of this session's fixes take effect for a
-consumer that isn't running from this exact local checkout, (c) the demo fleet's actual
-running macula-station image reflects any of tonight's fixes — that image is built and
-deployed separately (ghcr push + watchtower), not something publishing to hex alone
-achieves.
+**Publish status, 2026-08-29, updated**: macula **10.13.1 published to hex.pm** (confirmed
+via the hex API — top release). hecate-om's `macula` dep upgraded (`rebar3 upgrade macula`)
+and re-verified: full unit suite + the live station suite (including the new
+`list_org_capabilities` test) pass against the real hex-resolved package, no checkout
+needed. macula-station continues to build via its own `_checkouts/macula` local-dev symlink
+(pre-existing convention, untouched) — its `rebar.config` constraint (`~> 10.5`) already
+permits 10.13.1 with no edit needed, and no Dockerfile/CI pins a narrower version.
+
+**Still outstanding**: the demo fleet's actual RUNNING macula-station image does not yet
+reflect this session's macula-station-side fix (slice 7's dial-injection fix) — that needs
+a separate build + push to ghcr + watchtower-driven deploy, not something a hex publish
+touches. Not done this session; flag before assuming slice 7 is live on the fleet, not just
+correct in source.
 
 Slices 1–2 are the direct fix for the bug the live test found and should go
 first. 6 is a two-line addition to the same function 1 already touches — do it
@@ -303,7 +306,32 @@ wildcard non-trailing, multiple wildcards, wildcard-vs-wildcard (pattern
 matching pattern — needed for B2's subscription-registration-time dedup, not
 just publish-time matching).
 
-### Slice 4 — Composite-key wildcard capability discovery (B1)
+### Slice 4 — Org capability browse — DONE 2026-08-29, redesigned from the original
+
+**Shipped as `hecate_om_capabilities:list_org_capabilities/1` /
+`resolve_org_capabilities/3`** (hecate-om commit `02e313e`), live-verified
+against `station-de-frankfurt.macula.io`. The original design below (publish
+the same record under composite prefix/per-segment keys) turned out
+infeasible once implementation started: `macula_record:storage_key/1`
+derives a `procedure_advertisement`'s storage key from its own
+`procedure_uri` PAYLOAD field — there is no way to store the record at an
+independently-chosen key without that field misrepresenting what it
+advertises. Also, `hecate_om_capabilities`'s actual address shape turned out
+to be 2 dynamic segments (`Org`, `Name`), not the 4-segment
+`org/app/domain/name` the design below assumed — and the only genuinely NEW
+wildcard case in a 2-segment model is "browse everything under an Org"
+(`Org/*`); "any org for a specific name" is already served by the existing
+bare-key fallback, no wildcard machinery needed for that case at all.
+
+Implemented instead as a client-side filter over
+`macula:find_records_by_type/2` (matched via `macula_topic_pattern`) —
+reusing the same local-relay-view, warm-start-only mechanism
+`read_model_services.md` already documents, rather than building a second
+DHT record type to solve a consistency problem (multiple advertisers
+writing one shared org-index record) that a browse feature doesn't actually
+need to solve.
+
+### Slice 4, ORIGINAL DESIGN (superseded, kept for history) — Composite-key wildcard capability discovery (B1)
 
 **What:** alongside the existing full-URI DHT record, publish the same
 `procedure_advertisement` under a small, fixed set of additional keys so a
@@ -592,16 +620,21 @@ live station in `test_live/`, excluded from the default CI gate):
 - [x] `org_scoped_call_reaches_only_the_targeted_org_test_` passes live — **2026-08-29**
 - [x] Existing single-org live test still passes (no regression) — **2026-08-29**
 - [x] A capability's TTL is proportioned to its republish interval, not the
-      envelope default — **DONE in code; the handler-bearing path's DHT
-      record has no LIVE effect yet, blocked on a macula hex release past
-      10.11.1 (not published this session — user fires hex publishes)**
-- [ ] A wildcard capability query resolves correctly against two orgs sharing
-      a station, live
+      envelope default — **DONE, live effect confirmed: macula 10.13.1 published,
+      hecate-om upgraded, full suite + live suite pass — 2026-08-29**
+- [x] Browsing every capability an org has advertised works live, without
+      knowing any capability name in advance (redesigned from the original
+      "wildcard query against two orgs sharing a station" framing — see
+      slice 4's redesign note for why) — **2026-08-29**
 - [ ] A wildcard pubsub subscription receives publishes from every matching
       concrete topic, live, with no over-delivery to exact subscribers
-- [ ] `macula_dht_lookup.erl` either removed or corrected — no comment in the
-      tree describes a fixed bug as current
-- [ ] `read_model_services.md` correctly attributes the discovery ceiling
+      (station-LOCAL scope — see slice 5's rescoping; not yet live-tested,
+      only unit-tested in macula's own `hecate_pubsub_tests`)
+- [x] `macula_dht_lookup.erl` corrected — turned out to be a real bug (not
+      just stale docs), fixed with dependency-injected dialing — **2026-08-29**
+- [x] `read_model_services.md` correctly attributes the discovery ceiling — **2026-08-29**
 - [ ] hexdocs Kademlia page matches the settled, live architecture
+- [x] Second sequential `call_station` on one pool root-caused and fixed
+      (slice 10) — **2026-08-29, live-verified against real hex 10.13.1**
 - [ ] **NEW** — second sequential `call_station` on one pool root-caused and
       fixed (slice 10)
