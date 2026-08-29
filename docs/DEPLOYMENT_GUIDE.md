@@ -1,10 +1,12 @@
 # Deployment Guide
 
 How to actually run a macula-station in production: the container image, the
-config file, the two ways this org runs it (Docker + watchtower on beam00–03,
-Podman Quadlet on msi00), a docker-compose reference, and a Kubernetes
-manifest for operators who want one — that path is not exercised by this
-org's own fleet, said plainly rather than left to be discovered later.
+config file, the way this org actually runs its own fleet (Docker +
+watchtower, on public Hetzner/Linode boxes — never a LAN/lab machine, since
+a station has to accept inbound QUIC from the public internet), plus Podman
+Quadlet and Kubernetes references for operators who want them — neither of
+those two is exercised by this org's own fleet, said plainly rather than
+left to be discovered later.
 
 Every config key and CLI detail below is read from the actual source
 (`macula_station_config.erl`, `Dockerfile`, `.github/workflows/ci.yml`), not
@@ -179,13 +181,27 @@ station has booted once:**
 
 This whole sequence is scripted end to end (bootstrap placeholder → wait for
 identity → derive real cert → restart) in
-[`macula-demo/infrastructure/stations-linode-toronto/deploy.sh`](https://github.com/macula-io/macula-demo)
+[`macula-demo/infrastructure/stations-linode-toronto/deploy.sh`](https://github.com/macula-io/macula-demo/blob/main/infrastructure/stations-linode-toronto/deploy.sh)
 — copy that pattern rather than re-deriving it; it documents this exact
 failure inline at the point it was found.
 
 ---
 
-## 5. Docker + watchtower (this org's beam00–03 pattern)
+## 5. Docker + watchtower (this org's real station fleet's pattern)
+
+**This is how the actual macula-station fleet runs** — seven boxes, one
+station each, all on the public internet (Hetzner + Linode VPSes; see
+`macula-demo/infrastructure/FLEET.md` for the current roster and IPs if you
+have access to that repo). Every one of them is a standalone bare-metal/VPS
+box with a public IPv4/IPv6 address — **not** a LAN or lab machine. A
+station's entire job is accepting inbound QUIC from clients and other
+stations anywhere on the internet; it cannot do that from behind NAT or a
+private network with no public address of its own. `network_mode: host`
+below only helps if the host itself already has one.
+
+`macula-demo/infrastructure/FLEET.md` confirms this is genuinely the live
+mechanism, not aspirational: "All seven track `STATION_VERSION=main`, so
+watchtower's 60s poll auto-rolls them on every CI build of main."
 
 **docker-compose.yml:**
 
@@ -234,11 +250,20 @@ watchtower-managed boxes at `:latest` (or a pinned `vX.Y.Z`) and reserve
 
 ---
 
-## 6. Podman + Quadlet (this org's msi00 pattern)
+## 6. Podman + Quadlet
 
-Podman is genuinely different infrastructure from the Docker/watchtower
-fleet above, not an interchangeable substitute — only one box in this org's
-own fleet (`msi00`) runs it, and it uses systemd-native Quadlet units plus
+**No macula-station instance anywhere in this org runs on Podman.** This
+org does run Podman elsewhere (a lab box, for unrelated services — never a
+station), which is the only reason an earlier draft of this guide wrongly
+implied it was also a station pattern; it isn't, and nothing below is
+verified against a real station deployment. Docker + watchtower (§5) is
+this org's only actual station deployment mechanism. This section is a
+correct starting point for an operator who wants to run a station under
+Podman on their own infrastructure, not a description of anything this org
+does.
+
+Podman is genuinely different infrastructure from Docker/watchtower, not an
+interchangeable substitute — it uses systemd-native Quadlet units plus
 `podman auto-update` instead of watchtower. Don't run watchtower alongside
 Podman-managed containers: watchtower recreates containers directly and
 fights with systemd for ownership of the same unit.
@@ -281,9 +306,9 @@ timer only reacts to image digest changes, not file changes.
 
 ## 7. Kubernetes
 
-**Not how this org runs macula-station today** — the fleet is
-systemd + containers (Docker+watchtower or Podman+Quadlet, above), and a
-prior k3s deployment was decommissioned org-wide. This section is for
+**Not how this org runs macula-station today** — the real fleet is Docker +
+watchtower on public boxes (§5), and a prior k3s deployment (for unrelated
+services, not stations) was decommissioned org-wide. This section is for
 operators who want to run a station on their own cluster; treat it as a
 correct starting point, not a battle-tested one.
 
@@ -346,9 +371,7 @@ Kubernetes Deployment/StatefulSet polls the registry the way watchtower or
 `podman auto-update` do; `:latest` on Kubernetes just means "whatever was
 current the first time this pod scheduled," silently, which is worse than
 either fleet pattern above. If you want auto-updates, put a tool like Flux
-or Keel in front of it — this org decommissioned its own Flux/k3s setup for
-unrelated reasons (see the workspace root `CLAUDE.md`), not because the
-pattern is wrong for a Kubernetes deployment generally.
+or Keel in front of it.
 
 Same certificate rule as §4 applies: derive `certs`'s Secret from the
 station's own identity after first boot, don't hand it a generic
@@ -375,13 +398,13 @@ up. An unhealthy-but-alive station is visible in `docker ps` / `kubectl get
 pods` and to fleet monitoring, but nothing restarts it automatically from
 that signal alone unless you wire something that watches for it
 (Kubernetes' `livenessProbe` with `failureThreshold`, shown above, does
-handle this correctly out of the box; the Docker/Podman forms in §5–§6 do
-not, and need an external watcher if you want the same guarantee).
+handle this correctly out of the box; the Docker/Podman forms in §5 and §6
+do not, and need an external watcher if you want the same guarantee).
 
 ---
 
 ## 9. See also
 
 - [`README.md`](../README.md) — what a station is, architecture overview
-- [`macula-io/CLAUDE.md`](https://github.com/macula-io/macula-io/blob/main/CLAUDE.md) — org-wide "Deployment Environments" section, fleet inventory
+- `macula-demo/infrastructure/FLEET.md` — the real fleet's current roster, IPs, and dial graph (private repo)
 - [`docs/CASCADE_INVESTIGATION.md`](CASCADE_INVESTIGATION.md) — a real production incident and its fix, useful context for what "unhealthy" has actually meant in practice on this fleet
