@@ -65,16 +65,17 @@ they're built on the identical codec.
 
 ## Status
 
-**In production, not versioned yet.** This has been under continuous
-development since 2026-04-14 (500+ commits) and runs live today on a real
-multi-station fleet — the DHT, SWIM, pub/sub relay, RPC relay, streaming
-relay, and content transfer are all exercised against real traffic, not
-just tests. What it does *not* have yet is a formal release line: sub-apps
-are still tagged `0.1.0`, and the deployable unit is a container image
-(`:main`/`:<sha>` off every commit, `:vX.Y.Z`/`:latest` off a real tag —
-see the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md)), not a hex package.
-If you need the exact behavior a given box is running, the image tag is
-the source of truth, not a version number in this repo.
+**In production, first tagged release `v0.1.0`.** This has been under
+continuous development since 2026-04-14 (500+ commits) and runs live today
+on a real multi-station fleet — the DHT, SWIM, pub/sub relay, RPC relay,
+streaming relay, and content transfer are all exercised against real
+traffic, not just tests. Sub-apps stay tagged `0.1.0` internally by design;
+the deployable unit is a container image (`:main`/`:<sha>` off every
+commit, `:vX.Y.Z`/`:vX.Y`/`:latest` off a real tag — see the
+[Deployment Guide](docs/DEPLOYMENT_GUIDE.md)), not a hex package. If you
+need the exact behavior a given box is running, the image tag is the
+source of truth, not a version number in this repo — `v0.1.0` marks
+"first release worth pointing an outsider at," not a stability guarantee.
 
 The full architecture plans (`plans/PLAN_MACULA_V2_*`) predate the current
 state and describe design intent, not current status — treat them as
