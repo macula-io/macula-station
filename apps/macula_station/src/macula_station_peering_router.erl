@@ -14,7 +14,7 @@
 %%% entirely by `macula_station_peer_observer:fan_out_event/3' +
 %%% `relay_publish'.)
 %%%
-%%% The router polls every `?TICK_MS' (default 2s):
+%%% A full sync (`sync/2'):
 %%%   1. asks the registry for every materialised realm,
 %%%   2. for each realm, asks its pubsub_server for its current topics,
 %%%   3. asks `macula_station_peer_links:connections/0' for the live
@@ -24,10 +24,36 @@
 %%%      subscribe-on-peer for the changes,
 %%%   6. diff-propagates local ADVERTISEs to connected peers.
 %%%
-%%% V1 used local subscribe/unsubscribe events as the trigger; V2's
-%%% hecate_pubsub_server doesn't emit events on subscription change,
-%%% so we poll. `peer_observer' also calls `sync_now/1' on every
-%%% inbound SUBSCRIBE / UNSUBSCRIBE for sub-tick latency.
+%%% This used to run unconditionally on every `?TICK_MS' (2s) tick,
+%%% continuously, whether or not anything had actually changed --
+%%% O(topics x peers) work every 2 seconds forever, which dominates at
+%%% high topic cardinality (see the topic-naming guide's own warning
+%%% against per-entity topics: this router's cross-product is exactly
+%%% where that cost lands). The moduledoc used to justify this by
+%%% saying "V2's hecate_pubsub_server doesn't emit events on
+%%% subscription change, so we poll" -- true when written, no longer
+%%% true: EVERY production path that can change either half of the
+%%% desired cross-product now kicks this router directly (`Pid !
+%%% tick', handled below as a prompt out-of-band sync that does NOT
+%%% re-arm the periodic timer):
+%%%   - inbound SUBSCRIBE / UNSUBSCRIBE frames
+%%%     (`macula_station_route_pubsub_frames:deliver_typed/6')
+%%%   - a disconnected peer/daemon's subscriptions being purged
+%%%     (`macula_station_peer_observer:purge_pubsub_now/3')
+%%%   - a peer link registering, unregistering, or dying
+%%%     (`macula_station_peer_links' register/unregister/DOWN)
+%%%
+%%% With every real change already kicking this router at sub-tick
+%%% latency, the periodic `timer_tick' now does a full sync ONLY on:
+%%% the very first tick after boot (subscriptions/peers may already
+%%% exist before this process started, or before a kick could reach
+%%% it -- a kick sent while `whereis/1' still resolves to `undefined'
+%%% is silently lost), and the periodic RECONCILE (still
+%%% `?RECONCILE_EVERY_TICKS', still exists to heal drift a lost kick
+%%% would otherwise leave permanent -- same rationale as the ADVERTISE
+%%% reconcile below, now applied symmetrically to the pubsub side).
+%%% Every OTHER periodic tick is a no-op: re-arm the timer, nothing
+%%% else. See `should_periodic_sync/2'.
 %%%
 %%% **Multi-realm**: realms are first-class. The router enumerates
 %%% them via `hecate_pubsub_registry:list_realms/1'. Stations are
@@ -42,7 +68,7 @@
 
 -export([start_link/1, stop/1, sync_now/1]).
 -ifdef(TEST).
--export([advertise_to_send/3]).
+-export([advertise_to_send/3, should_periodic_sync/2]).
 -endif.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -98,7 +124,11 @@
     %% Diff ticks since the last full reconcile. At ?RECONCILE_EVERY_TICKS
     %% the next periodic tick re-asserts the full advertise set.
     ticks           = 0 :: non_neg_integer(),
-    timer_ref       :: reference() | undefined
+    timer_ref       :: reference() | undefined,
+    %% False until the first sync (kicked or periodic) actually runs.
+    %% Forces the very first periodic tick to sync unconditionally --
+    %% see `should_periodic_sync/2' and the moduledoc.
+    synced_once     = false :: boolean()
 }).
 
 %%====================================================================
@@ -154,15 +184,31 @@ handle_cast(_Msg, S) ->
 handle_info(timer_tick, S0) ->
     ok = drain_ticks(),
     {S1, Reconcile} = bump_reconcile(S0),
-    {noreply, schedule_tick(sync(S1, Reconcile))};
+    {noreply, schedule_tick(maybe_periodic_sync(S1, Reconcile))};
 %% A kick: every direct ADVERTISE / SUBSCRIBE / peer change on this station sends
 %% `Pid ! tick'. Sync promptly (latency-sensitive), coalescing a burst via
 %% drain_ticks, but do NOT arm a timer — the periodic `timer_tick' already does.
 handle_info(tick, S) ->
     ok = drain_ticks(),
-    {noreply, sync(S, false)};
+    {noreply, sync(S#state{synced_once = true}, false)};
 handle_info(_, S) ->
     {noreply, S}.
+
+%% Whether a PERIODIC tick needs to run a real sync, vs. being a no-op
+%% that just re-arms the timer. Pure, so the decision can be tested
+%% without a live router — same idiom as `advertise_to_send/3'. Kicks
+%% (`handle_info(tick, ...)' above) always sync; this only governs the
+%% periodic-timer path. See the moduledoc for the full rationale.
+-spec should_periodic_sync(Reconcile :: boolean(), SyncedOnce :: boolean()) -> boolean().
+should_periodic_sync(_Reconcile, false) -> true;   %% first tick after boot: unconditional
+should_periodic_sync(true,       true)  -> true;   %% the periodic reconcile safety net
+should_periodic_sync(false,      true)  -> false.  %% nothing changed since the last kick
+
+maybe_periodic_sync(S, Reconcile) ->
+    do_maybe_periodic_sync(should_periodic_sync(Reconcile, S#state.synced_once), S, Reconcile).
+
+do_maybe_periodic_sync(true,  S, Reconcile) -> sync(S#state{synced_once = true}, Reconcile);
+do_maybe_periodic_sync(false, S, _Reconcile) -> S.
 
 drain_ticks() ->
     receive

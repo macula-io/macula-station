@@ -1680,6 +1680,16 @@ notify_router_change() ->
             %% promptly but leaves the periodic `timer_tick' to re-arm.
             Pid ! tick, ok
     end.
+
+%% Same shape as `macula_station_route_pubsub_frames''s own copy: a
+%% local topic just lost its last subscriber, so the outgoing Bloom
+%% filter should pick that up on the debounce (~2s) rather than
+%% waiting for the periodic 30s rebuild.
+notify_bloom_change() ->
+    case whereis(macula_station_bloom_exchange) of
+        undefined -> ok;
+        Pid       -> macula_station_bloom_exchange:notify_local_change(Pid)
+    end.
 %% Pubsub Phase 2 step 3 — verify an inbound pubsub frame. An EVENT
 %% carrying a publisher-end-to-end signature is verified against the
 %% publisher (so it passes at any relay hop, not just one); loops are
@@ -1963,6 +1973,15 @@ purge_pubsub_now(false, _NodeId, _Reg) ->
     ok;
 purge_pubsub_now(true, NodeId, Reg) ->
     catch hecate_pubsub_registry:purge_subscriber(Reg, NodeId),
+    %% A purge can drop the LAST local subscriber for one or more
+    %% topics, same effect on the desired (Realm, Topic, Peer) set as
+    %% an ordinary UNSUBSCRIBE frame -- which already kicks both of
+    %% these (see `macula_station_route_pubsub_frames:deliver_typed/6').
+    %% This path didn't, so a disconnect-triggered topic removal only
+    %% surfaced on the router's/bloom's own next periodic cycle instead
+    %% of promptly.
+    notify_router_change(),
+    notify_bloom_change(),
     ok.
 
 maybe_remove(undefined, _Swim) -> ok;

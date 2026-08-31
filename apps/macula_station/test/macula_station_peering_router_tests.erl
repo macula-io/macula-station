@@ -83,3 +83,33 @@ reconcile_to_a_fresh_peer_sends_everything_test() ->
     {AddR, _} = ?M:advertise_to_send(true, Local, sets:new()),
     ?assertEqual(sorted(Local), sorted(AddD)),
     ?assertEqual(sorted(Local), sorted(AddR)).
+
+%%====================================================================
+%% should_periodic_sync/2 — periodic ticks stop being an unconditional
+%% O(topics x peers) poll now that every production path that can
+%% change the desired set kicks this router directly (see the
+%% moduledoc). A periodic tick still needs to sync on exactly two
+%% occasions; every other periodic tick is a no-op.
+%%====================================================================
+
+first_tick_after_boot_always_syncs_test() ->
+    %% SyncedOnce = false: subscriptions/peers may already exist before
+    %% this process started, or a kick may have arrived while
+    %% `whereis/1' still resolved to `undefined' and was silently lost
+    %% -- so the very first periodic tick can't skip, regardless of
+    %% Reconcile.
+    ?assert(?M:should_periodic_sync(false, false)),
+    ?assert(?M:should_periodic_sync(true, false)).
+
+reconcile_tick_always_syncs_test() ->
+    %% The periodic drift-healing safety net fires regardless of
+    %% whether anything is believed to have changed since the last
+    %% sync -- same reasoning as the ADVERTISE reconcile above.
+    ?assert(?M:should_periodic_sync(true, true)).
+
+ordinary_tick_after_first_sync_is_a_noop_test() ->
+    %% The steady-state case this fix exists for: once the router has
+    %% synced at least once and this isn't a reconcile tick, nothing
+    %% has changed that a kick wouldn't already have caught -- skip
+    %% the full O(topics x peers) recompute.
+    ?assertNot(?M:should_periodic_sync(false, true)).

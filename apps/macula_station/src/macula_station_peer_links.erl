@@ -132,13 +132,23 @@ handle_call(verified_peers, _From, #state{by_url = U} = S) ->
 handle_call(_Msg, _From, S) ->
     {reply, {error, unknown_call}, S}.
 
+%% `register'/`unregister' and the DOWN-triggered cleanup below all
+%% change what `connections/0' returns -- the peer half of the
+%% peering router's (Realm, Topic, Peer) desired set -- so all three
+%% kick it, same shape as the pubsub-subscription side's own
+%% `notify_router_change/0' copies. `set_peer_node_id'/
+%% `clear_peer_node_id' do NOT: `connections/0' includes every
+%% `by_url' entry regardless of `node_id' (only `verified_peers/0'
+%% filters on it), so neither changes what the router sees.
 handle_cast({register, Url, LinkPid}, S) ->
+    notify_router_change(),
     {noreply, do_register(Url, LinkPid, S)};
 handle_cast({set_peer_node_id, Url, NodeId}, S) ->
     {noreply, do_set_node_id(Url, NodeId, S)};
 handle_cast({clear_peer_node_id, Url}, S) ->
     {noreply, do_clear_node_id(Url, S)};
 handle_cast({unregister, Url}, S) ->
+    notify_router_change(),
     {noreply, drop_url(Url, S)};
 handle_cast(_Msg, S) ->
     {noreply, S}.
@@ -146,7 +156,7 @@ handle_cast(_Msg, S) ->
 handle_info({'DOWN', _Ref, process, Pid, _Reason},
             #state{by_pid = P} = S) ->
     case maps:find(Pid, P) of
-        {ok, Url} -> {noreply, drop_url(Url, S)};
+        {ok, Url} -> notify_router_change(), {noreply, drop_url(Url, S)};
         error     -> {noreply, S}
     end;
 handle_info(_Msg, S) ->
@@ -159,6 +169,17 @@ code_change(_OldVsn, S, _Extra) -> {ok, S}.
 %%====================================================================
 %% Internals
 %%====================================================================
+
+%% Same shape as `macula_station_route_pubsub_frames''s and
+%% `macula_station_peer_observer''s own copies (see either for the
+%% full rationale): async, best-effort, no-ops before the router has
+%% booted. The router treats `tick' as a kick -- syncs promptly, but
+%% only the periodic `timer_tick' re-arms its own timer.
+notify_router_change() ->
+    case whereis(macula_station_peering_router) of
+        undefined -> ok;
+        Pid       -> Pid ! tick, ok
+    end.
 
 do_register(Url, LinkPid, S0) ->
     %% Replace any prior entry for the same URL.

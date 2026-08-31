@@ -427,6 +427,88 @@ pubsub_purge_fires_after_grace_and_drops_the_topic_test_() ->
         end
     end}.
 
+%% A purge can drop the LAST local subscriber for a topic -- same
+%% effect on the peering router's desired set, and the bloom
+%% exchange's outgoing filter, as an ordinary UNSUBSCRIBE frame, which
+%% already kicks both (`macula_station_route_pubsub_frames:deliver_typed/6').
+%% This path didn't, so a disconnect-triggered topic removal only
+%% surfaced on their own next periodic cycle instead of promptly.
+%%
+%% `rebar3 eunit' boots the real `macula_station' OTP application
+%% (`{mod, {macula_station_app, []}}'), so a REAL supervised
+%% `macula_station_peering_router' MAY already be registered for this
+%% whole test run. That name is not safe to just `unregister': if a
+%% real process holds it, ripping the name away would corrupt shared
+%% state for the rest of the test session with no supervisor watching
+%% to fix it (unregistering a name doesn't restart anything). So it's
+%% captured BEFORE any hijacking (in Setup, which runs before this
+%% test body does anything), hijacked to point at THIS test process
+%% as LATE as possible (right before the `pubsub_purge' send, not at
+%% the top of the test), and the captured pid (real or `undefined')
+%% is put back in cleanup -- not just unregistered.
+%%
+%% The late hijack matters for more than tidiness: an early version of
+%% this test held the name from the very start (through the whole
+%% connect/subscribe/disconnect dance) and passed even with the
+%% production fix reverted -- some OTHER real activity in the
+%% fully-booted app sent this station's real router a `tick' during
+%% that wider window, a false positive with nothing to do with this
+%% fix. Confirmed RED (5/5 runs) and GREEN (5/5 runs) only after
+%% narrowing the hijack to just the purge's own processing.
+%%
+%% The bloom-exchange half of this fix (`notify_bloom_change/0', added
+%% alongside `notify_router_change/0' in `purge_pubsub_now/3') is NOT
+%% separately asserted here: `macula_station_bloom_exchange' is
+%% observably unstable under a bare eunit boot in this environment
+%% (its registration flaps between `undefined' and a live pid across
+%% and even within single test runs, unrelated to anything this fix
+%% touches), so hijacking its name here is not reliable. The one-line
+%% call mirrors `macula_station_route_pubsub_frames''s own
+%% already-established `notify_bloom_change/0' copy exactly -- not
+%% independently covered by a test there either.
+pubsub_purge_kicks_router_and_bloom_test_() ->
+    {setup, fun setup_with_pubsub_and_kick_capture/0,
+     fun teardown_with_pubsub_and_kick_capture/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, reg := Reg, peer_kp := PeerKp} = Ctx,
+            NodeId = macula_identity:public(PeerKp),
+            Realm  = crypto:strong_rand_bytes(32),
+            Topic  = <<"t">>,
+            ConnPid = spawn_dummy(),
+            Obs ! {macula_peering, connected, ConnPid, NodeId},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =/= [] end, 500),
+            SubFrame = macula_frame:sign(macula_frame:subscribe(#{
+                topic      => Topic,
+                realm      => Realm,
+                subscriber => NodeId
+            }), PeerKp),
+            Obs ! {macula_peering, frame, ConnPid, SubFrame},
+            timer:sleep(50),
+
+            Obs ! {macula_peering, disconnected, ConnPid, peer_closed},
+            wait_for(fun() -> macula_station_peer_observer:peers(Obs)
+                              =:= [] end, 500),
+
+            %% Hijacked as late as possible, right before the one
+            %% message expected to trigger the kick -- shrinking the
+            %% window this test's `receive' is exposed to unrelated
+            %% `tick' traffic from elsewhere in the fully-booted app
+            %% (see the moduledoc-level comment above) to just the
+            %% purge's own processing, not the whole connect/subscribe/
+            %% disconnect dance above.
+            hijack_name(macula_station_peering_router),
+            Obs ! {pubsub_purge, NodeId, Reg},
+            wait_for(fun() ->
+                {ok, Server} = hecate_pubsub_registry:lookup(Reg, Realm),
+                not hecate_pubsub_server:is_subscribed(Server, Topic, NodeId)
+            end, 500),
+
+            ?assertEqual(tick, receive tick -> tick after 500 -> timeout end)
+        end
+    end}.
+
 pubsub_purge_skips_a_peer_that_reconnected_before_it_fired_test_() ->
     {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
      fun(Ctx) ->
@@ -1279,6 +1361,49 @@ teardown_with_pubsub(#{obs := Obs, swim := Swim, dht := Dht, reg := Reg}) ->
     _ = catch macula_swim:stop(Swim),
     _ = catch macula_dht:stop(Dht),
     ok.
+
+%% Same fixture as `setup_with_pubsub/0', plus safely capturing the
+%% router kick this test observes -- see
+%% `pubsub_purge_kicks_router_and_bloom_test_''s own comment for why
+%% this can't just `unregister'/`register' without restoring whatever
+%% (real singleton or `undefined') was there before. Capturing the pid
+%% HERE, before the test body does any hijacking, is what makes the
+%% restore correct regardless of which process does the hijacking
+%% (EUnit runs Setup and the test body in different processes).
+setup_with_pubsub_and_kick_capture() ->
+    Base = setup_with_pubsub(),
+    Base#{real_router_pid => whereis(macula_station_peering_router)}.
+
+teardown_with_pubsub_and_kick_capture(#{real_router_pid := RealRouterPid} = Ctx) ->
+    catch unregister(macula_station_peering_router),
+    restore_registration(macula_station_peering_router, RealRouterPid),
+    teardown_with_pubsub(Ctx).
+
+restore_registration(_Name, undefined) ->
+    ok;
+restore_registration(Name, Pid) when is_pid(Pid) ->
+    case is_process_alive(Pid) of
+        true  -> catch register(Name, Pid);
+        false -> ok
+    end.
+
+%% Registers `self()' under `Name', riding out a real singleton still
+%% mid-boot (see the call site's own comment): each attempt drops
+%% whoever currently holds it and immediately re-claims it, retrying
+%% on loss. A late-arriving real registration can still win a race
+%% against THIS attempt too, hence the retry rather than a single
+%% unregister-then-register pair.
+hijack_name(Name) -> hijack_name(Name, 10).
+
+hijack_name(Name, 0) ->
+    catch unregister(Name),
+    true = register(Name, self());
+hijack_name(Name, N) ->
+    catch unregister(Name),
+    case catch register(Name, self()) of
+        true -> ok;
+        _    -> timer:sleep(10), hijack_name(Name, N - 1)
+    end.
 
 %% Connect only. Since the capability gate, an INBOUND peer is not observed
 %% into the DHT and not added to SWIM until its capability probe resolves it as

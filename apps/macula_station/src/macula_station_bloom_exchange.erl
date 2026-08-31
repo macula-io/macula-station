@@ -266,15 +266,16 @@ peer_patterns(Pid) ->
 pattern_matches_ets(Topic) when is_binary(Topic) ->
     TopicSegments = binary:split(Topic, <<"/">>, [global]),
     try ets:tab2list(?PEER_PATTERNS_TABLE) of
-        Entries ->
-            [NodeId
-             || {NodeId, Patterns} <- Entries,
-                is_list(Patterns),
-                lists:any(fun(P) -> pattern_matches(P, TopicSegments) end,
-                         Patterns)]
+        Entries -> matching_node_ids(Entries, TopicSegments)
     catch
         error:badarg -> []
     end.
+
+matching_node_ids(Entries, TopicSegments) ->
+    [NodeId
+     || {NodeId, Patterns} <- Entries,
+        is_list(Patterns),
+        lists:any(fun(P) -> pattern_matches(P, TopicSegments) end, Patterns)].
 
 pattern_matches(Pattern, TopicSegments) when is_binary(Pattern) ->
     macula_topic_pattern:matches(binary:split(Pattern, <<"/">>, [global]),
