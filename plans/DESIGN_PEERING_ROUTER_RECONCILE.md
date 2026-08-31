@@ -1,6 +1,8 @@
 # DESIGN: fix the peering_router reconcile burn
 
-**Status:** DESIGN gate, pre-implementation. No code. For adversary attack.
+**Status:** A, B, C implemented 2026-08-31 (commits `26d012a`, and the one
+immediately after it — see §6). Not adversary-reviewed before shipping (see
+§6 for why, and what that means for confidence in this fix).
 **Date:** 2026-07-25
 **Root cause of:** the chronic fleet meltdown (boxes at 5-16 load, 2-cores, sustained),
 mis-attributed for months to oversubscription and reconnect storms. Both wrong.
@@ -112,3 +114,58 @@ Fire relief SHIPPED (ops, reversible): stopped the co-tenant station on macula.i
 14.25 -> 0.50, realm serves 200. Jitter + announcer hardening committed (e8b110a), pending
 a CI-flake fix and a tagged release to reach the pinned-`:5.1.0` stations. This router fix
 is the foundational one; the others are real but peripheral.
+
+## 6. Implementation, 2026-08-31 — NOT adversary-reviewed first, read this before trusting it
+
+Found this doc mid-session while investigating a DIFFERENT question (mesh topic-cardinality
+scaling, asked by the user) that turned out to be the same disease this doc already
+root-caused. Built the fix organically from re-deriving the mechanism against current
+source, not from re-reading this doc's own sketch first — the two ended up close but not
+identical. Flagging explicitly: this doc says **"For adversary attack"** and none happened.
+Shipped anyway on an explicit user go-ahead after a mid-session checkpoint, not because the
+review step stopped mattering.
+
+**A (product rebuild every 2s even with an empty delta): fixed, commit `26d012a`.**
+Every production path that changes either half of the desired set now kicks the router
+directly (`Pid ! tick`) instead of relying on the 2s poll to notice — see that module's own
+moduledoc for the full list. The periodic tick now runs a real sync only on the first tick
+after boot and on the existing `?RECONCILE_EVERY_TICKS` safety net; every other periodic
+tick is a no-op. Verified: `should_periodic_sync/2` is a pure, directly-tested decision
+function; full station suite 1104/1104, elvis clean, dialyzer clean at that commit.
+
+**B (blocking calls): fixed for subscribe/unsubscribe specifically, NOT for reads via the
+sketched ETS-mirror approach.** `subscribe_one/5` now spawns a throwaway worker per call
+(this doc's own "OR" alternative to a cast variant on `macula_station_link`, chosen because
+it needs no SDK-repo API change) instead of blocking the router in a synchronous 5s-timeout
+`gen_server:call` — matches the incident's own captured evidence (`current_function =
+{gen, do_call, 4}`) more directly than any other single change here. `local_realm_topics/1`'s
+own reads (`list_realms`/`lookup`/`topics`) still block, but now on an explicit 500ms
+timeout instead of the bare call's 5s default — bounds the worst case without the new
+ETS-mirror plumbing this doc sketches (§3, second bullet), which needs new mirror/writer
+code in the `macula` SDK repo itself and was deliberately left out of this pass as a
+materially bigger, cross-repo undertaking.
+
+**C (kick amplification): fixed with a 25ms leading-edge debounce**, not the full
+event-driven per-topic delta tracking this doc's §3 sketches (each kick still triggers a
+whole-set resync, just at most once per 25ms window instead of once per kick) — same
+shape `macula_station_bloom_exchange` already uses for its own local-change debounce,
+at a much tighter window given this router's own stricter latency requirements.
+
+**Open questions from §4 this pass does NOT answer:**
+- Q1 (is the burn actually A, B, or C) — never measured on the live fleet before or after;
+  this pass fixed all three roughly as this doc sketched, so the question of which one
+  actually dominated the historical 178% CPU incident remains unconfirmed.
+- Q2/Q3 (does async subscribe's fire-and-forget model risk permanent drift or a
+  never-resolving `pending` entry) — addressed at the design level (`apply_sub_result/3`
+  distinguishes "still pending, still wanted" from three stale cases, and the 30s reconcile
+  is the safety net for anything it can't resolve on its own), not verified against a real
+  wedged-peer-link scenario or a genuinely lost worker (e.g. brutally killed before it can
+  report back, which would leave that one `Key` stuck `pending` until the process
+  restarts — a real, narrow, deliberately-accepted residual risk, not a scenario this pass
+  built a timeout/retry mechanism for).
+- Q4/Q5 (rewrite vs. operational fix; interaction with the open multi-hop self-heal bug) —
+  not revisited.
+
+**Not measured**: no before/after live-fleet CPU/reduction profile, the same gap
+`DESIGN_SUBSCRIPTION_LIFECYCLE_GC.md` §6 already flagged for its own A. Worth doing once
+this is deployed and observed for a while, same as that doc recommends for its own fix.

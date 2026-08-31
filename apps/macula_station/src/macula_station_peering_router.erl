@@ -55,6 +55,45 @@
 %%% Every OTHER periodic tick is a no-op: re-arm the timer, nothing
 %%% else. See `should_periodic_sync/2'.
 %%%
+%%% Three more fixes from the same design doc, addressing its OTHER
+%%% two named cost sources (the first fix above was source A):
+%%%
+%%%   - **Source B (blocking calls).** The doc's own captured incident
+%%%     evidence for the real 178% CPU spike shows the router blocked
+%%%     in `gen:do_call' -- `macula_station_link:subscribe/unsubscribe'
+%%%     is a synchronous `gen_server:call' with a 5s timeout, one per
+%%%     added/removed triple. `subscribe_one/5' now spawns a
+%%%     throwaway worker per call instead (see its own comment) so a
+%%%     slow/wedged peer link can never stall this singleton; the
+%%%     worker reports back via `{sub_result, Key, Result}' so `subs'
+%%%     still ends up holding the real `SubRef' once the call actually
+%%%     completes (`pending' in the meantime). Unsubscribe doesn't need
+%%%     a response (idempotent on the wire) and is fired the same way.
+%%%     The doc's OWN principle 2 also calls the router's read calls
+%%%     (`list_realms'/`topics') out as blocking risks; those now use
+%%%     an explicit short timeout (`?READ_TIMEOUT_MS') instead of the
+%%%     bare `gen_server:call/2' default (5s) -- see `safe_list_realms/1'.
+%%%     Deliberately NOT the doc's own bigger alternative (a full ETS
+%%%     mirror of the pubsub registry's topic set, matching
+%%%     `macula_station_peer_observer_conns''s existing pattern): that
+%%%     needs new mirror/writer plumbing in the `macula' SDK repo
+%%%     itself, a materially larger, cross-repo change left for a
+%%%     separate pass.
+%%%   - **Source C (kick amplification).** A burst of kicks (e.g. many
+%%%     daemons subscribing at once) used to run one full sync PER
+%%%     kick (`drain_ticks/0' only coalesced whatever was ALREADY
+%%%     queued at dequeue time, not ones arriving mid-sync). Kicks are
+%%%     now debounced: the first kick in a burst schedules a sync
+%%%     `?KICK_DEBOUNCE_MS' later: every kick in that window is a
+%%%     no-op that trusts the sync will still see its cause. Leading-
+%%%     edge + fixed delay, not reset-on-every-kick, so sustained churn
+%%%     cannot starve it indefinitely -- same shape as
+%%%     `macula_station_bloom_exchange''s own established
+%%%     `schedule_debounced_rebuild/1', at a much tighter window (this
+%%%     router's own latency requirements are stricter -- see the
+%%%     `?TICK_MS' comment on why 15s was already too slow for e2e
+%%%     probes; 25ms is nowhere near that floor).
+%%%
 %%% **Multi-realm**: realms are first-class. The router enumerates
 %%% them via `hecate_pubsub_registry:list_realms/1'. Stations are
 %%% realm-agnostic infrastructure — the same router instance carries
@@ -68,7 +107,7 @@
 
 -export([start_link/1, stop/1, sync_now/1]).
 -ifdef(TEST).
--export([advertise_to_send/3, should_periodic_sync/2]).
+-export([advertise_to_send/3, should_periodic_sync/2, apply_sub_result/3]).
 -endif.
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -91,6 +130,22 @@
 %% plans/DESIGN_ADVERTISE_PROPAGATION_RECONCILE.md.
 -define(RECONCILE_EVERY_TICKS, 15).
 
+%% Leading-edge kick debounce (source C). Bounds how much added
+%% latency a burst of kicks can cost -- fixed, not extended on every
+%% new kick within the window -- while still coalescing the burst
+%% into one sync instead of one per kick. See the moduledoc.
+-define(KICK_DEBOUNCE_MS, 25).
+
+%% Bare `gen_server:call/2' (used by `hecate_pubsub_registry:list_realms/1'
+%% / `lookup/2' and `hecate_pubsub_server:topics/1') defaults to a 5s
+%% timeout -- exactly the class of stall the design doc's own captured
+%% incident evidence shows this router blocked on. `safe_list_realms/1'
+%% and friends call the SAME internal messages those wrappers send, but
+%% with this much shorter explicit timeout, so a slow/wedged registry
+%% or pubsub_server can only stall a sync briefly, not for 5 whole
+%% seconds. See the moduledoc's source B section.
+-define(READ_TIMEOUT_MS, 500).
+
 %% Registries are REGISTERED NAMES, resolved by gen_server:call/2 on
 %% every use. A pid captured at child-spec time is dead the moment the
 %% registry restarts, and supervisors reuse the original child spec, so
@@ -104,12 +159,16 @@
 
 -type realm() :: <<_:256>>.
 -type triple() :: {realm(), Topic :: binary(), LinkPid :: pid()}.
+%% A real subscription reference once the async wire subscribe
+%% completes, or `pending' while it's still in flight -- see
+%% `subscribe_one/5'/`apply_sub_result/3'.
+-type sub_state() :: reference() | pending.
 
 -record(state, {
     pubsub_registry :: atom() | pid(),
     identity        :: macula_identity:key_pair(),
     %% Active inbound subscriptions keyed by `{Realm, Topic, LinkPid}'.
-    subs            :: #{triple() => reference()},
+    subs            :: #{triple() => sub_state()},
     %% Per-peer (Realm, Proc) set we have ALREADY ADVERTISED on each
     %% peer's conn. Diff-driven: each tick we compute the desired set
     %% (= our local DIRECT advertises = remote_advertise entries we
@@ -128,7 +187,14 @@
     %% False until the first sync (kicked or periodic) actually runs.
     %% Forces the very first periodic tick to sync unconditionally --
     %% see `should_periodic_sync/2' and the moduledoc.
-    synced_once     = false :: boolean()
+    synced_once     = false :: boolean(),
+    %% The pending debounce timer's tag, or `undefined' if none is
+    %% scheduled -- see `handle_info(tick, ...)' and the moduledoc's
+    %% source C section. Matched against on fire so a stale message
+    %% (already satisfied by a periodic sync in the meantime) no-ops,
+    %% same idiom as `macula_station_bloom_exchange''s own
+    %% `debounce_ref'.
+    debounce_ref    = undefined :: reference() | undefined
 }).
 
 %%====================================================================
@@ -182,15 +248,32 @@ handle_cast(_Msg, S) ->
 %% periodic `timer_tick' from kicks, and re-arming only on `timer_tick', keeps
 %% exactly one periodic timer outstanding. Measured 2026-07-25.
 handle_info(timer_tick, S0) ->
-    ok = drain_ticks(),
     {S1, Reconcile} = bump_reconcile(S0),
     {noreply, schedule_tick(maybe_periodic_sync(S1, Reconcile))};
 %% A kick: every direct ADVERTISE / SUBSCRIBE / peer change on this station sends
-%% `Pid ! tick'. Sync promptly (latency-sensitive), coalescing a burst via
-%% drain_ticks, but do NOT arm a timer — the periodic `timer_tick' already does.
+%% `Pid ! tick'. Debounced (source C, see moduledoc): the first kick in a burst
+%% schedules a sync `?KICK_DEBOUNCE_MS' later; every kick arriving before it
+%% fires is a no-op (idempotent — nothing to reschedule, matching
+%% `macula_station_bloom_exchange''s own `schedule_debounced_rebuild/1'). Do NOT
+%% arm the periodic timer here — `timer_tick' already does.
+handle_info(tick, #state{debounce_ref = undefined} = S) ->
+    Ref = make_ref(),
+    erlang:send_after(?KICK_DEBOUNCE_MS, self(), {debounced_sync, Ref}),
+    {noreply, S#state{debounce_ref = Ref}};
 handle_info(tick, S) ->
-    ok = drain_ticks(),
-    {noreply, sync(S#state{synced_once = true}, false)};
+    {noreply, S};
+handle_info({debounced_sync, Ref}, #state{debounce_ref = Ref} = S) ->
+    {noreply, sync(S#state{synced_once = true, debounce_ref = undefined}, false)};
+%% Stale: a periodic sync (or an even newer debounce) already ran and cleared
+%% `debounce_ref' since this timer was armed. Matches
+%% `macula_station_bloom_exchange''s own `{rebuild, Ref}' guard exactly.
+handle_info({debounced_sync, _Stale}, S) ->
+    {noreply, S};
+%% A subscribe worker's outcome (source B, see moduledoc) — only accepted
+%% while this Key is still `pending'; see `apply_sub_result/3' for what
+%% happens otherwise.
+handle_info({sub_result, Key, Result}, #state{subs = Subs} = S) ->
+    {noreply, S#state{subs = apply_sub_result(Key, Result, Subs)}};
 handle_info(_, S) ->
     {noreply, S}.
 
@@ -207,15 +290,14 @@ should_periodic_sync(false,      true)  -> false.  %% nothing changed since the 
 maybe_periodic_sync(S, Reconcile) ->
     do_maybe_periodic_sync(should_periodic_sync(Reconcile, S#state.synced_once), S, Reconcile).
 
-do_maybe_periodic_sync(true,  S, Reconcile) -> sync(S#state{synced_once = true}, Reconcile);
+%% Also clears `debounce_ref': this periodic sync makes any pending
+%% debounced kick redundant, and clearing the field makes its eventual
+%% `{debounced_sync, Ref}' arrival no-op via the ref-mismatch guard in
+%% `handle_info/2' instead of running a second sync right after this
+%% one -- same "periodic satisfies any pending debounce" shape as
+%% `macula_station_bloom_exchange''s own `{rebuild, Ref}' clause.
+do_maybe_periodic_sync(true,  S, Reconcile) -> sync(S#state{synced_once = true, debounce_ref = undefined}, Reconcile);
 do_maybe_periodic_sync(false, S, _Reconcile) -> S.
-
-drain_ticks() ->
-    receive
-        tick -> drain_ticks()
-    after 0 ->
-        ok
-    end.
 
 %% Count only the periodic tick. On the Nth, reset and signal a full
 %% reconcile; otherwise a normal diff.
@@ -266,12 +348,27 @@ drop_subs_not_in(Desired, Subs) ->
     maps:filter(fun(Key, SubRef) -> keep_sub(sets:is_element(Key, Desired), Key, SubRef) end,
                 Subs).
 
-keep_sub(true, _Key, _SubRef) ->
+keep_sub(true, _Key, _SubState) ->
     true;
+%% Subscribe still in flight -- nothing real to cancel on the wire
+%% yet. If/when the worker's result lands, `apply_sub_result/3' sees
+%% this Key is no longer in `subs' and fires the unsubscribe then.
+keep_sub(false, _Key, pending) ->
+    false;
 keep_sub(false, Key, SubRef) ->
     {_Realm, _Topic, LinkPid} = Key,
-    catch macula_station_link:unsubscribe(LinkPid, SubRef),
+    async_unsubscribe(LinkPid, SubRef),
     false.
+
+%% Fire-and-forget in a throwaway process (source B, see moduledoc) --
+%% `macula_station_link:unsubscribe/2' is a synchronous 5s-timeout
+%% call, and unsubscribe is documented idempotent on the wire, so
+%% there's no result worth waiting for here the way there is for
+%% subscribe (which needs the real SubRef back to unsubscribe with
+%% LATER).
+async_unsubscribe(LinkPid, SubRef) ->
+    spawn(fun() -> catch macula_station_link:unsubscribe(LinkPid, SubRef) end),
+    ok.
 
 subscribe_for(Desired, Subs) ->
     lists:foldl(fun maybe_subscribe/2, Subs, Desired).
@@ -284,20 +381,66 @@ subscribe_present(true, Acc, _Key, _Realm, _Topic, _LinkPid) ->
 subscribe_present(false, Acc, Key, Realm, Topic, LinkPid) ->
     subscribe_one(Acc, Key, Realm, Topic, LinkPid).
 
+%% Spawns a throwaway worker to make the actual wire call (source B,
+%% see moduledoc) instead of calling `macula_station_link:subscribe/4'
+%% synchronously here -- a slow/wedged peer link (5s timeout) can no
+%% longer stall this singleton, only the one throwaway process making
+%% that one call. Marks `Key' `pending' immediately so a subsequent
+%% sync in the same window doesn't ALSO try to subscribe it (matches
+%% the existing `subscribe_present(true, ...)' no-op-if-already-there
+%% behaviour -- `maps:is_key/2' doesn't care about the value).
+%%
+%% `Router' (captured here, in THIS process, before spawning) is
+%% passed as the subscriber, not the worker's own pid -- the link
+%% monitors whoever it's told is the subscription's owner, and that
+%% must stay this router, not a process that's about to exit the
+%% moment the call returns.
 subscribe_one(Acc, Key, Realm, Topic, LinkPid) ->
-    %% Subscriber is `self()' so this router process registers as the
-    %% peer-side subscriber for the (realm, topic). The router does
-    %% NOT fan inbound EVENTs out itself — `peer_observer' owns
-    %% inbound delivery via `deliver_pubsub_typed(event, ...)';
-    %% subscribe-on-peer is just the interest signal.
-    %% LinkPid may be a `macula_station_link' SDK client OR a
-    %% `macula_station_outbound_link' (which gained the SDK API
-    %% surface in commit afd3542 — both handle subscribe).
-    try macula_station_link:subscribe(LinkPid, Realm, Topic, self()) of
-        {ok, SubRef} -> Acc#{Key => SubRef};
-        _Other       -> Acc
-    catch _:_         -> Acc
-    end.
+    Router = self(),
+    spawn(fun() -> subscribe_worker(Router, Key, Realm, Topic, LinkPid) end),
+    Acc#{Key => pending}.
+
+%% LinkPid may be a `macula_station_link' SDK client OR a
+%% `macula_station_outbound_link' (which gained the SDK API surface in
+%% commit afd3542 — both handle subscribe). The router does NOT fan
+%% inbound EVENTs out itself — `peer_observer' owns inbound delivery
+%% via `deliver_pubsub_typed(event, ...)'; subscribe-on-peer is just
+%% the interest signal.
+subscribe_worker(Router, Key, Realm, Topic, LinkPid) ->
+    Result = try macula_station_link:subscribe(LinkPid, Realm, Topic, Router) of
+        {ok, SubRef} -> {ok, SubRef};
+        Other        -> {error, Other}
+    catch Class:Reason -> {error, {Class, Reason}}
+    end,
+    Router ! {sub_result, Key, Result}.
+
+%% What to do with a subscribe worker's outcome. Only a Key still
+%% marked `pending' accepts it -- the one attempt we're actually
+%% still waiting on. Any other case means this result is STALE (a
+%% later sync already decided against this Key, or an even later
+%% attempt already resolved it): on success that leaves a real
+%% subscription nobody wants, so unsubscribe it right back; on
+%% failure there's nothing to do either way. A genuinely concurrent
+%% race (two attempts in flight for the same Key at once) is left to
+%% the periodic reconcile to sort out, same tolerance the moduledoc
+%% already documents for a lost kick.
+-spec apply_sub_result(triple(), {ok, reference()} | {error, term()},
+                       #{triple() => sub_state()}) -> #{triple() => sub_state()}.
+apply_sub_result(Key, Result, Subs) ->
+    do_apply_sub_result(maps:find(Key, Subs), Key, Result, Subs).
+
+do_apply_sub_result({ok, pending}, Key, {ok, SubRef}, Subs) ->
+    Subs#{Key => SubRef};
+do_apply_sub_result({ok, pending}, Key, {error, _}, Subs) ->
+    %% Retry on the next sync that still wants this Key -- simpler and
+    %% safer than a bespoke retry/backoff loop here.
+    maps:remove(Key, Subs);
+do_apply_sub_result(_StaleOrAbsent, Key, {ok, SubRef}, Subs) ->
+    {_Realm, _Topic, LinkPid} = Key,
+    async_unsubscribe(LinkPid, SubRef),
+    Subs;
+do_apply_sub_result(_StaleOrAbsent, _Key, {error, _}, Subs) ->
+    Subs.
 
 %%====================================================================
 %% Lookups
@@ -313,19 +456,24 @@ local_realm_topics(Reg) ->
         [{Realm, Topic} || Topic <- safe_topics_for_realm(Reg, Realm)]
     end, Realms).
 
+%% Calls `list_realms'/`lookup'/`topics'' OWN internal messages
+%% directly via `gen_server:call/3', bypassing `hecate_pubsub_registry'/
+%% `hecate_pubsub_server''s own wrapper functions (which use the bare
+%% 2-arity form, a 5s default timeout) -- see the moduledoc's source B
+%% section for why a short explicit timeout matters here specifically.
 safe_list_realms(Reg) ->
-    try hecate_pubsub_registry:list_realms(Reg)
+    try gen_server:call(Reg, list_realms, ?READ_TIMEOUT_MS)
     catch _:_ -> []
     end.
 
 safe_topics_for_realm(Reg, Realm) ->
-    Lookup = try hecate_pubsub_registry:lookup(Reg, Realm)
+    Lookup = try gen_server:call(Reg, {lookup, Realm}, ?READ_TIMEOUT_MS)
              catch _:_ -> error
              end,
     safe_topics_of(Lookup).
 
 safe_topics_of({ok, Server}) ->
-    try hecate_pubsub_server:topics(Server)
+    try gen_server:call(Server, topics, ?READ_TIMEOUT_MS)
     catch _:_ -> []
     end;
 safe_topics_of(_) ->

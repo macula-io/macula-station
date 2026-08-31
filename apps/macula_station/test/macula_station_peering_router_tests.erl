@@ -113,3 +113,58 @@ ordinary_tick_after_first_sync_is_a_noop_test() ->
     %% has changed that a kick wouldn't already have caught -- skip
     %% the full O(topics x peers) recompute.
     ?assertNot(?M:should_periodic_sync(false, true)).
+
+%%====================================================================
+%% apply_sub_result/3 -- source B (async subscribe). `subscribe_one/5'
+%% marks a Key `pending' the instant it spawns the worker, before the
+%% real wire call has even started; these tests pin what happens when
+%% that worker's outcome actually arrives, including the two STALE
+%% cases (the sync loop moved on before the response came back).
+%%====================================================================
+
+test_key() -> {crypto:strong_rand_bytes(32), <<"t">>, self()}.
+
+%% The common case: still waiting on exactly this attempt, and it
+%% succeeded -- `subs' gets the real SubRef.
+pending_key_accepts_a_successful_result_test() ->
+    Key = test_key(),
+    SubRef = make_ref(),
+    Subs = ?M:apply_sub_result(Key, {ok, SubRef}, #{Key => pending}),
+    ?assertEqual(#{Key => SubRef}, Subs).
+
+%% Still waiting, but it failed -- drop the Key entirely rather than
+%% leave it stuck `pending' forever; a later sync that still wants it
+%% will attempt it fresh.
+pending_key_drops_on_a_failed_result_test() ->
+    Key = test_key(),
+    Subs = ?M:apply_sub_result(Key, {error, timeout}, #{Key => pending}),
+    ?assertEqual(#{}, Subs).
+
+%% Stale: a later sync already decided against this Key (dropped from
+%% `subs' entirely) before the worker's success arrived. That leaves a
+%% real subscription nobody wants -- `subs' itself is untouched (there
+%% was nothing to update), and the actual cleanup (an async unsubscribe
+%% fires for the stale SubRef) is a side effect this pure function's
+%% return value can't show; not independently covered by a test here.
+stale_success_after_key_already_dropped_leaves_subs_unchanged_test() ->
+    Key = test_key(),
+    Subs = ?M:apply_sub_result(Key, {ok, make_ref()}, #{}),
+    ?assertEqual(#{}, Subs).
+
+%% Stale failure: nothing to do either way.
+stale_failure_after_key_already_dropped_is_a_noop_test() ->
+    Key = test_key(),
+    Subs = ?M:apply_sub_result(Key, {error, timeout}, #{}),
+    ?assertEqual(#{}, Subs).
+
+%% Stale: the Key is present but no longer `pending' (already resolved
+%% to a real SubRef by an earlier response, or reassigned) -- this
+%% response belongs to an OLD attempt, not the current one. Treated
+%% the same as "already dropped": `subs' is left alone here (the real
+%% side effect, an async unsubscribe of the STALE SubRef this
+%% response carries, is not observable from this pure function).
+stale_success_when_key_already_holds_a_different_subref_test() ->
+    Key = test_key(),
+    Current = make_ref(),
+    Subs = ?M:apply_sub_result(Key, {ok, make_ref()}, #{Key => Current}),
+    ?assertEqual(#{Key => Current}, Subs).
