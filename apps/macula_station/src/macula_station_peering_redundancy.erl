@@ -50,6 +50,35 @@
 %% peer set's diversity -- good enough to steer selection away from
 %% obvious duplication without a second DHT round-trip per tick.
 %%
+%% == Degree penalty (the "everyone converges on the same hub" fix) ==
+%%
+%% `novelty_score/2' alone has no term for how loaded the CANDIDATE
+%% already is -- only for how it compares to what the dialling station
+%% already holds. Measured live on `station-de-frankfurt' (2026-09-02):
+%% it carried 9 station peers against a fleet-wide `min_station_peers'
+%% of 3, tripped `macula_station_health_publisher''s peering_router
+%% pathological tripwire dozens of times over 3 hours (15-25k reds/s
+%% against a 10k/s ceiling), and the design doc this module already
+%% cites states the router's own tick cost is O(realms x topics x
+%% peers) -- so a 3x-target station pays 3x any other station's
+%% control-plane cost before counting event volume. Frankfurt kept
+%% winning novelty scoring independently across many stations simply
+%% for being the oldest, most-replicated DHT entry, and every new
+%% station bootstrapped with it as the sole static seed added one more
+%% guaranteed edge before this watchdog's own diversification could
+%% steer elsewhere.
+%%
+%% `apply_degree_penalty/3' subtracts a term derived from each
+%% candidate's OWN self-reported peer count -- read from its
+%% `node_record' (already gossiped fleet-wide via ordinary DHT
+%% replication for the realm topology view; see
+%% `macula_station_announcer''s `peers' field) via a LOCAL, in-process
+%% `macula_dht:find_local_record/2' lookup, no network round-trip. A
+%% candidate with no locally-cached record is treated as degree 0 (no
+%% penalty) -- unknown is not evidence of overload, and punishing it
+%% would just bias selection toward whichever candidates happen to be
+%% least visible.
+%%
 %% == Dial and stability ==
 %%
 %% At most ONE new dial fires per tick, via
@@ -94,7 +123,8 @@
          terminate/2, code_change/3]).
 
 -ifdef(TEST).
--export([rank/2, eligible/3, on_cooldown/3, pick_endpoint/1, under_target/2]).
+-export([rank/2, eligible/3, on_cooldown/3, pick_endpoint/1, under_target/2,
+         apply_degree_penalty/3, degree_penalty/2, peer_degree/2]).
 -endif.
 
 -export_type([opts/0, status/0]).
@@ -222,13 +252,16 @@ maybe_dial(false, _CurrentIds, S) -> S;
 maybe_dial(true,  CurrentIds,  S) -> dial_best_candidate(CurrentIds, S).
 
 dial_best_candidate(CurrentIds, #state{dht = Dht,
-                                        cfg = #peering_redundancy_cfg{candidate_pool = Pool}} = S) ->
+                                        cfg = #peering_redundancy_cfg{
+                                            candidate_pool    = Pool,
+                                            min_station_peers = Target}} = S) ->
     SelfId  = macula_dht:self_id(Dht),
     Entries = macula_dht:k_closest(Dht, SelfId, Pool),
     {CurrentEntries, Rest} = lists:partition(
         fun(E) -> lists:member(macula_dht_entry:node_id(E), CurrentIds) end, Entries),
     Candidates = eligible(Rest, CurrentIds, S#state.cooldown),
-    pick_and_dial(rank(Candidates, CurrentEntries), S).
+    Ranked = rank(Candidates, CurrentEntries),
+    pick_and_dial(apply_degree_penalty(Ranked, Dht, Target), S).
 
 eligible(Candidates, CurrentIds, Cooldown) ->
     Now = now_ms(),
@@ -245,6 +278,54 @@ on_cooldown(NodeId, Cooldown, Now) ->
 rank(Candidates, CurrentEntries) ->
     Scored = [{macula_dht_diversity:novelty_score(C, CurrentEntries), C} || C <- Candidates],
     lists:sort(fun({S1, _}, {S2, _}) -> S1 >= S2 end, Scored).
+
+%% Re-scores an already-diversity-ranked list against each candidate's
+%% OWN reported load, so an already-overloaded hub cannot keep winning
+%% on ASN/country/tier diversity alone. See the moduledoc's "Degree
+%% penalty" section for the incident this closes.
+apply_degree_penalty(Ranked, Dht, Target) ->
+    Adjusted = [{Score - degree_penalty(peer_degree(Dht, macula_dht_entry:node_id(C)), Target), C}
+                || {Score, C} <- Ranked],
+    lists:sort(fun({S1, _}, {S2, _}) -> S1 >= S2 end, Adjusted).
+
+%% Zero at or below the fleet's own healthy target; above it, one full
+%% novelty-scale point (matches `macula_dht_diversity''s per-dimension
+%% weight) per multiple of the target the candidate is already
+%% carrying, capped at novelty_score/2's own maximum (3.0) so this can
+%% fully outweigh a maximally-diverse candidate but never produces a
+%% runaway score.
+-define(DEGREE_PENALTY_CAP, 3.0).
+
+degree_penalty(PeerCount, Target) when PeerCount =< Target -> 0.0;
+degree_penalty(PeerCount, Target) ->
+    min(?DEGREE_PENALTY_CAP, (PeerCount - Target) / Target).
+
+%% This station's local view of a candidate's own peer count, from
+%% whatever `node_record' it has locally cached (an ordinary DHT
+%% record, not a live query -- see the moduledoc). `undefined'/absent
+%% both read as 0: no visibility is not evidence of overload.
+peer_degree(Dht, NodeId) ->
+    node_record_peer_count(macula_dht:find_local_record(Dht, NodeId)).
+
+node_record_peer_count([]) -> 0;
+node_record_peer_count([Record | Rest]) ->
+    case node_record_peers(Record) of
+        {ok, Peers} -> peers_length(Peers);
+        error       -> node_record_peer_count(Rest)
+    end.
+
+%% `16#01' is `macula_record''s own (unexported) TYPE_NODE_RECORD tag
+%% -- `macula_station_announcer:publish_tombstone/2' already hardcodes
+%% the same literal for the same reason: the SDK builds records with
+%% it but does not export it for classification.
+node_record_peers(#{type := 16#01} = Record) ->
+    #{peers := Peers} = macula_record:read_node_record(Record),
+    {ok, Peers};
+node_record_peers(_NonNodeRecord) ->
+    error.
+
+peers_length(undefined)               -> 0;
+peers_length(Peers) when is_list(Peers) -> length(Peers).
 
 pick_and_dial([], S) -> S;
 pick_and_dial([{_Score, Candidate} | _], S) -> dial_candidate(Candidate, S).

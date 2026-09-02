@@ -56,6 +56,56 @@ pick_endpoint_takes_first_test() ->
 pick_endpoint_undefined_when_empty_test() ->
     ?assertEqual(undefined, ?M:pick_endpoint([])).
 
+%% Degree penalty: zero at/below target, grows above it, capped at
+%% novelty_score/2's own maximum (3.0).
+degree_penalty_zero_at_or_below_target_test() ->
+    ?assertEqual(0.0, ?M:degree_penalty(2, 3)),
+    ?assertEqual(0.0, ?M:degree_penalty(3, 3)).
+
+degree_penalty_grows_above_target_test() ->
+    ?assertEqual(1.0, ?M:degree_penalty(6, 3)),
+    ?assertEqual(2.0, ?M:degree_penalty(9, 3)).
+
+degree_penalty_caps_test() ->
+    ?assertEqual(3.0, ?M:degree_penalty(999, 3)).
+
+%% peer_degree/2: no locally-cached record reads as 0, not a penalty.
+peer_degree_unknown_candidate_is_zero_test() ->
+    {ok, Dht} = macula_dht:start_link(#{self_id => crypto:strong_rand_bytes(32)}),
+    try
+        ?assertEqual(0, ?M:peer_degree(Dht, crypto:strong_rand_bytes(32)))
+    after
+        macula_dht:stop(Dht)
+    end.
+
+%% A candidate whose own node_record already reports a peer count
+%% above the fleet's target loses to one that reports none, even
+%% though the overloaded candidate is otherwise the more diverse pick
+%% -- the exact "everyone converges on the same hub" fix.
+apply_degree_penalty_demotes_an_overloaded_candidate_test() ->
+    {ok, Dht} = macula_dht:start_link(#{self_id => crypto:strong_rand_bytes(32)}),
+    try
+        Overloaded = entry(1, 100, <<"BE">>, t0),
+        Quiet      = entry(2, 100, <<"BE">>, t0),
+        seed_node_record(Dht, node_id(1), [node_id(90), node_id(91), node_id(92),
+                                            node_id(93), node_id(94), node_id(95)]),
+        %% Quiet has no node_record at all -- unknown, reads as 0.
+        %% Identical novelty scores (same asn/country/tier), so ranking
+        %% starts tied and the degree penalty alone must decide it.
+        Ranked = ?M:rank([Overloaded, Quiet], []),
+        [{TopScore, Top} | _] = ?M:apply_degree_penalty(Ranked, Dht, 3),
+        ?assertEqual(node_id(2), maps:get(node_id, Top)),
+        ?assert(TopScore >= 0.0)
+    after
+        macula_dht:stop(Dht)
+    end.
+
+seed_node_record(Dht, NodeId, Peers) ->
+    Kp     = macula_identity:generate(),
+    Signed = macula_record:sign(
+               macula_record:node_record(NodeId, [], 0, #{peers => Peers}), Kp),
+    ok = macula_dht:put_record(Dht, Signed).
+
 %%==================================================================
 %% Integration — force_tick/1 through a real DHT + a real
 %% outbound_links_sup, against a lightweight stub observer this test
