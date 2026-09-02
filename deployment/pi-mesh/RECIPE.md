@@ -108,7 +108,7 @@ echo batman-adv | sudo tee /etc/modules-load.d/batman-adv.conf
 ### 3. Run the provisioning script
 
 ```sh
-git clone https://codeberg.org/macula-internal/macula-station.git
+git clone https://github.com/macula-io/macula-station.git
 cd macula-station/deployment/pi-mesh
 sudo ./provision.sh
 ```
