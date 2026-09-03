@@ -226,6 +226,24 @@ is the authoritative detail.
 
 **Unblocked but not yet picked up:**
 
+- **Docker healthcheck doesn't detect a wedged connection-handling
+  process** — confirmed twice now: `station-it-milan` (2026-08-13,
+  see `FLEET.md`) and `station-de-frankfurt` (2026-09-03). Both
+  times the container stayed `healthy` — process alive, socket
+  still bound — while the station was fully dead on the mesh side.
+  2026-09-03: Frankfurt logged 8,580 `puzzle_invalid` rejections
+  from colocated `macula-realm` (its 4 unaudited
+  `macula_station_link:start_link/1` call sites were missing
+  `identity:`, fixed in `macula-realm` `2368929`) driving repeated
+  `peering_router pathological` tripwire trips with escalating
+  peak cost (13.7k → 438k reds/s across ~17 h) until the process
+  went completely silent — zero log output for the ~1h44m until
+  discovered, recovered by a redeploy. The current healthcheck
+  needs to probe actual QUIC/mesh liveness (e.g. a lightweight
+  self-dial, or a "last successful handshake" staleness check),
+  not just process/port presence. Trigger: "Start station
+  healthcheck liveness probe".
+
 - **`geo_check` + rich DHT observe spec** — replace `asn => 0,
   country => <<"??">>' defaults in
   `macula_station_peer_observer' with live geolocation lookup.
