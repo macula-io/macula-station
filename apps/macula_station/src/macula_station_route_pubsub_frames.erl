@@ -288,13 +288,13 @@ worker_loop(Reg, CT) ->
 %% (100k publishes * ~30 fan paths = ~3M verify calls across the
 %% mesh, ~600 scheduler-seconds total).
 %%
-%% The (publisher, seq) fields are present in the unverified frame
-%% body. A duplicate-claim from an attacker can force a *legitimate*
-%% EVENT to be dropped at this hop, but cannot inject content (the
-%% deliver path still verifies for `new' arrivals). Worst-case
-%% security impact = a denial-of-delivery for one realm-topic, which
-%% requires the attacker to predict the publisher's next seq. Net
-%% trade is a clear win.
+%% The (publisher, seq, topic) fields are present in the unverified
+%% frame body. A duplicate-claim from an attacker can force a
+%% *legitimate* EVENT to be dropped at this hop, but cannot inject
+%% content (the deliver path still verifies for `new' arrivals).
+%% Worst-case security impact = a denial-of-delivery for one
+%% realm-topic, which requires the attacker to predict the publisher's
+%% next seq. Net trade is a clear win.
 %%
 %% Other frame types (PUBLISH, SUBSCRIBE, UNSUBSCRIBE) verify as
 %% before — they're not amplified, and PUBLISH carries the publisher
@@ -311,17 +311,17 @@ process_frame(_Type, Frame, NodeId, Reg, CT) ->
     handle_pubsub_frame(verify_pubsub(Frame, NodeId), NodeId, Frame,
                         worker_state(Reg, CT)).
 
-%% Look up (publisher, seq) in the dedup cache without bumping the
-%% counter. If already-seen, drop pre-verify. If new, return
+%% Look up (publisher, seq, topic) in the dedup cache without bumping
+%% the counter. If already-seen, drop pre-verify. If new, return
 %% `proceed' and let the post-verify path do the actual record (so
 %% the cache only counts events we successfully verified + delivered
 %% — this matches existing telemetry semantics).
 %%
-%% Defensive: missing/malformed publisher or seq → proceed (cannot
-%% dedup, never drop blindly).
-fast_dedup_check(#{publisher := Pub, seq := Seq})
-  when is_binary(Pub), is_integer(Seq) ->
-    pre_verify_disposition(macula_station_event_dedup:peek(Pub, Seq));
+%% Defensive: missing/malformed publisher, seq or topic → proceed
+%% (cannot dedup, never drop blindly).
+fast_dedup_check(#{publisher := Pub, seq := Seq, topic := Topic})
+  when is_binary(Pub), is_integer(Seq), is_binary(Topic) ->
+    pre_verify_disposition(macula_station_event_dedup:peek(Pub, Seq, Topic));
 fast_dedup_check(_) ->
     proceed.
 
@@ -760,11 +760,24 @@ count_send({error, _Reason}) ->
     bump(?CTR_SEND_REFUSED),
     ok.
 
-%% (publisher, seq) dedup — see macula_station_peer_observer's notes
-%% (Phase 2 step 2/3). Decides per-EVENT whether to deliver or drop
-%% as a loop-back. Tolerates the cache being momentarily down (boot
-%% transient) and frames missing publisher/seq.
+%% (publisher, seq, topic) dedup — see macula_station_peer_observer's
+%% notes (Phase 2 step 2/3). Decides per-EVENT whether to deliver or
+%% drop as a loop-back. Tolerates the cache being momentarily down
+%% (boot transient) and frames missing publisher/seq/topic.
 %% Only an AUTHENTICATED publisher may touch the cache.
+%%
+%% Topic joined the key 2026-09: a bare (publisher, seq) key assumes
+%% one collision-free counter per identity across EVERY topic that
+%% identity ever publishes to. Found live: macula-go's Session.Call
+%% auto-publishes RPC telemetry facts under the caller's own identity
+%% from a process-wide counter starting at 1, independent of whatever
+%% counter an application uses for its own business publishes — the
+%% first business publish on a fresh process, seeded seq=1 (macula-go's
+%% own documented/tested convention), collided with that fact's key and
+%% was silently dropped here as a "duplicate", losing a real message,
+%% not a loop. See macula_station_event_dedup:seen_or_record/3's own
+%% doc. Topic is already part of what publisher_sig covers below, so
+%% this adds no new trust requirement.
 %%
 %% This used to key the cache off the raw `publisher' / `seq' fields of
 %% any verified frame. For an EVENT with no `publisher_sig',
@@ -787,17 +800,17 @@ count_send({error, _Reason}) ->
 event_dedup_disposition(V) ->
     event_disposition(authentic_event_key(V), V).
 
-authentic_event_key(#{publisher_sig := _, publisher := Pub, seq := Seq})
-  when is_binary(Pub), is_integer(Seq) ->
-    {Pub, Seq};
+authentic_event_key(#{publisher_sig := _, publisher := Pub, seq := Seq, topic := Topic})
+  when is_binary(Pub), is_integer(Seq), is_binary(Topic) ->
+    {Pub, Seq, Topic};
 authentic_event_key(_V) ->
     unauthenticated.
 
 event_disposition(unauthenticated, _V) ->
     bump(?CTR_UNAUTH_EVENT),
     deliver;
-event_disposition({Pub, Seq}, V) ->
-    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq), V).
+event_disposition({Pub, Seq, Topic}, V) ->
+    classify_event_dup(macula_station_event_dedup:seen_or_record(Pub, Seq, Topic), V).
 
 classify_event_dup(new, _V) ->
     deliver;
@@ -835,17 +848,17 @@ classify_event_dup(duplicate, V) ->
 record_origin_seq(Verified, NodeId) ->
     record_origin(origin_dedup_key(Verified, NodeId)).
 
-origin_dedup_key(#{publisher := Pub, seq := Seq}, NodeId)
-  when is_binary(Pub), is_integer(Seq), Pub =:= NodeId ->
-    {Pub, Seq};
+origin_dedup_key(#{publisher := Pub, seq := Seq, topic := Topic}, NodeId)
+  when is_binary(Pub), is_integer(Seq), is_binary(Topic), Pub =:= NodeId ->
+    {Pub, Seq, Topic};
 origin_dedup_key(_Verified, _NodeId) ->
     unauthenticated.
 
 record_origin(unauthenticated) ->
     bump(?CTR_UNAUTH_ORIGIN),
     ok;
-record_origin({Pub, Seq}) ->
-    _ = macula_station_event_dedup:seen_or_record(Pub, Seq),
+record_origin({Pub, Seq, Topic}) ->
+    _ = macula_station_event_dedup:seen_or_record(Pub, Seq, Topic),
     ok.
 
 notify_router_change() ->

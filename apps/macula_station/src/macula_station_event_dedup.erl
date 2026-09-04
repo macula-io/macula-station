@@ -14,15 +14,23 @@
 %%% the publisher signature (`macula_frame:verify_publisher/1') and
 %%% removing the relay re-sign.
 %%%
-%%% Bounded: one ETS `set' keyed `{Publisher, Seq}', swept every
-%%% `?SWEEP_MS', entries evicted once older than `?TTL_MS'. O(1) per
-%%% record (atomic `ets:insert_new/2'); no per-frame signing — the
-%%% per-frame Ed25519 cost is what flaked the reverted attempt 3, and
-%%% it is simply absent here.
+%%% Bounded: one ETS `set' keyed `{Publisher, Seq}' (or, via the
+%%% arity-3 API below, `{Publisher, Seq, Topic}' -- see
+%%% `seen_or_record/3''s own doc for why a bare `(Publisher, Seq)' key
+%%% turned out to be too coarse), swept every `?SWEEP_MS', entries
+%%% evicted once older than `?TTL_MS'. O(1) per record (atomic
+%%% `ets:insert_new/2'); no per-frame signing — the per-frame Ed25519
+%%% cost is what flaked the reverted attempt 3, and it is simply
+%%% absent here. The two key shapes never collide (different tuple
+%%% arity) and coexist in the same table; the sweep's match spec only
+%%% inspects the outer `{Key, Timestamp}' row, so it evicts both
+%%% shapes identically without needing to know which one it's looking
+%%% at.
 -module(macula_station_event_dedup).
 -behaviour(gen_server).
 
--export([start_link/0, seen_or_record/2, peek/2, window_size/0, dup_count/0]).
+-export([start_link/0, seen_or_record/2, seen_or_record/3, peek/2, peek/3,
+         window_size/0, dup_count/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
@@ -72,6 +80,47 @@ record(_Tab, Publisher, Seq) ->
         false -> bump_dup()
     end.
 
+%% @doc As `seen_or_record/2', additionally scoped by `Topic'.
+%%
+%% Why: a bare `(Publisher, Seq)' key assumes every SDK maintains ONE
+%% collision-free sequence counter per identity across its ENTIRE
+%% publish surface. That assumption doesn't hold today -- e.g.
+%% macula-go's `Session.Call' auto-publishes RPC telemetry facts
+%% (`rpc.sent_v1'/`rpc.completed_v1') under the caller's own identity
+%% from a process-wide counter starting at 1, independent of whatever
+%% counter an application uses for its own business publishes on a
+%% DIFFERENT topic. The first business publish on a fresh process,
+%% seeded the same way (seq=1, the SDK's own documented/tested
+%% convention), collides with that fact's key and was silently
+%% dropped here as a "duplicate" -- a real message lost, not a loop.
+%% Scoping by Topic (a genuine loop still repeats the identical
+%% (publisher, seq, topic) triple, so loop-kill is unaffected) turns
+%% that into two distinct, both-delivered keys. See
+%% `macula_station_route_pubsub_frames:event_dedup_disposition/1' and
+%% `record_origin_seq/2', the only callers -- both reach this only
+%% with a Topic that is already part of what `publisher_sig' (EVENT)
+%% or the connection's own attested identity (PUBLISH) covers, so this
+%% adds no new trust requirement over the 2-arity form.
+%%
+%% A distinct key shape (3-tuple vs. the 2-arity form's 2-tuple) --
+%% never collides with a bare `{Publisher, Seq}' entry recorded via
+%% the arity-2 API, so the two forms coexist safely in one table.
+-spec seen_or_record(macula_identity:pubkey(), non_neg_integer(), binary()) ->
+    new | duplicate.
+seen_or_record(Publisher, Seq, Topic)
+  when is_binary(Publisher), is_integer(Seq), Seq >= 0, is_binary(Topic) ->
+    record(ets:whereis(?TAB), Publisher, Seq, Topic);
+seen_or_record(_Publisher, _Seq, _Topic) ->
+    new.
+
+record(undefined, _Publisher, _Seq, _Topic) ->
+    new;
+record(Tab, Publisher, Seq, Topic) ->
+    case ets:insert_new(Tab, {{Publisher, Seq, Topic}, now_ms()}) of
+        true  -> new;
+        false -> bump_dup()
+    end.
+
 %% @doc Read-only peek. Returns `seen' if `{Publisher, Seq}' is in
 %% the cache, `absent' otherwise. Does NOT insert and does NOT bump
 %% the duplicate counter — used by the dispatcher's pre-verify
@@ -88,6 +137,23 @@ peek(_Publisher, _Seq) ->
 peek_lookup(undefined, _Publisher, _Seq) -> absent;
 peek_lookup(_Tab, Publisher, Seq) ->
     case ets:lookup(?TAB, {Publisher, Seq}) of
+        []    -> absent;
+        [_|_] -> seen
+    end.
+
+%% @doc As `peek/2', additionally scoped by `Topic' -- the pre-verify
+%% fast-path counterpart of `seen_or_record/3'; see its own doc for
+%% why. Read-only, same as `peek/2'.
+-spec peek(macula_identity:pubkey(), non_neg_integer(), binary()) -> seen | absent.
+peek(Publisher, Seq, Topic)
+  when is_binary(Publisher), is_integer(Seq), Seq >= 0, is_binary(Topic) ->
+    peek_lookup(ets:whereis(?TAB), Publisher, Seq, Topic);
+peek(_Publisher, _Seq, _Topic) ->
+    absent.
+
+peek_lookup(undefined, _Publisher, _Seq, _Topic) -> absent;
+peek_lookup(Tab, Publisher, Seq, Topic) ->
+    case ets:lookup(Tab, {Publisher, Seq, Topic}) of
         []    -> absent;
         [_|_] -> seen
     end.

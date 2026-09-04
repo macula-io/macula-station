@@ -24,6 +24,8 @@
 
 -define(VICTIM,   <<9:256>>).
 -define(ATTACKER, <<66:256>>).
+-define(TOPIC,       <<"io.macula/test/dedup_auth">>).
+-define(OTHER_TOPIC, <<"io.macula/test/dedup_auth/other">>).
 
 %%====================================================================
 %% Fixture
@@ -39,7 +41,10 @@ dedup_authentication_test_() ->
       fun unsigned_event_cannot_suppress_a_signed_one/1,
       fun unsigned_event_is_always_delivered/1,
       fun origin_seeds_only_for_the_connected_daemon/1,
-      fun origin_refuses_a_third_party_publisher/1
+      fun origin_refuses_a_third_party_publisher/1,
+      fun same_seq_different_topic_is_not_deduped/1,
+      fun same_seq_same_topic_is_still_deduped/1,
+      fun origin_seed_on_one_topic_does_not_suppress_another/1
      ]}.
 
 setup() ->
@@ -114,14 +119,77 @@ origin_refuses_a_third_party_publisher(_) ->
     end.
 
 %%====================================================================
+%% Topic scoping (2026-09 fix) -- the actual bug: a bare (publisher,
+%% seq) key can't tell a genuinely new publish on a different topic
+%% apart from a repeat of an earlier one, when both share a seq value.
+%% Real-world trigger: macula-go's Session.Call auto-publishes
+%% rpc.sent_v1/rpc.completed_v1 under the caller's own identity from a
+%% process-wide counter starting at 1, independent of whatever counter
+%% an application uses for its own business publishes -- the first
+%% business publish on a fresh process, seeded seq=1 (macula-go's own
+%% documented/tested convention), collided with that fact's key and
+%% was silently dropped as a "duplicate": a real message lost, not a
+%% loop. Live-verified against the production fleet: identical in
+%% every way except the seq value, seq=1 missed 3/3 fresh-process
+%% trials, a wall-clock-unique seq delivered 3/3.
+%%====================================================================
+
+%% The regression test for the bug itself, through the real call path
+%% (event_dedup_disposition/1, not the dedup module directly): same
+%% publisher, same seq, two different topics -- an rpc.sent_v1-shaped
+%% EVENT followed by a business EVENT on an unrelated topic. Pre-fix
+%% the second `disposition/1' here returned `drop'.
+same_seq_different_topic_is_not_deduped(_) ->
+    fun() ->
+        Seq = 1,
+        ?assertEqual(deliver, disposition(signed_event(?VICTIM, Seq, <<"rpc.sent_v1">>))),
+        ?assertEqual(deliver, disposition(signed_event(?VICTIM, Seq, ?OTHER_TOPIC)))
+    end.
+
+%% Loop-kill is not weakened by topic-scoping: the SAME (publisher,
+%% seq, topic) triple repeated is still a duplicate, exactly like
+%% `signed_event_is_deduped/1' already covers for the default topic --
+%% pinned again here explicitly alongside the cross-topic case above,
+%% so the two properties are asserted side by side.
+same_seq_same_topic_is_still_deduped(_) ->
+    fun() ->
+        Seq = 12,
+        ?assertEqual(deliver, disposition(signed_event(?VICTIM, Seq, ?OTHER_TOPIC))),
+        ?assertEqual(drop,    disposition(signed_event(?VICTIM, Seq, ?OTHER_TOPIC)))
+    end.
+
+%% Same property as the EVENT path, exercised through the PUBLISH
+%% origin-seeding path instead: seeding the cache for a publish on one
+%% topic must not make a LOOPED-BACK event for a different topic (same
+%% publisher, same seq) look like a duplicate.
+origin_seed_on_one_topic_does_not_suppress_another(_) ->
+    fun() ->
+        Seq = 13,
+        ok = macula_station_route_pubsub_frames:record_origin_seq(
+               publish(?VICTIM, Seq, ?TOPIC), ?VICTIM),
+        ?assertEqual(seen,   peek(?VICTIM, Seq, ?TOPIC)),
+        ?assertEqual(absent, peek(?VICTIM, Seq, ?OTHER_TOPIC)),
+        ?assertEqual(deliver, disposition(signed_event(?VICTIM, Seq, ?OTHER_TOPIC)))
+    end.
+
+%%====================================================================
 %% Helpers
 %%====================================================================
 
 disposition(Frame) ->
     macula_station_route_pubsub_frames:event_dedup_disposition(Frame).
 
+%% `event_dedup_disposition/1' and `record_origin_seq/2' both now key
+%% via the arity-3 (publisher, seq, topic) form -- see
+%% `macula_station_event_dedup:seen_or_record/3''s own doc for why a
+%% bare (publisher, seq) key was too coarse. Every frame helper below
+%% uses the same fixed `?TOPIC', so this helper just needs to query
+%% the matching arity-3 key to see what those calls actually wrote.
 peek(Pub, Seq) ->
-    macula_station_event_dedup:peek(Pub, Seq).
+    peek(Pub, Seq, ?TOPIC).
+
+peek(Pub, Seq, Topic) ->
+    macula_station_event_dedup:peek(Pub, Seq, Topic).
 
 stats() ->
     macula_station_route_pubsub_frames:delivery_stats().
@@ -133,16 +201,25 @@ delta(Key, Before, After) ->
 %% not real signatures. Presence of `publisher_sig' is exactly what
 %% `verify_pubsub/2' has already checked against the publisher's key.
 signed_event(Pub, Seq) ->
-    (unsigned_event(Pub, Seq))#{publisher_sig => <<0:512>>}.
+    signed_event(Pub, Seq, ?TOPIC).
+
+signed_event(Pub, Seq, Topic) ->
+    (unsigned_event(Pub, Seq, Topic))#{publisher_sig => <<0:512>>}.
 
 unsigned_event(Pub, Seq) ->
+    unsigned_event(Pub, Seq, ?TOPIC).
+
+unsigned_event(Pub, Seq, Topic) ->
     #{frame_type => event,
       publisher  => Pub,
       seq        => Seq,
-      topic      => <<"io.macula/test/dedup_auth">>}.
+      topic      => Topic}.
 
 publish(Pub, Seq) ->
+    publish(Pub, Seq, ?TOPIC).
+
+publish(Pub, Seq, Topic) ->
     #{frame_type => publish,
       publisher  => Pub,
       seq        => Seq,
-      topic      => <<"io.macula/test/dedup_auth">>}.
+      topic      => Topic}.
