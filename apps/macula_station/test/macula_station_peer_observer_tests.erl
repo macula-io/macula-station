@@ -1137,6 +1137,143 @@ advertiser_disconnect_purges_advertised_procedures_test_() ->
         end
      end}.
 
+%%==================================================================
+%% Malformed frames: signed but missing a required field for their
+%% own frame_type. Signature verification only checks that the
+%% signature matches whatever bytes were actually signed -- it says
+%% nothing about which fields are present, so any connected peer can
+%% construct one of these (no auth bypass needed, just an incomplete
+%% frame). Before the required-field gate, each of these crashed the
+%% observer process with `{badkey, Field}' deep in dispatch -- the
+%% same failure SHAPE as the 2026-08-05 incident documented on
+%% `local_lookup/2' (an unexpected observer crash wiping the public
+%% conns ETS mirror on restart), just a different trigger.
+%%==================================================================
+
+call_missing_procedure_does_not_crash_observer_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, caller_kp := CallerKp} = Ctx,
+            CallerId   = macula_identity:public(CallerKp),
+            CallerConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 1, 500),
+            Incomplete = #{
+                version     => 2,
+                frame_type  => call,
+                frame_id    => crypto:strong_rand_bytes(16),
+                sent_at_ms  => erlang:system_time(millisecond),
+                call_id     => <<7:128>>,
+                realm       => <<7:256>>,
+                %% procedure deliberately omitted
+                payload     => #{},
+                deadline_ms => erlang:system_time(millisecond) + 5_000,
+                caller      => CallerId
+            },
+            Call = macula_frame:sign(Incomplete, CallerKp),
+            Obs ! {macula_peering, frame, CallerConn, Call},
+            timer:sleep(100),
+            ?assert(erlang:is_process_alive(Obs)),
+            %% Still functional, not just technically alive.
+            ?assertEqual([{CallerConn, CallerId}],
+                         macula_station_peer_observer:peers(Obs))
+        end
+    end}.
+
+advertise_missing_realm_does_not_crash_observer_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, adv_kp := AdvKp} = Ctx,
+            AdvId   = macula_identity:public(AdvKp),
+            AdvConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, AdvConn, AdvId},
+            wait_for_peers(Obs, 1, 500),
+            Incomplete = #{
+                version    => 2,
+                frame_type => advertise,
+                frame_id   => crypto:strong_rand_bytes(16),
+                sent_at_ms => erlang:system_time(millisecond),
+                %% realm deliberately omitted
+                procedure  => <<"_p">>,
+                advertiser => AdvId,
+                options    => #{}
+            },
+            Adv = macula_frame:sign(Incomplete, AdvKp),
+            Obs ! {macula_peering, frame, AdvConn, Adv},
+            timer:sleep(100),
+            ?assert(erlang:is_process_alive(Obs)),
+            ?assertEqual([{AdvConn, AdvId}],
+                         macula_station_peer_observer:peers(Obs))
+        end
+    end}.
+
+publish_missing_realm_does_not_crash_observer_test_() ->
+    {setup, fun setup_with_pubsub/0, fun teardown_with_pubsub/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs} = Ctx,
+            PubKp   = macula_identity:generate(),
+            PubId   = macula_identity:public(PubKp),
+            PubConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, PubConn, PubId},
+            wait_for_peers(Obs, 1, 500),
+            Incomplete = #{
+                version         => 2,
+                frame_type      => publish,
+                frame_id        => crypto:strong_rand_bytes(16),
+                sent_at_ms      => erlang:system_time(millisecond),
+                topic           => <<"x.v1">>,
+                %% realm deliberately omitted
+                publisher       => PubId,
+                seq             => 1,
+                payload         => hello,
+                published_at_ms => erlang:system_time(millisecond)
+            },
+            Pub = macula_frame:sign(Incomplete, PubKp),
+            Obs ! {macula_peering, frame, PubConn, Pub},
+            timer:sleep(100),
+            ?assert(erlang:is_process_alive(Obs)),
+            ?assertEqual([{PubConn, PubId}],
+                         macula_station_peer_observer:peers(Obs))
+        end
+    end}.
+
+stream_open_missing_stream_id_does_not_crash_observer_test_() ->
+    {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
+     fun(Ctx) ->
+        fun() ->
+            #{obs := Obs, caller_kp := CallerKp} = Ctx,
+            CallerId   = macula_identity:public(CallerKp),
+            CallerConn = spawn_dummy(),
+            Obs ! {macula_peering, connected, CallerConn, CallerId},
+            wait_for_peers(Obs, 1, 500),
+            Incomplete = #{
+                version     => 2,
+                frame_type  => stream_open,
+                frame_id    => crypto:strong_rand_bytes(16),
+                sent_at_ms  => erlang:system_time(millisecond),
+                %% stream_id deliberately omitted
+                procedure   => <<"_p">>,
+                realm       => <<7:256>>,
+                mode        => server_stream,
+                args        => #{},
+                deadline_ms => erlang:system_time(millisecond) + 5_000,
+                caller      => CallerId
+            },
+            Open = macula_frame:sign(Incomplete, CallerKp),
+            Wire = macula_frame:encode(Open),
+            Stream = make_ref(),
+            Obs ! {macula_peering, new_dedicated_stream, CallerConn, Stream},
+            Obs ! {quic, Wire, Stream, []},
+            timer:sleep(100),
+            ?assert(erlang:is_process_alive(Obs)),
+            ?assertEqual([{CallerConn, CallerId}],
+                         macula_station_peer_observer:peers(Obs))
+        end
+    end}.
+
 forwarded_result_relayed_back_to_origin_test_() ->
     {setup, fun setup_with_advertise/0, fun teardown_with_advertise/1,
      fun(Ctx) ->

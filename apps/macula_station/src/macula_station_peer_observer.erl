@@ -1020,7 +1020,82 @@ frame_source(ConnPid, P) ->
 route(_Frame, _ConnPid, undefined, S) ->
     S;
 route(Frame, ConnPid, NodeId, S) ->
-    dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S).
+    gated_dispatch(missing_required_field(Frame), Frame, ConnPid, NodeId, S).
+
+%% Required-field gate — a signed frame that decoded to a map with the
+%% right frame_type can still be MISSING a field that frame_type's own
+%% dispatch code assumes is present. `macula_frame:decode_cbor/2' only
+%% checks that CBOR decoding produced a map at all; nothing anywhere in
+%% the decode path checks required fields per frame_type. Signature
+%% verification (in `dispatch/5' below, and in `dispatch_dedicated_frame/4'
+%% for the stream-open path) doesn't catch this either — `sign/2' signs
+%% whatever map it is given, so any connected peer can construct and
+%% sign a genuinely incomplete frame; nothing about verification implies
+%% completeness. Before this gate, an incomplete frame reached a bare
+%% `maps:get(Key, Frame)' deep in dispatch (`local_lookup/2',
+%% `on_stream_open_verify/6', `on_advertise_frame/6', `deliver_pubsub/4',
+%% ...) and crashed THIS PROCESS with `{badkey, Key}' — the same failure
+%% SHAPE as the 2026-08-05 incident on `local_lookup/2' (an unexpected
+%% observer crash wiping the public conns ETS mirror on restart), just a
+%% different trigger. One gate, keyed by frame_type, checked once at
+%% each of the two points a raw wire frame first reaches this process
+%% (here, and `dispatch_dedicated_frame/4'), instead of scattered
+%% per-callsite `maps:get' fixes at every downstream read.
+gated_dispatch(none, Frame, ConnPid, NodeId, S) ->
+    dispatch(frame_category(Frame), Frame, ConnPid, NodeId, S);
+gated_dispatch({missing, Type, Field}, _Frame, _ConnPid, _NodeId, S) ->
+    drop_incomplete_frame(Type, Field),
+    S.
+
+%% `none' or `{missing, FrameType, Field}' for the first required field
+%% (per `required_fields/1') that Frame does not have.
+missing_required_field(Frame) ->
+    Type = macula_frame:frame_type(Frame),
+    tag_missing(first_missing_field(required_fields(Type), Frame), Type).
+
+tag_missing(none, _Type) -> none;
+tag_missing({missing, Field}, Type) -> {missing, Type, Field}.
+
+first_missing_field([], _Frame) ->
+    none;
+first_missing_field([Field | Rest], Frame) ->
+    field_present_or_next(maps:is_key(Field, Frame), Field, Rest, Frame).
+
+field_present_or_next(true, _Field, Rest, Frame) ->
+    first_missing_field(Rest, Frame);
+field_present_or_next(false, Field, _Rest, _Frame) ->
+    {missing, Field}.
+
+%% One entry per frame_type whose dispatch code reads a field straight
+%% off the frame with no default — every `maps:get/2' (not `/3') found
+%% reading `Frame' anywhere in this module's dispatch path, traced by
+%% hand, not guessed. Every OTHER frame_type either has no such
+%% unguarded read (e.g. `result'/`error': `deliver_reply/3' already
+%% defaults `call_id', the pattern this table generalises) or reaches
+%% no `maps:get' on `Frame' in this module at all (SWIM, DHT, the
+%% established-route leg of a dedicated stream, which routes by its
+%% physical QUIC stream reference, never a frame field).
+required_fields(call)         -> [procedure, realm, call_id];
+required_fields(stream_open)  -> [stream_id, realm, procedure];
+required_fields(advertise)    -> [realm, procedure, advertiser];
+required_fields(unadvertise)  -> [realm, procedure, advertiser];
+required_fields(subscribe)    -> [realm];
+required_fields(unsubscribe)  -> [realm];
+required_fields(publish)      -> [realm];
+required_fields(event)        -> [realm];
+required_fields(_Other)       -> [].
+
+%% Loud, not silent — matches this module's own established posture on
+%% every other frame this process declines to act on further (see
+%% `relay_overlay/3''s own comment on why an ambiguous silent drop
+%% blocked diagnosing a real incident).
+drop_incomplete_frame(Type, Field) ->
+    logger:warning("[peer_observer] dropping ~p frame missing required "
+                   "field ~p", [Type, Field]),
+    catch macula_diagnostics:event(
+            warning, <<"_macula.frame.missing_required_field">>,
+            #{frame_type => Type, field => Field}),
+    ok.
 
 frame_category(Frame) -> classify(macula_frame:frame_type(Frame)).
 
@@ -1302,10 +1377,25 @@ unknown_next_peer_reply(#{call_id := CallId}, SelfId) ->
 %% lookup needed) and relayed onto the paired stream.
 %%==================================================================
 
+%% Same required-field gate `route/4' applies to the shared control
+%% stream — see `missing_required_field/1''s own doc. Necessary here
+%% too and NOT covered by the other call site: STREAM_OPEN (and
+%% content-transfer CALL) arrive on a dedicated QUIC stream, never
+%% through `route/4' at all. A no-op for every OTHER frame_type this
+%% reaches (`stream_data'/`stream_end'/`stream_error'/`stream_reply'
+%% route by physical stream reference, not a frame field —
+%% `required_fields/1' returns `[]' for all of them).
 dispatch_dedicated_frame(Frame, ConnPid, Stream, S) ->
+    gated_dedicated_dispatch(missing_required_field(Frame), Frame, ConnPid,
+                             Stream, S).
+
+gated_dedicated_dispatch(none, Frame, ConnPid, Stream, S) ->
     on_dedicated_frame(maps:find(Stream, S#state.stream_route),
                        macula_frame:frame_type(Frame), Frame, ConnPid,
-                       Stream, S).
+                       Stream, S);
+gated_dedicated_dispatch({missing, Type, Field}, _Frame, _ConnPid, _Stream, S) ->
+    drop_incomplete_frame(Type, Field),
+    S.
 
 %% Content transfer never populates `stream_route' — a content stream
 %% carries one independent local CALL after another, each dispatched
