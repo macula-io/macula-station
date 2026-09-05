@@ -39,7 +39,7 @@
 
 -ifdef(TEST).
 %% Exports for unit tests -- pure helpers that are otherwise private.
--export([endpoint_url/2]).
+-export([endpoint_url/2, announcer_child/3]).
 -endif.
 
 %% Mesh-realm tag — protocol-internal events live under the all-zeros
@@ -687,6 +687,20 @@ listener_child(#station_cfg{bind = Bind, port = Port,
         modules  => [macula_station_listener]
     }.
 
+%% `hostname' is genuinely optional, same as the geo fields below: a
+%% station with no configured `geo.hostname' announces NO hostname at
+%% all (dropped by `add_optional_fields/2', same as an unset city or
+%% lat/lng) rather than falling back to the OS/container hostname --
+%% that fallback used to make every unconfigured station announce a
+%% non-empty `hostname' regardless of whether it was actually a real,
+%% externally-resolvable DNS name (an OS hostname inside a container is
+%% essentially never that), which meant a genuinely DNS-less station
+%% (a bare-IP-only deployment, `stations-linode-toronto' being the
+%% intentional test case) looked identical, from a directory
+%% consumer's point of view, to one with a real, dialable hostname --
+%% see `macula_client:seed_from_fields/4''s own doc on the SDK side of
+%% this bug, and its Pinned-trust `host_advertised' fallback, which
+%% needs this fix to ever actually be reachable. Fixed 2026-09-05.
 announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
                              bind = Bind, port = Port, hostname = Host,
                              city = City, country = Country,
@@ -699,17 +713,17 @@ announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
         realms        => [],
         capabilities  => Caps,
         peer_observer => ObserverPid,
-        hostname      => hostname_or_default(Host),
         bind          => bind_to_binary(Bind),
         %% Own QUIC port, published in the station_endpoint record so a
         %% resolver can dial us (direct-dial discovery, Slice 3).
         port          => Port
     },
-    Opts = add_optional_geo(Base, #{city    => City,
-                                    country => Country,
-                                    lat     => Lat,
-                                    lng     => Lng,
-                                    power_m => PowerM}),
+    Opts = add_optional_fields(Base, #{hostname => Host,
+                                       city     => City,
+                                       country  => Country,
+                                       lat      => Lat,
+                                       lng      => Lng,
+                                       power_m  => PowerM}),
     #{
         id       => macula_station_announcer,
         start    => {macula_station_sup, start_announcer, [Opts]},
@@ -719,15 +733,17 @@ announcer_child(#station_cfg{identity = Kp, capabilities = Caps,
         modules  => [macula_station_announcer]
     }.
 
-hostname_or_default(undefined)               -> station_hostname();
-hostname_or_default(B) when is_binary(B)     -> B.
-
-%% Drop `undefined' geo fields so the announcer only stamps
-%% known-good values onto the node_record.
-add_optional_geo(Opts, Geo) ->
+%% Drop `undefined'-valued optional fields (hostname and the geo ones)
+%% so the announcer only ever stamps known-good values onto the
+%% node_record -- `macula_station_announcer:add_optional/3' does its
+%% own `maps:find/2' presence check on the map this returns, so an
+%% explicit `hostname => undefined' surviving into it would announce a
+%% literal `undefined' rather than correctly having no hostname at
+%% all.
+add_optional_fields(Opts, Fields) ->
     maps:fold(fun(_K, undefined, Acc) -> Acc;
                  (K,  V,         Acc) -> Acc#{K => V}
-              end, Opts, Geo).
+              end, Opts, Fields).
 
 content_announcer_child(#station_cfg{identity = Kp, bind = Bind, port = Port},
                         DhtPid) ->

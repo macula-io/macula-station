@@ -234,6 +234,59 @@ warm_boot_preserves_identity_test_() ->
     end}.
 
 %%==================================================================
+%% Announced hostname — genuinely optional, no OS-hostname fallback
+%%==================================================================
+
+%% RED (the bug): an unconfigured `geo.hostname' used to fall back to
+%% the OS/container hostname (`inet:gethostname()') and announce THAT
+%% as if it were a real, dialable DNS name -- indistinguishable, from
+%% a directory consumer's point of view, from a station that actually
+%% has one. Confirmed live against the real fleet's own
+%% `stations-linode-toronto' (no `geo.hostname' configured, so it
+%% announced its docker-compose hostname, a non-resolving label) --
+%% its discovered pool link sat permanently unconnected as a result.
+%% GREEN: no `hostname' key at all in the announcer's `Opts' when
+%% unconfigured -- `macula_station_announcer:node_record_opts/1''s own
+%% `maps:find/2' presence check (add_optional/3) then correctly omits
+%% it from the announced node_record entirely, exactly like an unset
+%% `city'/`lat'/`lng' already does.
+announcer_child_with_no_configured_hostname_omits_hostname_test() ->
+    Cfg = #station_cfg{identity = macula_identity:generate(),
+                       bind = "127.0.0.1", port = 4433,
+                       certfile = "cert.pem", keyfile = "key.pem",
+                       hostname = undefined},
+    Opts = announcer_opts(Cfg),
+    ?assertNot(maps:is_key(hostname, Opts)).
+
+%% A genuinely configured `geo.hostname' is still announced exactly as
+%% before -- this fix only changes the UNCONFIGURED case.
+announcer_child_with_configured_hostname_includes_it_test() ->
+    Cfg = #station_cfg{identity = macula_identity:generate(),
+                       bind = "127.0.0.1", port = 4433,
+                       certfile = "cert.pem", keyfile = "key.pem",
+                       hostname = <<"station-de-frankfurt.macula.io">>},
+    Opts = announcer_opts(Cfg),
+    ?assertEqual(<<"station-de-frankfurt.macula.io">>, maps:get(hostname, Opts)).
+
+%% An unset `city'/`country'/`lat'/`lng'/`power_m' were already
+%% correctly omitted before this fix (via the SAME filtering function,
+%% now renamed and reused for `hostname' too) -- pinned here so a
+%% future change to that shared function can't quietly regress this
+%% alongside `hostname'.
+announcer_child_with_no_geo_fields_omits_them_too_test() ->
+    Cfg = #station_cfg{identity = macula_identity:generate(),
+                       bind = "127.0.0.1", port = 4433,
+                       certfile = "cert.pem", keyfile = "key.pem"},
+    Opts = announcer_opts(Cfg),
+    [?assertNot(maps:is_key(K, Opts))
+     || K <- [city, country, lat, lng, power_m]].
+
+announcer_opts(Cfg) ->
+    #{start := {_Mod, _Fun, [Opts]}} =
+        macula_station_app:announcer_child(Cfg, self(), self()),
+    Opts.
+
+%%==================================================================
 %% Helpers
 %%==================================================================
 
