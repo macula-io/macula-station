@@ -128,10 +128,17 @@
     %% connection AND dedicated QUIC stream it was forwarded to, plus
     %% a TTL timer ref so a hung stream (advertiser crashed mid-stream,
     %% malformed STREAM_END) is reaped instead of leaking forever.
-    %% Cleared on STREAM_END / STREAM_ERROR / STREAM_REPLY (final
-    %% frames), on the timer, or on either side's connection dying.
+    %% Cleared on a fully-terminal frame (STREAM_ERROR, STREAM_REPLY,
+    %% STREAM_END(role=both), or -- mode-dependent, see
+    %% `maybe_close_stream_route/5' -- a STREAM_END(role=send) from
+    %% the side whose half-close means the exchange is over), on the
+    %% timer, or on either side's connection dying. Trailing `mode' is
+    %% the CALLER's own STREAM_OPEN declaration (server_stream /
+    %% client_stream / bidi), needed to know which side's half-close
+    %% is the terminal one.
     streams   = #{}      :: #{<<_:128>> => {pid(), reference(), pid(),
-                                            reference(), reference()}},
+                                            reference(), reference(),
+                                            macula_frame:stream_mode()}},
     %% Reverse index for O(1) relay: a dedicated QUIC stream reference
     %% (either the caller's or the advertiser's) to the paired
     %% {OtherConnPid, OtherStream, Sid}. Populated in lock-step with
@@ -705,8 +712,8 @@ on_forwarded_timeout({{_Origin, _TRef}, NewF}, S) ->
 
 on_stream_timeout(error, S) ->
     S;
-on_stream_timeout({{_CallerConn, CallerStream, _AdvConn, AdvStream, _TRef}, NewSt},
-                  S) ->
+on_stream_timeout({{_CallerConn, CallerStream, _AdvConn, AdvStream, _TRef,
+                    _Mode}, NewSt}, S) ->
     logger:info("[peer_observer] stream relay timed out — purging", []),
     close_stream_pair(CallerStream, AdvStream, S#state{streams = NewSt}).
 
@@ -1366,11 +1373,27 @@ on_routed_frame({error, _}, _Type, _Sid, _OtherStream, S) ->
     S;
 on_routed_frame({ok, Frame}, Type, Sid, OtherStream, S) ->
     relay_on_stream(OtherStream, Frame, S),
-    maybe_close_stream_route(Type, Sid, S).
+    maybe_close_stream_route(Type, Frame, Sid, OtherStream, S).
 
 on_stream_open_verify({error, _}, _Frame, _ConnPid, _Stream, _NodeId, S) ->
     S;
 on_stream_open_verify({ok, Frame}, _OrigFrame, ConnPid, Stream, _NodeId, S) ->
+    Sid = maps:get(stream_id, Frame),
+    on_stream_open_dedup(maps:is_key(Sid, S#state.streams), Frame, ConnPid, Stream, S).
+
+%% Refuse a STREAM_OPEN reusing a `stream_id' already tracked. Sids
+%% are caller-chosen (128 bits, but nothing stops a buggy or replaying
+%% peer from reusing one); without this check `track_stream_route/6'
+%% below would silently overwrite `streams' Sid entry while leaving
+%% the FIRST session's `stream_route' / `stream_bufs' entries and TTL
+%% timer orphaned — reachable only via their now-detached refs, never
+%% cleaned up except by that original timer eventually firing on a Sid
+%% no longer in `streams' (`on_stream_timeout/2''s `maps:take' then
+%% finds nothing and no-ops, leaking the two dedicated QUIC streams
+%% until their OWN connections eventually die).
+on_stream_open_dedup(true, Frame, _ConnPid, Stream, #state{self_id = SelfId} = S) ->
+    reply_on_stream(Stream, stream_duplicate_reply(Frame, SelfId), S);
+on_stream_open_dedup(false, Frame, ConnPid, Stream, S) ->
     on_stream_open_lookup(remote_lookup(Frame, S), Frame, ConnPid, Stream, S).
 
 %% Procedure not advertised on this station — synthesize a
@@ -1391,20 +1414,29 @@ on_stream_open_lookup({ok, #{conn_pid := AdvertiserConn}}, Frame,
 open_advertiser_stream({ok, AdvStream}, Frame, CallerConn, CallerStream,
                        AdvertiserConn, S) ->
     S1 = reply_on_stream(AdvStream, Frame, S),
+    %% `mode' — server_stream / client_stream / bidi — is the CALLER's
+    %% own declaration on STREAM_OPEN; the relay has no independent
+    %% source for it (unlike a provider's own SDK link, which knows
+    %% its own locally-advertised mode, `remote_advertise' here is the
+    %% same generic registry unary CALL uses and carries no mode of
+    %% its own). Stored so `maybe_close_stream_route/5' can apply the
+    %% right half-close semantics per mode. Default matches
+    %% `macula_frame.erl'/`macula_station_link.erl''s own.
+    Mode = maps:get(mode, Frame, server_stream),
     track_stream_route(maps:get(stream_id, Frame), CallerConn, CallerStream,
-                       AdvertiserConn, AdvStream, S1);
+                       AdvertiserConn, AdvStream, Mode, S1);
 open_advertiser_stream({error, _Reason}, Frame, _CallerConn, CallerStream,
                        _AdvertiserConn, #state{self_id = SelfId} = S) ->
     reply_on_stream(CallerStream,
                     stream_unavailable_reply(Frame, SelfId), S).
 
-track_stream_route(Sid, CallerConn, CallerStream, AdvConn, AdvStream,
+track_stream_route(Sid, CallerConn, CallerStream, AdvConn, AdvStream, Mode,
                    #state{streams = Streams, stream_route = Route,
                           stream_bufs = Bufs} = S) ->
     TRef = erlang:send_after(?STREAM_TTL_MS, self(), {stream_timeout, Sid}),
     S#state{
         streams = Streams#{Sid => {CallerConn, CallerStream, AdvConn,
-                                   AdvStream, TRef}},
+                                   AdvStream, TRef, Mode}},
         stream_route = Route#{CallerStream => {AdvConn, AdvStream, Sid},
                               AdvStream    => {CallerConn, CallerStream, Sid}},
         %% We opened AdvStream ourselves, so no `new_dedicated_stream'
@@ -1423,25 +1455,105 @@ stream_unavailable_reply(#{stream_id := Sid}, _SelfId) ->
                                 code      => <<"unavailable">>,
                                 message   => <<"failed to open relay stream">>}).
 
-%% STREAM_END / STREAM_ERROR / STREAM_REPLY are terminal. For
-%% server_stream (the only mode our suite exercises today) the
-%% server emits STREAM_END(role=send) and the stream is done. Bidi
-%% would close on a matched pair of STREAM_END(role=send) frames; a
-%% stricter implementation would wait for both. Close on the first
-%% terminal frame for now — the TTL timer catches the bidi case if
-%% the second END never arrives.
-maybe_close_stream_route(stream_end,   Sid, S) -> drop_stream_route(Sid, S);
-maybe_close_stream_route(stream_error, Sid, S) -> drop_stream_route(Sid, S);
-maybe_close_stream_route(stream_reply, Sid, S) -> drop_stream_route(Sid, S);
-maybe_close_stream_route(_Other, _Sid, S)      -> S.
+stream_duplicate_reply(#{stream_id := Sid}, _SelfId) ->
+    macula_frame:stream_error(#{stream_id => Sid,
+                                code      => <<"duplicate_stream_id">>,
+                                message   => <<"stream_id already in use">>}).
+
+%% STREAM_ERROR / STREAM_REPLY are unconditionally terminal for the
+%% whole session, both directions — an abort or the terminal answer
+%% ends the exchange regardless of which data direction is still
+%% "open". STREAM_END's `role' decides further, and — unlike a plain
+%% "both sides must half-close" rule — depends on `mode' too:
+%%
+%% `both' is a full close, same as an error/reply, in every mode.
+%%
+%% `send' (half-close) means different things per mode:
+%%   - `server_stream': only the PROVIDER produces data or a reply, so
+%%     only the PROVIDER's own half-close (relayed toward CallerStream)
+%%     ends the exchange — matching real production usage
+%%     (`macula_streamer:close/1' is `macula_stream:close_send/1', a
+%%     role=send half-close, not role=both: hecate-tube's
+%%     stream_video_clip_by_id ends every clip exactly this way). A
+%%     caller's own half-close in this mode is relayed but otherwise
+%%     ignored — the caller never sends application data in
+%%     server_stream, so it carries no completion meaning.
+%%   - `client_stream' / `bidi': a half-close from EITHER side never
+%%     ends the session by itself — only STREAM_REPLY / STREAM_ERROR
+%%     (or an explicit role=both) does. A client_stream caller's own
+%%     half-close (`close_send/1' after sending its chunks) is exactly
+%%     this case: the route — and both dedicated QUIC streams — must
+%%     stay open past it so the provider's reply can still be relayed
+%%     back. The TTL timer remains the fallback if that reply never
+%%     comes.
+%%
+%% Any `role' value other than `send'/`both' is not one this wire
+%% defines — decode does not validate it, so an untrusted peer can
+%% send anything. This process must survive arbitrary peer input, so
+%% an unrecognised role is treated pessimistically as fully terminal,
+%% not left unmatched.
+%%
+%% (Was: drop on the very first terminal frame regardless of role or
+%% mode, which closed a client_stream/bidi reply out from under itself
+%% before it could be relayed. A first attempt at a fix treated `send'
+%% as terminal only once BOTH sides had done it, mode-blind — that
+%% breaks the real server_stream close_send-only convention above,
+%% since a server_stream caller never sends its own half-close, and
+%% independently still drops a legal bidi reply that arrives right
+%% after a provider's own half-close. Per-mode dispatch, not a
+%% symmetric both-sides counter, is what both cases actually need.)
+maybe_close_stream_route(stream_error, _Frame, Sid, _OtherStream, S) ->
+    drop_stream_route(Sid, S);
+maybe_close_stream_route(stream_reply, _Frame, Sid, _OtherStream, S) ->
+    drop_stream_route(Sid, S);
+maybe_close_stream_route(stream_end, Frame, Sid, OtherStream, S) ->
+    close_on_stream_end(maps:get(role, Frame, both), Sid, OtherStream, S);
+maybe_close_stream_route(_Other, _Frame, _Sid, _OtherStream, S) ->
+    S.
+
+close_on_stream_end(both, Sid, _OtherStream, S) ->
+    drop_stream_route(Sid, S);
+close_on_stream_end(send, Sid, OtherStream, S) ->
+    close_on_half_close(Sid, OtherStream, S);
+close_on_stream_end(_UnrecognisedRole, Sid, _OtherStream, S) ->
+    drop_stream_route(Sid, S).
+
+close_on_half_close(Sid, OtherStream, #state{streams = Streams} = S) ->
+    apply_half_close(maps:find(Sid, Streams), OtherStream, Sid, S).
+
+apply_half_close(error, _OtherStream, _Sid, S) ->
+    %% Route already gone (raced a drop from the other direction, or a
+    %% stray/duplicate frame) — nothing to update.
+    S;
+apply_half_close({ok, {_CallerConn, CallerStream, _AdvConn, AdvStream,
+                       _TRef, Mode}},
+                 OtherStream, Sid, S) ->
+    %% `OtherStream' is who this half-close is being relayed TO (the
+    %% receiving side), so it tells us WHO just sent it: relayed to
+    %% AdvStream means the CALLER half-closed; relayed to CallerStream
+    %% means the ADVERTISER did.
+    close_if_terminal_half_close(Mode, OtherStream, AdvStream, CallerStream, Sid, S).
+
+%% Terminal iff relayed TO CallerStream -- i.e. it arrived FROM the
+%% advertiser/provider side (clause 1). Otherwise, in server_stream
+%% mode, `OtherStream' must be `AdvStream' by construction -- it's OUR
+%% OWN `stream_route' entry naming only these two streams, not peer
+%% input -- so clause 2 asserts that rather than absorbing a genuinely
+%% impossible internal state into a wildcard.
+close_if_terminal_half_close(server_stream, CallerStream, _AdvStream, CallerStream, Sid, S) ->
+    drop_stream_route(Sid, S);
+close_if_terminal_half_close(server_stream, AdvStream, AdvStream, _CallerStream, _Sid, S) ->
+    S;
+close_if_terminal_half_close(_ClientStreamOrBidi, _OtherStream, _AdvStream, _CallerStream, _Sid, S) ->
+    S.
 
 drop_stream_route(Sid, #state{streams = Streams} = S) ->
     close_stream_entry(maps:take(Sid, Streams), S).
 
 close_stream_entry(error, S) ->
     S;
-close_stream_entry({{_CallerConn, CallerStream, _AdvConn, AdvStream, TRef},
-                    NewStreams}, S) ->
+close_stream_entry({{_CallerConn, CallerStream, _AdvConn, AdvStream, TRef,
+                    _Mode}, NewStreams}, S) ->
     _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
     close_stream_pair(CallerStream, AdvStream, S#state{streams = NewStreams}).
 
@@ -1757,10 +1869,12 @@ drop_streams_for(ConnPid, #state{streams = Streams} = S) ->
     end, S, Streams).
 
 drop_stream_if_owned(ConnPid, Sid,
-                     {ConnPid, CallerStream, _AdvConn, AdvStream, TRef}, S) ->
+                     {ConnPid, CallerStream, _AdvConn, AdvStream, TRef,
+                      _Mode}, S) ->
     drop_dead_stream_entry(Sid, CallerStream, AdvStream, TRef, S);
 drop_stream_if_owned(ConnPid, Sid,
-                     {_CallerConn, CallerStream, ConnPid, AdvStream, TRef}, S) ->
+                     {_CallerConn, CallerStream, ConnPid, AdvStream, TRef,
+                      _Mode}, S) ->
     drop_dead_stream_entry(Sid, CallerStream, AdvStream, TRef, S);
 drop_stream_if_owned(_ConnPid, _Sid, _Entry, S) ->
     S.

@@ -24,14 +24,17 @@
 
 -export([stream_station_routed_control/1,
          stream_dials_outside_seed_set/1,
-         stream_relays_through_outbound_dialled_hop/1]).
+         stream_relays_through_outbound_dialled_hop/1,
+         client_stream_half_close_still_gets_its_reply/1]).
 
 -define(REALM, <<0:256>>).
 -define(PROC, <<"echo.stream">>).
+-define(SUM_PROC, <<"sum.stream">>).
 
 suite() -> [{timetrap, {minutes, 2}}].
 all()   -> [stream_station_routed_control, stream_dials_outside_seed_set,
-            stream_relays_through_outbound_dialled_hop].
+            stream_relays_through_outbound_dialled_hop,
+            client_stream_half_close_still_gets_its_reply].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(macula),
@@ -147,6 +150,48 @@ stream_relays_through_outbound_dialled_hop(Config) ->
         macula_station_test_cluster:stop_cluster([A, B, C])
     end.
 
+%% Regression test for the mode-aware stream-route half-close fix
+%% (macula_station_peer_observer.erl's maybe_close_stream_route/5).
+%% Before that fix, ANY STREAM_END(role=send) -- from either side --
+%% dropped the WHOLE bidirectional route immediately. That is correct
+%% for `server_stream' (only the provider's own half-close ends the
+%% exchange -- see the three cases above, all of which end via
+%% `close_stream/1', a full role=both close, so none of them actually
+%% exercised the role=send path the fleet's real server_stream
+%% providers use, `macula_streamer:close/1'). It is WRONG for
+%% `client_stream': a caller's own half-close (issued here via
+%% `close_send/1') dropped the route before the provider's `set_reply/2'
+%% could ever be relayed back -- the provider's call raised nothing
+%% locally, but `await_reply/2' on the consumer side would time out.
+%% This is client_stream/bidi's analogue of the `server_stream' cases
+%% above: same one-station cross-connection relay, opposite data
+%% direction, and a role=send half-close that must NOT be terminal by
+%% itself in this mode.
+client_stream_half_close_still_gets_its_reply(Config) ->
+    Opts = ?config(cluster_opts, Config),
+    [B]  = macula_station_test_cluster:spawn_cluster(1, Opts),
+    Url  = station_url(macula_station_test_cluster:listen_addr(B)),
+    {ok, Provider} = macula:connect([Url], #{verify => none}),
+    {ok, Consumer} = macula:connect([Url], #{verify => none}),
+    try
+        ok = wait_healthy(Provider),
+        ok = wait_healthy(Consumer),
+        ok = macula:advertise_stream(Provider, ?REALM, ?SUM_PROC,
+                                     client_stream, fun sum_then_reply/2),
+        timer:sleep(300),
+        {ok, Stream} = macula:call_stream(Consumer, ?REALM, ?SUM_PROC, #{},
+                                          #{mode => client_stream}),
+        macula:send(Stream, <<"1">>),
+        macula:send(Stream, <<"2">>),
+        macula:send(Stream, <<"3">>),
+        ok = macula:close_send(Stream),
+        ?assertEqual({ok, 6}, macula:await_reply(Stream, 5_000))
+    after
+        catch macula:close(Consumer),
+        catch macula:close(Provider),
+        macula_station_test_cluster:stop_cluster([B])
+    end.
+
 %%------------------------------------------------------------------
 %% Helpers
 %%------------------------------------------------------------------
@@ -161,6 +206,24 @@ push_three_chunks(Stream, _Args) ->
     macula:send(Stream, <<"chunk-2">>),
     macula:send(Stream, <<"chunk-3">>),
     macula:close_stream(Stream).
+
+%% client_stream provider shape: recv chunks to eof, then set_reply
+%% with their sum. Deliberately does NOT call close_stream/1 -- the
+%% caller's own half-close (`close_send/1', role=send) is what should
+%% end the recv side here, and `set_reply/2' is the terminal frame
+%% that should still make it back despite that half-close, per the fix
+%% this test exists for.
+sum_then_reply(Stream, _Args) ->
+    Total = recv_and_sum(Stream, 0),
+    macula:set_reply(Stream, Total).
+
+recv_and_sum(Stream, Acc) ->
+    sum_step(macula:recv(Stream, 5_000), Stream, Acc).
+
+sum_step({chunk, Bin}, Stream, Acc) ->
+    recv_and_sum(Stream, Acc + binary_to_integer(Bin));
+sum_step(eof, _Stream, Acc) ->
+    Acc.
 
 recv_all(Stream) -> recv_all(Stream, []).
 recv_all(Stream, Acc) ->
