@@ -202,7 +202,7 @@ to_cbor(M) ->
     #{
         {text, <<"mcid">>}           => maps:get(mcid, M),
         {text, <<"version">>}        => maps:get(version, M),
-        {text, <<"name">>}           => {text, maps:get(name, M)},
+        {text, <<"name">>}           => {text, text_value(maps:get(name, M))},
         {text, <<"size">>}           => maps:get(size, M),
         {text, <<"created">>}        => maps:get(created, M),
         {text, <<"chunk_size">>}     => maps:get(chunk_size, M),
@@ -211,6 +211,16 @@ to_cbor(M) ->
         {text, <<"root_hash">>}      => maps:get(root_hash, M),
         {text, <<"chunks">>}         => [chunk_info_to_cbor(C) || C <- maps:get(chunks, M)]
     }.
+
+%% `name' arrives here either as a plain binary (a manifest built
+%% natively via create/2) or as `{text, Bin}' (a manifest decoded off
+%% the wire by macula_frame:from_wire_envelope/1, whose maybe_atom/2
+%% leaves arbitrary content names -- never pre-existing atoms -- as
+%% `{text, Bin}'). Unwrap either shape to the plain binary macula_record_cbor:encode/1's
+%% {text, binary()} clause requires; a name arriving already-wrapped
+%% must not be wrapped a second time.
+text_value({text, B}) when is_binary(B) -> B;
+text_value(B) when is_binary(B) -> B.
 
 chunk_info_to_cbor(C) ->
     #{

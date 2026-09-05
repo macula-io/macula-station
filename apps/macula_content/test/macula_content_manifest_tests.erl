@@ -85,3 +85,17 @@ get_chunk_mcid_invalid_index_test() ->
     {ok, M} = macula_content_manifest:create(<<"x">>),
     ?assertEqual({error, invalid_index},
                  macula_content_manifest:get_chunk_mcid(M, 99)).
+
+%% A manifest received via `_content.put_manifest' has been through
+%% macula_frame:from_wire_envelope/1, whose maybe_atom/2 leaves any
+%% `name' that isn't already an interned atom (i.e. any real content
+%% name) as `{text, Bin}' rather than a plain binary -- unlike a
+%% manifest built natively via create/2. encode/1 must accept both
+%% shapes without double-wrapping `name' into `{text, {text, Bin}}',
+%% which macula_record_cbor:encode/1 has no clause for.
+encode_accepts_a_manifest_with_wire_decoded_name_test() ->
+    {ok, Native} = macula_content_manifest:create(<<"hello">>, #{name => <<"file.bin">>}),
+    AsWireDecoded = Native#{name => {text, <<"file.bin">>}},
+    {ok, Bin} = macula_content_manifest:encode(AsWireDecoded),
+    {ok, Decoded} = macula_content_manifest:decode(Bin),
+    ?assertEqual(<<"file.bin">>, maps:get(name, Decoded)).
